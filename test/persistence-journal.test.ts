@@ -291,9 +291,7 @@ describe('write claim attempt bound (#5368)', () => {
   });
   test('semantic reprepare loops are bounded by the same attempt counter', async () => {
     for (const engine of engines) {
-      const a = await admission(engine, 'reprepare-bound',
-        { type: 'note', title: 'T', compiled_truth: 'x', timeline: '', frontmatter: {} },
-        { operation: 'remember', intent: {} });
+      const a = await admission(engine, 'reprepare-bound', 'x', { operation: 'remember', intent: {} });
       await admitWrite(engine, a);
       const conflict = () => Object.assign(new Error('revision conflict'), { code: 'revision_conflict' });
       let row = (await claimNextWrite(engine, hostId))!;
