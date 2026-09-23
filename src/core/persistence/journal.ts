@@ -133,6 +133,15 @@ async function prepareAdmission(engine: BrainEngine, input: WriteAdmission, over
   } };
 }
 
+/**
+ * #5368 — bound on execution attempts per request. Every churn path
+ * (transient-DB release, mayReprepare, expired-claim requeue) goes through
+ * a new claim, so counting claims bounds the loop: a request that can
+ * never reach publication must not cycle queued↔running forever, silently
+ * blocking the whole worktree FIFO.
+ */
+export const MAX_WRITE_EXECUTION_ATTEMPTS = 64;
+
 /** Claims commit before OS-lock waits. An unresolved head blocks its entire root. */
 export async function claimNextWrite(engine: BrainEngine, hostId: string, leaseMs = 30_000, excludeRoots: string[] = []): Promise<WriteRequest | null> {
   return engine.transactionDirect(async tx => {
@@ -150,9 +159,33 @@ export async function claimNextWrite(engine: BrainEngine, hostId: string, leaseM
     if (!row) return null;
     const [claimed] = await tx.executeRaw<WriteRequest>(`UPDATE persistence_requests SET state='running',
       execution_token=$2::uuid,claim_expires_at=now()+($3::double precision*interval '1 millisecond'),
-      updated_at=now(),blocked_reason=NULL WHERE id=$1::uuid RETURNING *`, [row.id, randomUUID(), leaseMs]);
+      attempts=attempts+1,updated_at=now(),blocked_reason=NULL WHERE id=$1::uuid RETURNING *`, [row.id, randomUUID(), leaseMs]);
     return claimed;
   });
+}
+
+/**
+ * Requeue 'running' requests whose claim lease expired (the claimant died
+ * or crashed without a terminal transition). #5368: a request that keeps
+ * expiring past MAX_WRITE_EXECUTION_ATTEMPTS claims is terminalized
+ * 'failed' through completeWrite — proper counter decrement — instead of
+ * churning forever and wedging the worktree FIFO.
+ */
+export async function requeueExpiredClaims(engine: BrainEngine, hostId: string, maxAttempts = MAX_WRITE_EXECUTION_ATTEMPTS): Promise<number> {
+  await engine.executeRaw(`UPDATE persistence_requests r SET state='queued',execution_token=NULL,claim_expires_at=NULL
+    WHERE r.state='running' AND r.recovery IS NULL AND r.claim_expires_at<now() AND r.attempts<$2
+    AND (r.worktree_id IS NULL OR EXISTS (SELECT 1 FROM persistence_worktrees w WHERE w.id=r.worktree_id AND w.owner_host_id=$1::uuid))`, [hostId, maxAttempts]);
+  const exhausted = await engine.executeRaw<WriteRequest>(`SELECT r.* FROM persistence_requests r
+    WHERE r.state='running' AND r.recovery IS NULL AND r.claim_expires_at<now() AND r.attempts>=$2
+    AND (r.worktree_id IS NULL OR EXISTS (SELECT 1 FROM persistence_worktrees w WHERE w.id=r.worktree_id AND w.owner_host_id=$1::uuid))
+    ORDER BY r.sequence LIMIT 16`, [hostId, maxAttempts]);
+  for (const row of exhausted) {
+    try {
+      await engine.transaction(tx => completeWrite(tx, row, 'failed', {},
+        { code: 'publication_retry_exhausted', message: `Write claim expired ${row.attempts} times without reaching publication; the request was failed to unblock the worktree. Retry with a new request.` }));
+    } catch { /* an expired claim racing a late terminalization is safe to skip */ }
+  }
+  return exhausted.length;
 }
 export async function renewWriteClaim(engine: SqlEngine, id: string, token: string, leaseMs = 30_000): Promise<boolean> {
   const rows = await engine.executeRaw(`UPDATE persistence_requests SET

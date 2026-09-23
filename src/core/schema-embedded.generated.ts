@@ -1812,6 +1812,7 @@ CREATE TABLE IF NOT EXISTS persistence_requests (
     state text NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','recovering','committed','conflict','failed','cancelled')),
     execution_token uuid,
     claim_expires_at timestamptz,
+    attempts integer NOT NULL DEFAULT 0,
     recovery jsonb,
     recovery_bytes bigint NOT NULL DEFAULT 0,
     intent_bytes bigint NOT NULL,
@@ -1827,6 +1828,7 @@ CREATE TABLE IF NOT EXISTS persistence_requests (
     completed_at timestamptz,
     UNIQUE(principal_kind,principal_id,request_id)
   );
+ALTER TABLE persistence_requests ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS persistence_requests_pending ON persistence_requests(worktree_id,sequence)
     WHERE state IN ('queued','running','recovering');
 CREATE INDEX IF NOT EXISTS persistence_requests_recovery

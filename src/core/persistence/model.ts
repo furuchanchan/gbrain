@@ -55,6 +55,7 @@ export interface WriteRequest {
   state: RequestState;
   execution_token: string | null;
   claim_expires_at: Date | string | null;
+  attempts: number;
   recovery: RecoveryRecord | null;
   recovery_bytes: string | number;
   intent_bytes: string | number;

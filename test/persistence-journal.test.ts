@@ -9,9 +9,9 @@ import type { OperationContext } from '../src/core/ops/contract.ts';
 import { OperationError } from '../src/core/ops/contract.ts';
 import { registerLocalWriter, revokeLocalWriter } from '../src/core/persistence/identity.ts';
 import { submissionAuthority } from '../src/core/persistence/authority.ts';
-import { admitWrite, claimNextWrite, compactWriteReceipts, getWriteRequest, getWriteRequestById, receiptFor, type WriteAdmission } from '../src/core/persistence/journal.ts';
+import { admitWrite, claimNextWrite, compactWriteReceipts, getWriteRequest, getWriteRequestById, receiptFor, requeueExpiredClaims, type WriteAdmission } from '../src/core/persistence/journal.ts';
 import { cancelWriteRequest } from '../src/core/persistence/control.ts';
-import { publishMutation, recoverPublication } from '../src/core/persistence/coordinator.ts';
+import { finishUnpublishedFailure, publishMutation, recoverPublication } from '../src/core/persistence/coordinator.ts';
 import { claimWorktree } from '../src/core/persistence/ownership.ts';
 import { preparePageMutation } from '../src/core/persistence/page-prepare.ts';
 import { assertSafeE2eDatabaseUrl } from './helpers/db-guard.ts';
@@ -264,6 +264,88 @@ describe('durable mutation journal', () => {
       expect(Number(compact.terminal_reservation)).toBeGreaterThan(1024);
       expect(compact.authority).toEqual(accepted.authority);
       expect((await admitWrite(engine, a)).id).toBe(accepted.id);
+    }
+  });
+});
+
+describe('write claim attempt bound (#5368)', () => {
+  test('transient publication failures requeue only while attempts remain, then terminalize failed', async () => {
+    for (const engine of engines) {
+      const a = await admission(engine, 'churn-bound');
+      await admitWrite(engine, a);
+      const lockError = () => Object.assign(new Error('lock not available'), { code: '55P03' });
+      let row = (await claimNextWrite(engine, hostId))!;
+      expect(Number(row.attempts)).toBe(1); // each claim counts an execution attempt
+      for (let i = 0; i < 3; i++) {
+        const released = await finishUnpublishedFailure(engine, row, lockError(), 4);
+        expect(released.state).toBe('queued');
+        row = (await claimNextWrite(engine, hostId))!;
+        expect(Number(row.attempts)).toBe(i + 2);
+      }
+      const done = await finishUnpublishedFailure(engine, row, lockError(), 4);
+      expect(done.state).toBe('failed');
+      const [counter] = await engine.executeRaw<{ outstanding_count: string | number }>(
+        "SELECT outstanding_count FROM persistence_counters WHERE key='brain'");
+      expect(Number(counter.outstanding_count)).toBe(0);
+    }
+  });
+  test('semantic reprepare loops are bounded by the same attempt counter', async () => {
+    for (const engine of engines) {
+      const a = await admission(engine, 'reprepare-bound',
+        { type: 'note', title: 'T', compiled_truth: 'x', timeline: '', frontmatter: {} },
+        { operation: 'remember', intent: {} });
+      await admitWrite(engine, a);
+      const conflict = () => Object.assign(new Error('revision conflict'), { code: 'revision_conflict' });
+      let row = (await claimNextWrite(engine, hostId))!;
+      const released = await finishUnpublishedFailure(engine, row, conflict(), 2);
+      expect(released.state).toBe('queued');
+      row = (await claimNextWrite(engine, hostId))!;
+      expect(Number(row.attempts)).toBe(2);
+      const done = await finishUnpublishedFailure(engine, row, conflict(), 2);
+      expect(done.state).toBe('conflict');
+    }
+  });
+  test('expired claims requeue under the bound and exhausted rows fail with publication_retry_exhausted', async () => {
+    for (const engine of engines) {
+      const a = await admission(engine, 'expired-claim-bound');
+      await admitWrite(engine, a);
+      const row = (await claimNextWrite(engine, hostId))!;
+      await engine.executeRaw(
+        "UPDATE persistence_requests SET claim_expires_at=now()-interval '1 second', attempts=$2 WHERE id=$1::uuid",
+        [row.id, 5]);
+      // attempts=5 >= max=4: the sweep terminalizes instead of requeueing.
+      expect(await requeueExpiredClaims(engine, hostId, 4)).toBe(1);
+      const failed = (await getWriteRequestById(engine, row.id))!;
+      expect(failed.state).toBe('failed');
+      expect(failed.error_code).toBe('publication_retry_exhausted');
+
+      const b = await admission(engine, 'expired-claim-under-bound');
+      await admitWrite(engine, b);
+      const rowB = (await claimNextWrite(engine, hostId))!;
+      await engine.executeRaw(
+        "UPDATE persistence_requests SET claim_expires_at=now()-interval '1 second', attempts=1 WHERE id=$1::uuid",
+        [rowB.id]);
+      expect(await requeueExpiredClaims(engine, hostId, 4)).toBe(0);
+      expect((await getWriteRequestById(engine, rowB.id))!.state).toBe('queued');
+      await cancelWriteRequest(engine, b.principal, b.requestId!); // keep the shared FIFO clean for later tests
+    }
+  });
+  test('terminalizing an exhausted wedged row unblocks the worktree FIFO', async () => {
+    for (const engine of engines) {
+      const wedged = await admission(engine, 'fifo-wedged');
+      await admitWrite(engine, wedged);
+      const behind = await admission(engine, 'fifo-behind');
+      await admitWrite(engine, behind);
+      const row = (await claimNextWrite(engine, hostId))!;
+      expect(row.slug).toBe('fifo-wedged');
+      await engine.executeRaw(
+        "UPDATE persistence_requests SET claim_expires_at=now()-interval '1 second', attempts=9 WHERE id=$1::uuid",
+        [row.id]);
+      // 'running' head blocks the next queued request even though its claim is expired.
+      expect(await claimNextWrite(engine, hostId)).toBeNull();
+      await requeueExpiredClaims(engine, hostId, 4);
+      const next = (await claimNextWrite(engine, hostId))!;
+      expect(next.slug).toBe('fifo-behind');
     }
   });
 });

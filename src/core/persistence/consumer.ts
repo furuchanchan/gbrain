@@ -1,6 +1,6 @@
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
-import { claimNextWrite, compactWriteReceipts, getWriteRequestById, releaseUnpublishedClaim, renewWriteClaim } from './journal.ts';
+import { claimNextWrite, compactWriteReceipts, getWriteRequestById, releaseUnpublishedClaim, renewWriteClaim, requeueExpiredClaims } from './journal.ts';
 import { finishUnpublishedFailure, publishMutation, recoverPublication, type PreparedMutation } from './coordinator.ts';
 import { localHostId } from './identity.ts';
 import { isTerminal, type WriteRequest } from './model.ts';
@@ -90,9 +90,10 @@ export class PersistenceConsumer {
         this.report(error);
       }
     }
-    await this.engine.executeRaw(`UPDATE persistence_requests r SET state='queued',execution_token=NULL,claim_expires_at=NULL
-      WHERE r.state='running' AND r.recovery IS NULL AND r.claim_expires_at<now()
-      AND (r.worktree_id IS NULL OR EXISTS (SELECT 1 FROM persistence_worktrees w WHERE w.id=r.worktree_id AND w.owner_host_id=$1::uuid))`, [this.hostId]);
+    // #5368: expired claims requeue only while attempts remain; past the
+    // bound the request is terminalized 'failed' instead of churning
+    // forever and blocking the worktree FIFO.
+    await requeueExpiredClaims(this.engine, this.hostId);
     if (publicationConcurrency(this.engine) === 0) {
       await this.engine.executeRaw(`UPDATE persistence_requests SET blocked_reason='writer_pool_capacity'
         WHERE state='queued' AND blocked_reason IS DISTINCT FROM 'writer_pool_capacity'`);

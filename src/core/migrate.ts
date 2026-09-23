@@ -6645,6 +6645,16 @@ CREATE TRIGGER minion_queue_protocol BEFORE INSERT OR UPDATE ON minion_jobs
       END $rls$;
     `,
   },
+  {
+    // #5368 — per-request claim-attempt counter bounding the
+    // queued↔running churn loop (a request that can never reach
+    // publication terminalizes 'failed' instead of wedging the worktree
+    // FIFO forever).
+    version: 164,
+    name: 'persistence_request_execution_attempts',
+    idempotent: true,
+    sql: `ALTER TABLE persistence_requests ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;`,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

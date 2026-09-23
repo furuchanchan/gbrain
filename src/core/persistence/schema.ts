@@ -70,6 +70,7 @@ export const PERSISTENCE_SCHEMA_STATEMENTS = [
     state text NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','recovering','committed','conflict','failed','cancelled')),
     execution_token uuid,
     claim_expires_at timestamptz,
+    attempts integer NOT NULL DEFAULT 0,
     recovery jsonb,
     recovery_bytes bigint NOT NULL DEFAULT 0,
     intent_bytes bigint NOT NULL,
@@ -85,6 +86,9 @@ export const PERSISTENCE_SCHEMA_STATEMENTS = [
     completed_at timestamptz,
     UNIQUE(principal_kind,principal_id,request_id)
   )`,
+  // #5368: claim-attempt counter bounding the queued↔running churn loop
+  // (kept outside the CREATE for brains that already ran migration 151).
+  `ALTER TABLE persistence_requests ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0`,
   `CREATE INDEX IF NOT EXISTS persistence_requests_pending ON persistence_requests(worktree_id,sequence)
     WHERE state IN ('queued','running','recovering')`,
   PERSISTENCE_REQUEST_RECOVERY_INDEX_SQL,

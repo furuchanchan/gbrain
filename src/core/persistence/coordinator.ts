@@ -8,7 +8,7 @@ import { sha256 } from './digest.ts';
 import { authorizeStoredRequest } from './authority.ts';
 import { localHostId } from './identity.ts';
 import { acquireWorktree, getWorktreeBinding, guardOwnership, type WorktreeBinding } from './ownership.ts';
-import { clearResolvedRecovery, completeWrite, getWriteRequestById, lockCounters, markRecovering, prepareRecovery, releaseUnpublishedClaim } from './journal.ts';
+import { MAX_WRITE_EXECUTION_ATTEMPTS, clearResolvedRecovery, completeWrite, getWriteRequestById, lockCounters, markRecovering, prepareRecovery, releaseUnpublishedClaim } from './journal.ts';
 import { isTerminal, principalKey, requestPrincipal, type RecoveryRecord, type WriteRequest } from './model.ts';
 import type { NativeLockHandle } from './native-lock.ts';
 import { withCoordinatedWrite } from './context.ts';
@@ -70,9 +70,14 @@ function transientDatabaseFailure(error: unknown): boolean {
   return ['40001','40P01','55P03','57014','53300','57P01','57P02','57P03','08000','08003','08006','08001','08004',
     'ECONNRESET','ECONNREFUSED','ETIMEDOUT','CONNECTION_CLOSED','CONNECTION_ENDED'].includes(String((error as {code?:string})?.code));
 }
-export async function finishUnpublishedFailure(engine: BrainEngine, row: WriteRequest, error: unknown): Promise<WriteRequest> {
+export async function finishUnpublishedFailure(engine: BrainEngine, row: WriteRequest, error: unknown,
+  maxAttempts = MAX_WRITE_EXECUTION_ATTEMPTS): Promise<WriteRequest> {
   const failure = requestError(error);
-  if (mayReprepare(row, failure) || transientDatabaseFailure(error)) {
+  // #5368 — reprepare/transient releases must not loop forever: a request
+  // that keeps failing before publication wedges its whole worktree FIFO.
+  // Past the claim bound it goes terminal 'failed' (retry-failed submits a
+  // fresh request) instead of churning queued↔running silently.
+  if ((mayReprepare(row, failure) || transientDatabaseFailure(error)) && Number(row.attempts) < maxAttempts) {
     await releaseUnpublishedClaim(engine, row, transientDatabaseFailure(error) ? 'database_contention' : 'revision_changed_repreparing');
     return (await getWriteRequestById(engine, row.id))!;
   }
