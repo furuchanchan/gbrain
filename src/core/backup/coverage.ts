@@ -12,9 +12,14 @@
  * persisted: a probe-less write would clobber a probed verdict (reset
  * checked_at, mutate the nag fingerprint, silence a real warn).
  *
- * Probes are local READ subcommands only (`remote get-url`,
+ * Probes are local READ subcommands (`remote get-url`,
  * `status --porcelain`, `rev-list --count`) via execFile array args — never
- * fetch/push/network. Per-repo failures degrade that asset to 'unknown';
+ * fetch/push. The ONE network probe is `git ls-remote` on the trusted local
+ * path only (#5354): configuration is not evidence — a deleted or
+ * unauthorized remote must not read "git-backed". Remote missing/denied →
+ * 'failing'; remote unreachable (offline class) → 'unknown'; remote head ≠
+ * local HEAD → 'unpushed'. Disable via GBRAIN_BACKUP_REMOTE_PROBE=0.
+ * Per-repo failures degrade that asset to 'unknown';
  * a failed compute never clobbers an existing cache (getBackupStatus).
  */
 
@@ -25,7 +30,13 @@ import { VERSION } from '../../version.ts';
 import type { BrainEngine } from '../engine.ts';
 import { loadAllSources } from '../sources-load.ts';
 import { discoverGitRoot } from '../sync-git.ts';
-import { GIT_ENV, detectDefaultBranch, isWorkingTreeDirty } from '../git-remote.ts';
+import {
+  GIT_ENV,
+  GIT_ENV_AUTH,
+  detectDefaultBranch,
+  durableSsrfFlags,
+  isWorkingTreeDirty,
+} from '../git-remote.ts';
 import { aheadCount, readPushStatusForRoot } from '../workspace-push.ts';
 import { sanitizePushReason } from '../workspace-push.ts';
 import { realpathOrResolve } from '../path-confine.ts';
@@ -122,6 +133,94 @@ function hasRemoteTrackingRef(root: string, branch: string): boolean | null {
     // --quiet --verify exits 1 when the ref does not exist; other failures
     // (timeout, spawn error) are indeterminate.
     return status === 1 ? false : null;
+  }
+}
+
+/**
+ * #5354 — verify the configured origin actually EXISTS and holds the branch.
+ * `git ls-remote` is the cheap no-clone probe the issue prescribes: a deleted
+ * or unauthorized remote answers with a definitive negative ('missing' —
+ * every push fails the same way), a network outage answers with the
+ * transport class ('unreachable' — degrade to unverified, never a false
+ * fail on an offline host), and a reachable remote returns the true remote
+ * head so "remote head ≠ local HEAD" can grade currency, not configuration.
+ *
+ * Uses the remote NAME ('origin') so insteadOf/credential config resolve the
+ * same way a push would, GIT_ENV_AUTH so repo credential helpers apply
+ * (missing credentials fail fast on GIT_TERMINAL_PROMPT=0, never hang), and
+ * the same SSRF flags as the durability paths. `--exit-code` makes
+ * remote-reachable-but-branch-absent exit 2 — zero recoverable history for
+ * this branch on an existing remote.
+ */
+export type RemoteProbeResult =
+  | { state: 'ok'; sha: string | null }
+  | { state: 'missing'; detail: string }
+  | { state: 'unreachable'; detail: string };
+
+export function backupRemoteProbeEnabled(): boolean {
+  return process.env.GBRAIN_BACKUP_REMOTE_PROBE !== '0';
+}
+
+function probeRemoteBranch(root: string, branch: string): RemoteProbeResult {
+  try {
+    const out = execFileSync(
+      'git',
+      [
+        '-C', root,
+        ...durableSsrfFlags(),
+        'ls-remote',
+        '--exit-code',
+        '--end-of-options',
+        'origin',
+        `refs/heads/${branch}`,
+      ],
+      {
+        encoding: 'utf-8',
+        timeout: 20_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...GIT_ENV_AUTH },
+      },
+    );
+    const m = out.match(/^([0-9a-f]{40,64})\s+refs\/heads\//m);
+    return { state: 'ok', sha: m?.[1] ?? null };
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === 2) {
+      // --exit-code: remote answered but refs/heads/<branch> is absent.
+      return { state: 'ok', sha: null };
+    }
+    const raw = String((err as { stderr?: Buffer | string }).stderr ?? (err as Error).message ?? '');
+    const low = raw.toLowerCase();
+    // Definitive negatives — a push would fail identically, every time.
+    if (
+      low.includes('repository not found') ||
+      low.includes('does not appear to be a git repository') ||
+      low.includes('authentication failed') ||
+      low.includes('permission denied') ||
+      low.includes('access denied') ||
+      low.includes('could not read username') ||
+      low.includes('could not read password') ||
+      low.includes('returned error: 403')
+    ) {
+      return { state: 'missing', detail: 'remote_not_found_or_denied' };
+    }
+    // Everything else (DNS, timeout, refused, unreachable) is the offline
+    // class — an unverifiable backup, never a fabricated failure.
+    return { state: 'unreachable', detail: 'remote_unreachable' };
+  }
+}
+
+/** Local HEAD sha (null when unresolvable — e.g. unborn branch). */
+function localHeadSha(root: string): string | null {
+  try {
+    return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {
+      encoding: 'utf-8',
+      timeout: 15_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: GIT_ENV,
+    }).trim() || null;
+  } catch {
+    return null;
   }
 }
 
@@ -350,13 +449,63 @@ export async function computeBackupCoverage(
           pushAsset(assets, { kind: 'source_repo', id, state: 'unknown', detail: 'probe_failed', fix_argv: null });
           continue;
         }
-        if (ahead > 0) {
+        // #5354 — verify the remote's EFFECT, not its configuration. A
+        // deleted/unauthorized remote must not read "git-backed"; an
+        // unreachable one degrades to unverified (offline hosts keep their
+        // honest 'unknown' instead of a fabricated fail).
+        let remote: RemoteProbeResult | null = null;
+        if (backupRemoteProbeEnabled()) {
+          await yieldLoop();
+          remote = probeRemoteBranch(root, branch);
+        }
+        if (remote?.state === 'missing') {
+          pushAsset(assets, {
+            kind: 'source_repo',
+            id,
+            state: 'failing',
+            ahead,
+            detail:
+              `remote_missing: origin is deleted or not accessible to the configured credentials — ` +
+              `every git push fails the same way; restore the remote or re-point origin ` +
+              `(${ahead} commit(s) ahead of the last seen tracking ref)`,
+            fix_argv: null,
+          });
+          continue;
+        }
+        if (remote?.state === 'unreachable') {
+          pushAsset(assets, {
+            kind: 'source_repo',
+            id,
+            state: 'unknown',
+            ahead,
+            detail: 'remote_unreachable: could not verify origin — backup is unverified (offline class, not a failure)',
+            fix_argv: null,
+          });
+          continue;
+        }
+        if (remote?.state === 'ok' && remote.sha === null) {
+          pushAsset(assets, {
+            kind: 'source_repo',
+            id,
+            state: 'failing',
+            detail: `remote_branch_missing: origin exists but refs/heads/${branch} is absent — zero recoverable history for this branch`,
+            fix_argv: ['git', 'push', '-u', 'origin', branch],
+          });
+          continue;
+        }
+        // Currency against the TRUE remote head — the local tracking ref can
+        // be stale (never fetched) while claiming "git-backed".
+        const headSha = remote?.state === 'ok' ? localHeadSha(root) : null;
+        if (ahead > 0 || (remote?.state === 'ok' && remote.sha !== null && headSha !== null && remote.sha !== headSha)) {
           pushAsset(assets, {
             kind: 'source_repo',
             id,
             state: 'unpushed',
             ahead,
-            detail: `${ahead} commit(s) ahead of origin/${branch}`,
+            detail:
+              ahead > 0
+                ? `${ahead} commit(s) ahead of origin/${branch}${remote?.state === 'ok' ? ' (verified against live remote head)' : ''}`
+                : `remote head ${remote?.sha?.slice(0, 12)} does not match local HEAD — run git fetch/push to reconcile`,
             fix_argv: null,
           });
           continue;
@@ -462,7 +611,10 @@ export async function computeBackupCoverage(
     gbrain_version: VERSION,
     interval_days: Math.round(backupIntervalMs() / (24 * 60 * 60 * 1000)) || BACKUP_INTERVAL_DAYS_DEFAULT,
     computed_by: opts.computedBy ?? 'cli',
-    overall: totals.no_remote > 0 ? 'warn' : 'ok',
+    // #5354: currency failures must move the verdict too — an unpushed or
+    // remote-failing asset means the recovery statement is not true TODAY,
+    // which is a warn, not an ok with a detail field.
+    overall: totals.no_remote + totals.unpushed + totals.failing > 0 ? 'warn' : 'ok',
     totals,
     assets,
     ...(degraded ? { degraded: true } : {}),

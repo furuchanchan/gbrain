@@ -31,7 +31,13 @@ import {
   type BackupStatus,
 } from '../src/core/backup/status-file.ts';
 
-const ENV_KEYS = ['GBRAIN_HOME', 'GBRAIN_BACKUP_CHECK', 'GBRAIN_BACKUP_CHECK_DAYS'] as const;
+const ENV_KEYS = [
+  'GBRAIN_HOME',
+  'GBRAIN_BACKUP_CHECK',
+  'GBRAIN_BACKUP_CHECK_DAYS',
+  'GBRAIN_BACKUP_REMOTE_PROBE',
+  'GBRAIN_GIT_ALLOW_FILE_TRANSPORT',
+] as const;
 
 let tmp: string;
 let saved: Record<string, string | undefined>;
@@ -46,6 +52,9 @@ beforeEach(() => {
     delete process.env[k];
   }
   process.env.GBRAIN_HOME = tmp; // configDir() → tmp/.gbrain (receipt, bridge state, config all isolated)
+  // #5354: the remote ls-remote probe needs the file-transport escape for
+  // the local-bare origin fixtures (same flag the durability paths use).
+  process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT = '1';
   statusPath = join(tmp, 'backup-status.json');
   nagPath = join(tmp, 'backup-nag-state.json');
   __setBackupStatusPathForTests(statusPath);

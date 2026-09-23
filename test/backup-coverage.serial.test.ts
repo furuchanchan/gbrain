@@ -43,6 +43,8 @@ const ENV_KEYS = [
   'GBRAIN_BACKUP_CHECK',
   'GBRAIN_BACKUP_CHECK_DAYS',
   'GBRAIN_BRAIN_ID',
+  'GBRAIN_BACKUP_REMOTE_PROBE',
+  'GBRAIN_GIT_ALLOW_FILE_TRANSPORT',
   'DATABASE_URL',
   'GBRAIN_DATABASE_URL',
   'GBRAIN_SOURCE',
@@ -63,6 +65,9 @@ beforeEach(() => {
     delete process.env[k];
   }
   process.env.GBRAIN_HOME = tmp; // configDir() === tmp/.gbrain
+  // #5354: the remote ls-remote probe honors the file-transport escape for
+  // local-bare fixtures (same flag the durability paths use).
+  process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT = '1';
   statusPath = join(home(), 'backup-status.json');
   __setBackupStatusPathForTests(statusPath);
   __setBackupNagStatePathForTests(join(home(), 'backup-nag-state.json'));
@@ -217,7 +222,7 @@ describe('computeBackupCoverage — source repos', () => {
     expect(s.totals.no_remote).toBe(1);
   });
 
-  test('repo one commit ahead of a local bare origin → unpushed, overall stays ok', async () => {
+  test('repo one commit ahead of a live local bare origin → unpushed, overall warns (#5354)', async () => {
     const bare = join(tmp, 'bare.git');
     execFileSync('git', ['init', '--bare', '-b', 'main', bare], { stdio: ['ignore', 'pipe', 'pipe'] });
     const work = join(tmp, 'work');
@@ -236,7 +241,9 @@ describe('computeBackupCoverage — source repos', () => {
     expect(asset?.detail).toContain('ahead of origin/');
     expect(s.totals.unpushed).toBe(1);
     expect(s.totals.no_remote).toBe(0);
-    expect(s.overall).toBe('ok'); // unpushed does NOT flip warn
+    // #5354: unpushed means recoverable knowledge is unprotected — it now
+    // flips the verdict to warn (previously only no_remote did).
+    expect(s.overall).toBe('warn');
   });
 
   test('localGitProbes:false → unknown assets and getBackupStatus never persists', async () => {
@@ -717,7 +724,9 @@ describe('computeBackupCoverage — bootstrap workspace failing push', () => {
     expect(asset?.detail).not.toContain('\u0007');
     expect(asset?.fix_argv).toEqual(['gbrain', 'sources', 'push', '--path', ws]);
     expect(s.totals.failing).toBe(1);
-    expect(s.overall).toBe('ok'); // failing is not no_remote — the remote exists
+    // #5354: a failing push is an unprotected remote — it now flips the
+    // verdict to warn (previously only no_remote did).
+    expect(s.overall).toBe('warn');
     // A failing push means the remote is BEHIND: counting it recoverable would
     // overstate the recovery statement, so recoverable_repos excludes it.
     expect(s.totals.recoverable_repos).toBe(0);

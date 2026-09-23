@@ -354,7 +354,10 @@ export function backupVerdictVersion(s: BackupStatus): string {
     .sort()
     .join(',');
   const t = s.totals;
-  return `${monthBucket(s.checked_at)}:${t.no_remote}/${t.assets}:${ids}`;
+  // #5354: failing/unpushed counts ride the fingerprint — a backup lane
+  // degrading mid-month (remote deleted, push failing) must re-surface even
+  // when the no-remote set is unchanged.
+  return `${monthBucket(s.checked_at)}:${t.no_remote}/${t.assets}:${t.unpushed}/${t.failing}:${ids}`;
 }
 
 const NAG_KEY_BASE = { brain_id: 'host', source_id: 'backup' } as const;

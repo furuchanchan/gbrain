@@ -97,6 +97,9 @@ gbrain config set backup.check_enabled false        # off (file plane)
 gbrain config set backup.check_interval_days 30     # default 30; set rejects values < 1
 GBRAIN_BACKUP_CHECK=0                               # env kill switch (everything)
 GBRAIN_BACKUP_CHECK_DAYS=<n>                        # env interval override (wins over config)
+GBRAIN_BACKUP_REMOTE_PROBE=0                        # env: skip the `git ls-remote` remote
+                                                    # verification (fully-offline hosts —
+                                                    # restores configuration-only grading)
 ```
 
 Interval values below 1 or non-numeric (env or a hand-edited config file) fall

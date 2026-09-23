@@ -28,7 +28,13 @@ import {
 } from '../src/core/backup/status-file.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
-const ENV_KEYS = ['GBRAIN_HOME', 'GBRAIN_BACKUP_CHECK', 'GBRAIN_BACKUP_CHECK_DAYS'] as const;
+const ENV_KEYS = [
+  'GBRAIN_HOME',
+  'GBRAIN_BACKUP_CHECK',
+  'GBRAIN_BACKUP_CHECK_DAYS',
+  'GBRAIN_BACKUP_REMOTE_PROBE',
+  'GBRAIN_GIT_ALLOW_FILE_TRANSPORT',
+] as const;
 
 let tmp: string;
 let saved: Record<string, string | undefined>;
@@ -42,6 +48,9 @@ beforeEach(() => {
     delete process.env[k];
   }
   process.env.GBRAIN_HOME = tmp; // configDir() === join(tmp, '.gbrain')
+  // #5354: the remote probe's ls-remote honors the same file-transport
+  // escape as the durability paths — local-bare fixtures need it on.
+  process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT = '1';
   statusFile = join(tmp, 'state', 'backup-status.json');
   __setBackupStatusPathForTests(statusFile);
   __setBackupNagStatePathForTests(join(tmp, 'state', 'backup-nag-state.json'));
@@ -224,6 +233,47 @@ describe('checkBackupCoverage — remote surface (no localOnly)', () => {
     expect((check.details as { note?: string }).note).toBe(
       'cache-only (remote surface never probes git; aggregate counts only)',
     );
+  });
+
+  test('#5354: remote-missing failing asset in cache → fail, aggregate counts only (no ids)', async () => {
+    saveBackupStatus({
+      ...makeWarnCache('secret-src'),
+      overall: 'warn',
+      totals: { assets: 2, no_remote: 0, unpushed: 0, failing: 1, recoverable_repos: 1, pages_at_risk: 0 },
+      assets: [
+        { kind: 'source_repo', id: 'secret-src', state: 'failing', detail: 'remote_missing: fix: git push -u origin main', fix_argv: ['git', 'push'] },
+        { kind: 'source_repo', id: 'other-src', state: 'ok' },
+      ],
+    });
+    const check = await checkBackupCoverage(makeThrowingEngine(), {});
+    expect(check.status).toBe('fail');
+    expect(check.message).toContain('remote that is deleted');
+    // Aggregate-only: the source id must not appear on the remote surface.
+    expect(check.message).not.toContain('secret-src');
+  });
+
+  test('#5354: stale ok cache (older than the interval) → warn "unverified", not trusted as ok', async () => {
+    saveBackupStatus({
+      ...makeWarnCache('unused'),
+      overall: 'ok',
+      checked_at: new Date(Date.now() - 40 * 24 * 3600_000).toISOString(), // 40d > 30d interval
+      totals: { assets: 1, no_remote: 0, unpushed: 0, failing: 0, recoverable_repos: 1, pages_at_risk: 0 },
+      assets: [{ kind: 'source_repo', id: 'unused', state: 'ok' }],
+    });
+    const check = await checkBackupCoverage(makeThrowingEngine(), {});
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('unverified');
+  });
+
+  test('#5354: fresh ok cache keeps the ok shortcut (no spurious warn)', async () => {
+    saveBackupStatus({
+      ...makeWarnCache('unused'),
+      overall: 'ok',
+      totals: { assets: 1, no_remote: 0, unpushed: 0, failing: 0, recoverable_repos: 1, pages_at_risk: 0 },
+      assets: [{ kind: 'source_repo', id: 'unused', state: 'ok' }],
+    });
+    const check = await checkBackupCoverage(makeThrowingEngine(), {});
+    expect(check.status).toBe('ok');
   });
 });
 

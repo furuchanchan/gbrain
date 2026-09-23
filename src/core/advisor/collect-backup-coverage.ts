@@ -93,6 +93,26 @@ export const collectBackupCoverage: AdvisorCollector = {
         });
       }
     }
+    // #5354 — remote-verification negatives (deleted/unauthorized remote,
+    // branch absent on the forge) are the most urgent backup findings:
+    // the recovery path the operator believes exists does not.
+    for (const a of s.assets) {
+      if (
+        a.state === 'failing' &&
+        a.kind === 'source_repo' &&
+        (a.detail?.startsWith('remote_missing') || a.detail?.startsWith('remote_branch_missing'))
+      ) {
+        findings.push({
+          id: `backup_source_remote_missing:${a.id}`,
+          severity: 'warn',
+          title: `Knowledge repo ${a.id}'s remote is deleted or unauthorized — every git push fails; there is no recovery path.`,
+          detail: a.detail,
+          fix: { command_argv: a.fix_argv ?? null },
+          collector: 'backup-coverage',
+          ask_user: true,
+        });
+      }
+    }
     const unpushed = s.assets.filter((a) => a.state === 'unpushed');
     if (unpushed.length > 0) {
       findings.push({
