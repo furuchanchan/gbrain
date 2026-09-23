@@ -2,6 +2,22 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.37.0] - 2026-09-23
+
+**A page a slow embedder can't finish no longer re-embeds forever.** The
+persistence embedding effect used a hard-coded 25-second deadline; a page
+whose chunks needed longer was retried every ~30 seconds with the opaque
+`effect_unavailable` code — one CPU core and the GPU pegged indefinitely,
+zero progress. The deadline is now configurable
+(`GBRAIN_EFFECT_EMBED_TIMEOUT_MS`, default unchanged), a deadline miss is
+reported as `effect_timeout` with the real error saved in `error_detail`,
+retries back off, and the effect fails terminally after 8 attempts instead
+of spinning.
+
+**Say to your agent:** *"A stuck embedding effect now shows
+`effect_timeout` and stops on its own; raise
+`GBRAIN_EFFECT_EMBED_TIMEOUT_MS` to let the slow page finish."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
