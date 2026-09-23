@@ -2,6 +2,27 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.34.0] - 2026-09-23
+
+**Chronicle backfill remembers where it stopped, and a dated page always
+leaves a trace.** Re-running the sweep used to re-enqueue the same head
+pages forever — a finished no-events run looked identical to never-touched
+work, so the tail never got scanned. The sweep now tracks which pages a
+successful or in-flight extraction already covered, can be scheduled to a
+run hour and cooldown window (`chronicle.backfill.run_hour_utc`,
+`cooldown_hours`, `limit` config, `--force` to bypass), and keeps scanning
+past covered pages until the enqueue cap is actually filled.
+
+Extraction itself is safe to re-run: events are only written once per
+source content, so a re-run after a paraphrased judge answer adds nothing
+twice. When the judge finds no sub-events, a dated page still records one
+deterministic event from its own title and date instead of vanishing from
+the timeline, and a runaway judge answer is capped
+(`chronicle.max_events_per_page`, default 7).
+
+**Say to your agent:** *"Run `gbrain chronicle-backfill` again — finished
+pages are skipped, new pages fill the freed capacity."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
