@@ -239,6 +239,69 @@ describe('computeBackupCoverage — source repos', () => {
     expect(s.overall).toBe('ok'); // unpushed does NOT flip warn
   });
 
+  test('#5354 — pushed repo whose last sources-push receipt failed → failing (not unpushed/ok)', async () => {
+    // Remote deleted upstream: origin/<branch> still resolves locally but the
+    // last `gbrain sources push` recorded a failure. The asset is a broken
+    // backup lane, not a recoverable repo.
+    const bare = join(tmp, 'gone-remote.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', bare], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const work = join(tmp, 'work-dead-remote');
+    initRepo(work);
+    commitFile(work, 'a.md', 'baseline', 'baseline');
+    g(work, ['remote', 'add', 'origin', bare]);
+    g(work, ['push', '-u', 'origin', 'main']);
+    commitFile(work, 'b.md', 'more', 'ahead commit');
+
+    const statusFile = pushStatusPathForRoot(work);
+    mkdirSync(join(home(), 'bootstrap'), { recursive: true });
+    writeFileSync(
+      statusFile,
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ok: false,
+        reason: 'Repository not found.',
+        repoRoot: work,
+      }),
+    );
+
+    const engine = stubEngine({ sources: [srcRow('src-dead', work)] });
+    const s = await computeBackupCoverage(engine, { localGitProbes: true });
+
+    const asset = s.assets.find((a) => a.kind === 'source_repo');
+    expect(asset?.state).toBe('failing');
+    expect(asset?.detail).toContain('Repository not found');
+    expect(asset?.fix_argv).toEqual(['gbrain', 'sources', 'push', '--path', work]);
+    expect(s.totals.failing).toBe(1);
+    expect(s.totals.recoverable_repos).toBe(0); // failing is excluded — remote is BEHIND
+    expect(s.overall).toBe('ok'); // pinned: failing is not no_remote — the remote exists
+  });
+
+  test('#5354 — a failing receipt for a DIFFERENT root leaves the source_repo unaffected', async () => {
+    const bare = join(tmp, 'other-origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', bare], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const work = join(tmp, 'work-other');
+    initRepo(work);
+    commitFile(work, 'a.md', 'baseline', 'baseline');
+    g(work, ['remote', 'add', 'origin', bare]);
+    g(work, ['push', '-u', 'origin', 'main']);
+
+    const otherRoot = join(tmp, 'some-other-repo');
+    mkdirSync(otherRoot, { recursive: true }); // ghost filter drops non-existent roots
+    const statusFile = pushStatusPathForRoot(otherRoot);
+    mkdirSync(join(home(), 'bootstrap'), { recursive: true });
+    writeFileSync(
+      statusFile,
+      JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'denied', repoRoot: otherRoot }),
+    );
+
+    const engine = stubEngine({ sources: [srcRow('src-ok', work)] });
+    const s = await computeBackupCoverage(engine, { localGitProbes: true });
+
+    const asset = s.assets.find((a) => a.kind === 'source_repo');
+    expect(asset?.state).toBe('ok');
+    expect(s.totals.failing).toBe(0);
+  });
+
   test('localGitProbes:false → unknown assets and getBackupStatus never persists', async () => {
     const repo = join(tmp, 'repo-np');
     initRepo(repo);

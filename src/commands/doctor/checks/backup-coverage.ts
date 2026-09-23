@@ -40,10 +40,14 @@ function toCheck(s: BackupStatus, note?: string): Check {
       details,
     };
   }
+  const failingNote =
+    s.totals.failing > 0
+      ? `; ${s.totals.failing} push lane(s) failing — \`gbrain backup status\` for detail`
+      : '';
   return {
     name: 'backup_coverage',
     status: 'ok',
-    message: `${s.totals.recoverable_repos} knowledge repo(s) git-backed; last checked ${backupCacheAge(s)}`,
+    message: `${s.totals.recoverable_repos} knowledge repo(s) git-backed; last checked ${backupCacheAge(s)}${failingNote}`,
     details,
   };
 }
@@ -90,7 +94,9 @@ export async function checkBackupCoverage(
       : {
           name: 'backup_coverage',
           status: 'ok',
-          message: `${cached.totals.recoverable_repos} knowledge repo(s) git-backed; last checked ${backupCacheAge(cached)}`,
+          message:
+            `${cached.totals.recoverable_repos} knowledge repo(s) git-backed; last checked ${backupCacheAge(cached)}` +
+            (cached.totals.failing > 0 ? `; ${cached.totals.failing} push lane(s) failing` : ''),
           details,
         };
   }

@@ -344,6 +344,21 @@ export async function computeBackupCoverage(
           });
           continue;
         }
+        // Effect check, not config check (#5354): a configured remote whose
+        // last recorded push failed (repo deleted, permission revoked) is not
+        // a backup — the same per-root receipt the bootstrap_workspace branch
+        // reads, written by every `gbrain sources push` via workspacePush.
+        const own = readPushStatusForRoot(root);
+        if (own && own.ok === false) {
+          pushAsset(assets, {
+            kind: 'source_repo',
+            id,
+            state: 'failing',
+            detail: sanitizePushReason(own.reason),
+            fix_argv: ['gbrain', 'sources', 'push', '--path', root],
+          });
+          continue;
+        }
         await yieldLoop();
         const ahead = aheadCount(root, branch);
         if (ahead === undefined) {
