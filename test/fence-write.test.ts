@@ -183,6 +183,35 @@ describe('writeFactsToFence — happy path', () => {
     expect(body).toContain('Founded Widgets Inc.');
   });
 
+  // #5319 regression: a sub-day ttl used to land as `YYYY-MM-DD 00:00:00` —
+  // already expired at write time — because the fence cell truncated the
+  // instant to a date. The cell must keep the full ISO instant so the
+  // derived DB column (and read-time `valid_until > now()`) is honored.
+  test('a sub-day ttl stores the exact valid_until instant, not midnight of the same day', async () => {
+    const until = new Date(Date.now() + 3_600_000);
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'default', localPath: brainDir, slug: 'people/carol', resolutionSource: 'exact_page' },
+      [baseInput({ fact: 'Carol holds a short-lived fact', validUntil: until })],
+    );
+    expect(result.inserted).toBe(1);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dbRows = await (engine as any).db.query(
+      'SELECT valid_until FROM facts WHERE id = $1',
+      [result.ids[0]],
+    );
+    const stored = new Date(dbRows.rows[0].valid_until);
+    // Within a second of the requested instant (DB precision), not 00:00.
+    expect(Math.abs(stored.getTime() - until.getTime())).toBeLessThan(1_000);
+    // And it must actually be in the future — the whole defect was a fact
+    // that could never answer a recall because it expired at write time.
+    expect(stored.getTime()).toBeGreaterThan(Date.now());
+
+    const body = readFileSync(join(brainDir, 'people/carol.md'), 'utf-8');
+    expect(body).toContain(until.toISOString());
+  });
+
   test('#4872 mirrors the rewritten file into pages.compiled_truth; the next sync re-chunks the new row', async () => {
     const filePath = join(brainDir, 'people/bob.md');
     mkdirSync(join(brainDir, 'people'), { recursive: true });

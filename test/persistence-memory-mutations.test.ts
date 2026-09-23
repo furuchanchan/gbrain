@@ -207,4 +207,31 @@ describe('journaled memory publication, both engines', () => {
       expect(live).toHaveLength(0);
     }
   });
+
+  // #5319 regression: the fence cell used to truncate valid_until to a date,
+  // so a sub-day ttl landed at 00:00 of the same day — already expired — and
+  // the next extraction re-derived that dead instant into facts.valid_until.
+  test('a sub-day ttl keeps instant precision in the appended fence cell', async () => {
+    for (const engine of engines) {
+      await disposePersistenceConsumer(engine);
+      const slug = 'people/ttl-instant-example';
+      await setupPage(engine, slug);
+      const until = new Date(Date.now() + 3_600_000);
+      const snapshot = (await engine.readPageSnapshot(slug, { sourceId }))!;
+      const authority = await submissionAuthority(context(engine), 'remember', sourceId, snapshot.sourceIncarnation, slug);
+      // Earlier tests leave non-terminal request rows; claimNextWrite takes the
+      // lowest sequence, so clear them or this test claims a stale request.
+      await engine.executeRaw(`DELETE FROM persistence_requests WHERE state IN ('queued','running','recovering') AND source_id=$1`, [sourceId]);
+      const p = { fact: 'Instant-precision fact', provenance: 'test', entity_slug: slug, visibility: 'world', fence: true,
+        valid_from: new Date().toISOString(), valid_until: until.toISOString() };
+      await admitWrite(engine, { principal: authority.principal, operation: 'remember', sourceId, sourceIncarnation: snapshot.sourceIncarnation,
+        slug, pageId: snapshot.page.id, callerIntent: p, intent: p, authority, requestId: randomUUID() });
+      const row = (await claimNextWrite(engine, randomUUID()))!;
+      const prepared = await prepareMemoryMutation(engine, row, context(engine).config);
+      const result = await publishMutation(engine, row, prepared);
+      expect(result.state).toBe('committed');
+      const page = await engine.getPage(slug, { sourceId });
+      expect(page!.compiled_truth).toContain(until.toISOString());
+    }
+  });
 });

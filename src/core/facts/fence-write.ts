@@ -84,7 +84,7 @@ export interface FenceInputFact {
   confidence?: number;
   validFrom?: Date;
   /**
-   * MEMORY_VERBS v1 (c5): remember's ttl → valid_until. Date-only in the
+   * MEMORY_VERBS v1 (c5): remember's ttl → valid_until. Full instant in the
    * fence cell; the DB column derives from it on the stamp step.
    * Undefined/null = never expires (pre-v1 behavior unchanged).
    */
@@ -437,7 +437,9 @@ export async function writeFactsToFence(
           // MEMORY_VERBS v1 (c5): remember's ttl threads through to the fence
           // cell — was hard-coded undefined, which silently dropped expiry on
           // this path. extractFactsFromFenceText derives the DB column from it.
-          validUntil:  f.validUntil ? f.validUntil.toISOString().slice(0, 10) : undefined,
+          // Instant precision (#5319): truncating to a date lands a sub-day
+          // ttl at 00:00 of the same day — expired before it was written.
+          validUntil:  f.validUntil ? f.validUntil.toISOString() : undefined,
           source:      f.source,
           context:     f.context ?? undefined,
         });

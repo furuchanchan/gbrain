@@ -57,7 +57,10 @@ export async function prepareMemoryMutation(engine: BrainEngine, row: WriteReque
     if (parsed.warnings.length) throw new OperationError('storage_error', 'The entity facts fence is malformed; repair it before appending memory.');
     const appended = upsertFactRow(snapshot.page.compiled_truth, { claim: input.fact, kind: input.kind, visibility: input.visibility,
       confidence: 1, notability: 'medium', validFrom: validFrom.toISOString().slice(0, 10),
-      validUntil: validUntil?.toISOString().slice(0, 10), source: fact.source });
+      // valid_until keeps instant precision: the fence cell accepts full ISO
+      // and read-time TTL compares timestamps — a sub-day ttl truncated to
+      // a date would land already expired. (#5319)
+      validUntil: validUntil?.toISOString(), source: fact.source });
     rowNum = appended.rowNum;
     let body = appended.body;
     const old = decision.candidate;
