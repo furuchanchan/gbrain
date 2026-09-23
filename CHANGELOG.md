@@ -2,6 +2,30 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.3.0] - 2026-09-23
+
+**Conversation imports tell you exactly why a page was skipped.** A transcript
+that contains text but no recognizable speaker turns used to be reported the
+same way as a page that simply had nothing new since the last run. The skip
+summary now separates every cause — no new segments, no parseable turns,
+wrong page type, oversized body, a page that disappeared mid-run, a completed
+durable outcome, a previous not-extractable scan, or an unrecognized speaker
+heading — so retried pages stop hiding real parse problems behind routine
+checkpoints.
+
+Speaker attribution from Python-dict-style transcripts is also more reliable:
+a turn like `{'name': 'Alice', 'attribution': 'them'}` now credits Alice even
+when `attribution` appears before `name` in the dict.
+
+**Say to your agent:** *"Run `gbrain extract-conversation-facts --dry-run` and
+read the per-cause skip breakdown, then re-extract the pages that reported
+unparseable turns."*
+
+### For contributors
+
+- `printExtractionSummary` moved to
+  `src/commands/extract-conversation-facts-summary.ts` (façade unchanged).
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
