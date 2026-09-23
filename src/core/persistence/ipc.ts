@@ -3,6 +3,7 @@ import net, { type Server, type Socket } from 'node:net';
 import { chmodSync, lstatSync, unlinkSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { OperationError } from '../ops/contract.ts';
+import { bigintToStringReplacer } from '../utils.ts';
 import { resolveSocketPathForConfig, socketHasLiveListener } from '../context/resolve-ipc.ts';
 import { isWriteErrorCode, isWriteReceipt, isWriteRequestId, publicWriteReceipt } from './types.ts';
 import { isPersistenceAdminOperation, PERSISTENCE_ADMIN_OPERATIONS, type PersistenceAdminOperation } from './admin-contract.ts';
@@ -130,7 +131,10 @@ function publicError(error: unknown): Record<string, unknown> {
 }
 
 function responseFrame(value: unknown): string {
-  const frame = JSON.stringify(value) + '\n';
+  // Results may carry int8-derived BigInt values (owner_epoch, counters) —
+  // serialize with the shared replacer so delegated administration can never
+  // crash the frame on a BigInt payload (#5342).
+  const frame = JSON.stringify(value, bigintToStringReplacer) + '\n';
   if (Buffer.byteLength(frame) > PERSISTENCE_IPC_MAX_BYTES) {
     throw new OperationError('response_too_large', 'Persistence response exceeds the local transport limit.');
   }

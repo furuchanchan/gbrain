@@ -6,13 +6,14 @@ import { finishCliTeardown, setCliExitVerdict, writeStdoutFinal } from '../core/
 import { maybeDelegateLocalOperation } from '../core/persistence/local-client.ts';
 import { PersistenceIpcTransportError } from '../core/persistence/ipc.ts';
 import { RemoteMcpError } from '../core/mcp-client.ts';
+import { bigintToStringReplacer } from '../core/utils.ts';
 
 export async function reportPersistenceCliError(error: unknown, json = false,
   out: (payload: string) => Promise<void> = writeStdoutFinal): Promise<boolean> {
   if (!(error instanceof OperationError || error instanceof PersistenceIpcTransportError
     || error instanceof RemoteMcpError && (error.detail?.request_id || error.detail?.write_request))) return false;
   const detail = error.toJSON();
-  if (json) await out(JSON.stringify(detail, null, 2) + '\n');
+  if (json) await out(JSON.stringify(detail, bigintToStringReplacer, 2) + '\n');
   console.error(error instanceof OperationError || error instanceof RemoteMcpError
     ? `Error [${'write_error' in detail && detail.write_error || detail.error}]: ${detail.message}` : error.message);
   if (detail.suggestion) console.error(`Fix: ${detail.suggestion}`);

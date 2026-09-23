@@ -15,6 +15,7 @@ import { startPersistenceIpcServer, requestPersistenceAdministration, requestPer
 import { acquireLock, releaseLock } from '../src/core/pglite-lock.ts';
 import { parsePersistenceAdminArgs } from '../src/commands/persistence-admin.ts';
 import { withEnv } from './helpers/with-env.ts';
+import { bigintToStringReplacer } from '../src/core/utils.ts';
 import { reviewedWriterIntent } from './helpers/writer-admin-intent.ts';
 
 let engine: PGLiteEngine;
@@ -157,6 +158,33 @@ describe('local writer administration', () => {
       }
     } finally { const closed = once(binding.server, 'close'); binding.close(); await closed; await releaseLock(lock); }
   }));
+
+  test('#5342 — writer_status bindings query casts int8 columns so the result is JSON-safe on Postgres', async () => {
+    // `w.owner_epoch` / `b.topology_generation` are int8 and arrive as BigInt
+    // under postgres.js; the status path must emit ::text casts like every
+    // other diagnostics projection or `JSON.stringify cannot serialize
+    // BigInt` crashes the documented diagnostic command.
+    const capturedSql: string[] = [];
+    const stub = {
+      kind: 'pglite',
+      executeRaw: async (sql: string) => {
+        capturedSql.push(sql);
+        if (sql.includes('jsonb_build_object')) return [{ state: '{}' }];
+        if (sql.includes('FROM persistence_brain')) return [{ enabled: true, brain_id: 'b' }];
+        if (sql.includes('FROM config')) return [];
+        return [];
+      },
+    } as unknown as BrainEngine;
+    const status = await runPersistenceAdministration(stub, 'writer_status', {});
+    const bindingsSql = capturedSql.find((s) => s.includes('FROM persistence_source_bindings b'));
+    expect(bindingsSql).toBeDefined();
+    expect(bindingsSql!).toContain('owner_epoch::text');
+    expect(bindingsSql!).toContain('topology_generation::text');
+    // The serialized result must survive JSON.stringify even when a BigInt
+    // slips through — the shared replacer is the boundary contract.
+    expect(() => JSON.stringify({ ...(status as object), epoch: 5n }, bigintToStringReplacer)).not.toThrow();
+    expect(JSON.stringify({ epoch: 5n }, bigintToStringReplacer)).toContain('"5"');
+  });
 
   test('CLI parser preserves exact grant/epoch intent and rejects malformed flag combinations', () => {
     expect(parsePersistenceAdminArgs('local-writer', ['register', 'stdio', '--allowed-operations=', '--source-ids', 'default', '--replace'])).toMatchObject({
