@@ -144,3 +144,29 @@ describe('#3943 — config get redacts sensitive values by default (--raw opts o
     expect(logs).toContain('anthropic:claude-sonnet-4-6');
   });
 });
+
+describe('#5358 — publish-gate keys resolve DB plane first (gate precedence)', () => {
+  // The publish gate (src/mcp/publish-gates.ts) reads DB > file > off, so
+  // `config get` must report the same effective value or it over-reports
+  // publishing after `config set mcp.publish_skills false` (DB-plane write).
+  test('mcp.publish_skills: DB false wins over file true', async () => {
+    writeFileConfig({ engine: 'pglite', mcp: { publish_skills: true } });
+    const { logs, errs } = await runGet({ 'mcp.publish_skills': 'false' }, 'mcp.publish_skills');
+    expect(logs).toContain('false');
+    expect(logs.join('\n')).not.toContain('true');
+    expect(errs.join('\n')).toContain('db plane');
+  });
+
+  test('mcp.publish_skills: file value served when no DB row exists', async () => {
+    writeFileConfig({ engine: 'pglite', mcp: { publish_skills: true } });
+    const { logs } = await runGet({}, 'mcp.publish_skills');
+    expect(logs).toContain('true');
+  });
+
+  test('mcp.publish_advisor: same gate precedence', async () => {
+    writeFileConfig({ engine: 'pglite', mcp: { publish_advisor: true } });
+    const { logs } = await runGet({ 'mcp.publish_advisor': 'false' }, 'mcp.publish_advisor');
+    expect(logs).toContain('false');
+    expect(logs.join('\n')).not.toContain('true');
+  });
+});

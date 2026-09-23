@@ -67,6 +67,14 @@ const MEMORY_DUAL_PLANE_LEAVES = ['auto_writeback', 'auto_writeback_transient_tt
 const MEMORY_DUAL_PLANE_KEYS: ReadonlySet<string> = new Set(
   MEMORY_DUAL_PLANE_LEAVES.map((l) => `memory.${l}`),
 );
+/** Publish-gate keys resolve DB-FIRST at runtime (src/mcp/publish-gates.ts:
+ *  DB row > file > off). `get` must mirror that precedence or it reports the
+ *  file value while the gate serves the DB row (#5358). Keep in sync with
+ *  `Operation.publishGateKey` (src/core/ops/contract.ts). */
+const PUBLISH_GATE_KEYS: ReadonlySet<string> = new Set([
+  'mcp.publish_skills',
+  'mcp.publish_advisor',
+]);
 /** `brain.audience` mirrors the same dual-plane rule (WP8): the declared
  * audience must be readable by the ENGINE-FREE bootstrap-harness lane so a
  * shared-declared brain never gets the enable-nudge advisory. */
@@ -444,7 +452,7 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
     // serves the previous DB value — exactly the lie the off switch's
     // non-zero exit exists to prevent. Everything else keeps the #2120
     // file/env-wins resolution.
-    const dbAuthoritative = MEMORY_DUAL_PLANE_KEYS.has(key) || key === BRAIN_AUDIENCE_KEY;
+    const dbAuthoritative = MEMORY_DUAL_PLANE_KEYS.has(key) || key === BRAIN_AUDIENCE_KEY || PUBLISH_GATE_KEYS.has(key);
     const val = dbAuthoritative
       ? (dbVal ?? fileVal)
       : (fileVal !== undefined && fileVal !== null ? fileVal : dbVal);
