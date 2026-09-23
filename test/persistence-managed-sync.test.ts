@@ -375,3 +375,20 @@ test('continuous foreground arrivals cannot starve a bounded sync batch', async 
     }finally{stopping=true;clearInterval(timer);await Promise.all(admitted);await disposePersistenceConsumer(engine);}
   }
 }),120_000);
+
+test('a connector-kind source is refused before any git probe (#5317)', async () => withEnv({GBRAIN_HOME:home},async()=>{
+  for(const engine of engines){
+    const id=`conn-${randomUUID().replace(/-/g,'').slice(0,20)}`; sources.push(id);
+    const root=join(home,id); mkdirSync(root); // API-backed connectors legitimately lack .git
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    await engine.executeRaw(`INSERT INTO sources(id,name,local_path,config) VALUES($1,$1,$2,'{"kind":"google"}')`,[id,root]);
+    await claimWorktree(engine,id,root);
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+    // Pre-fix the git probe fired first → `fatal: not a git repository` masked
+    // the real refusal. The kind refusal must win and name the absent route.
+    const err=await performManagedSync(engine,{sourceId:id,noPull:true}).then(()=>null,(e)=>e);
+    expect(err?.code).toBe('writer_coordinator_required');
+    expect(String(err?.message)).toContain('no connector coordinator route exists');
+    expect(String(err?.message)).not.toMatch(/not a git repository/i);
+  }
+}),120_000);

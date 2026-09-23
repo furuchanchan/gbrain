@@ -57,10 +57,16 @@ export async function resolveManagedSyncContext(engine: BrainEngine, opts: SyncO
   const registeredRoot = resolve(binding.local_path, binding.relative_path);
   const root = realpathSync(registeredRoot);
   if (root !== registeredRoot) throw new OperationError('source_changed', 'The registered source root identity changed.');
+  // #5317: refuse kind-bearing (connector) sources BEFORE the git probe —
+  // an API-backed connector dir is legitimately not a git repo, so the
+  // probe's `fatal: not a git repository` misdirects diagnosis. The message
+  // also names reality: no connector coordinator route exists yet, so the
+  // refusal is terminal rather than pointing at a configurable component.
+  if (source.config?.kind != null) throw new OperationError('writer_coordinator_required',
+    `Connector source '${sourceId}' cannot sync on a managed brain — no connector coordinator route exists yet.`);
   const gitRoot = realpathSync(syncGit(root, ['rev-parse', '--show-toplevel']).trim());
   const requested = realpathSync(opts.srcSubpath ? resolve(opts.repoPath ?? gitRoot, opts.srcSubpath) : opts.repoPath ?? root);
   if (requested !== root || !isWriteTargetContained(root, gitRoot)) throw new OperationError('source_changed', 'Sync path does not match this source binding.');
-  if (source.config?.kind != null) throw new OperationError('writer_coordinator_required', 'Connector sync requires its dedicated coordinator.');
   return { binding, root, gitRoot, sourceId, incarnation: source.incarnation, source };
 }
 export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, context?: ManagedSyncContext): Promise<SyncDiscovery> {
