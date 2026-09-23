@@ -1406,10 +1406,15 @@ export async function hybridSearch(
   // flush is fire-and-forget on 60s / 100-call thresholds. The hot path
   // never waits.
   let lastResultsCount = 0;
+  // Arms that errored on this call. Injected into every emitted meta payload so
+  // the degradation reaches onMeta consumers instead of dying on stderr.
+  const degradedArms: string[] = [];
   // T7 — rank-1 base_score for the telemetry drift signal. Set alongside
   // lastResultsCount at each return path; undefined when there are no results.
   let lastRank1Score: number | undefined;
   const emitMeta = (meta: HybridSearchMeta): void => {
+    // Single injection point: covers every return path.
+    if (degradedArms.length) meta.degraded_arms = [...degradedArms];
     try {
       opts?.onMeta?.(meta);
     } catch {
@@ -1474,6 +1479,8 @@ export async function hybridSearch(
       : await Promise.all([
           engine.searchKeyword(query, searchOpts).catch((err: unknown) => {
             if (isDbAccessFailure(err)) keywordAccessError = err;
+            degradedArms.push('keyword');
+            pushDegraded(degraded, 'keyword_arm_failed', isTimeoutError(err) ? 'timeout' : 'provider_error');
             warnOncePerProcess(
               'search-keyword-arm-failed',
               `[gbrain] searchKeyword arm failed (fail-open, keyword candidates skipped): ` +
@@ -1483,6 +1490,8 @@ export async function hybridSearch(
           }),
           engine.searchTitles(query, searchOpts).catch((err: unknown) => {
             if (isDbAccessFailure(err)) titleAccessError = err;
+            degradedArms.push('titles');
+            pushDegraded(degraded, 'title_arm_failed', isTimeoutError(err) ? 'timeout' : 'provider_error');
             warnOncePerProcess(
               'search-titles-arm-failed',
               `[gbrain] searchTitles arm failed (fail-open, title candidates skipped): ` +

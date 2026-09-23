@@ -827,6 +827,13 @@ export interface SearchResult {
    */
   keyword_relaxed?: boolean;
   /**
+   * Stamped on the FIRST result when a retrieval arm failed on this call, so
+   * consumers that read only the payload (and never the transport's metadata
+   * channel) still see the partial-retrieval warning. Same agent-warning
+   * philosophy as `content_flag`.
+   */
+  search_warning?: string;
+  /**
    * Extraction quarantine lane (issue #160): true when the result's page is
    * an unverified auto-extracted entity stub (frontmatter
    * `provenance: 'auto-extracted'` + `status: 'unverified'`). Such pages are
@@ -1902,6 +1909,9 @@ export const DEGRADED_STAGES = [
   'expansion_partial',
   'rescore_skipped',
   'vector_arm_failed',
+  // Lexical arm failures impair recall the same way the vector arm does.
+  'keyword_arm_failed',
+  'title_arm_failed',
   'budget_dropped_all',
   'budget_truncated',
   'keyword_zero',
@@ -1975,6 +1985,13 @@ export function affectsRecall(d: { stage?: string; reason?: string } | undefined
  * "keyword-only fallback" from "full hybrid with expansion."
  */
 export interface HybridSearchMeta {
+  /**
+   * Retrieval arms that errored and were skipped on this call, e.g.
+   * `['titles']`. Fail-open used to be stderr-only (`warnOncePerProcess`), so a
+   * remote consumer answered off a partial corpus read with no signal at all.
+   * Populated by the arm catch handlers; the op layer forwards it.
+   */
+  degraded_arms?: string[];
   /** True iff vector search actually ran. False when OPENAI_API_KEY missing or embed failed. */
   vector_enabled: boolean;
   /** Post-auto-detect detail level. */
