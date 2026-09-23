@@ -81,7 +81,7 @@ const guardedGeneration = createGuardedGeneration(() => DEFAULT_MAX_OUTPUT_TOKEN
 // the signal to as `fetch(url, {signal})`; and (2) bounds the WHOLE call incl.
 // internal retries, not one attempt. Direct-`fetch` paths (multimodal) get the
 // signal explicitly. Rerank is already bounded by its recipe `default_timeout_ms`.
-function resolveAiTimeoutMs(envVar: string, fallback: number): number {
+export function resolveAiTimeoutMs(envVar: string, fallback: number): number {
   const raw = process.env[envVar];
   if (raw === undefined) return fallback;
   const n = Number(raw);

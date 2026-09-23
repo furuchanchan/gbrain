@@ -67,18 +67,18 @@ export async function advanceEffectCursor(engine: SqlEngine, effect: Persistence
 }
 
 export async function completeEffect(engine: SqlEngine, effect: PersistenceEffect, outcome: Record<string, unknown> = {}): Promise<void> {
-  await engine.executeRaw(`UPDATE persistence_effects SET state='committed',execution_token=NULL,claim_expires_at=NULL,error_code=NULL,
+  await engine.executeRaw(`UPDATE persistence_effects SET state='committed',execution_token=NULL,claim_expires_at=NULL,error_code=NULL,error_detail=NULL,
     outcome=$3::text::jsonb,updated_at=now() WHERE id=$1 AND execution_token=$2::uuid AND recovery IS NULL`,
   [effect.id, effect.execution_token, JSON.stringify(outcome)]);
 }
-export async function retryEffect(engine: SqlEngine, effect: PersistenceEffect, reason: string, delayMs = 1000): Promise<void> {
-  await engine.executeRaw(`UPDATE persistence_effects SET state='queued',execution_token=NULL,claim_expires_at=NULL,error_code=$3,
+export async function retryEffect(engine: SqlEngine, effect: PersistenceEffect, reason: string, delayMs = 1000, detail?: string): Promise<void> {
+  await engine.executeRaw(`UPDATE persistence_effects SET state='queued',execution_token=NULL,claim_expires_at=NULL,error_code=$3,error_detail=$5,
     next_attempt_at=now()+($4::double precision*interval '1 millisecond'),updated_at=now()
-    WHERE id=$1 AND execution_token=$2::uuid`, [effect.id, effect.execution_token, reason, delayMs]);
+    WHERE id=$1 AND execution_token=$2::uuid`, [effect.id, effect.execution_token, reason, delayMs, detail ?? null]);
 }
-export async function failEffect(engine: SqlEngine, effect: PersistenceEffect, reason: string): Promise<void> {
-  await engine.executeRaw(`UPDATE persistence_effects SET state='failed',execution_token=NULL,claim_expires_at=NULL,error_code=$3,updated_at=now()
-    WHERE id=$1 AND execution_token=$2::uuid AND recovery IS NULL`, [effect.id, effect.execution_token, reason]);
+export async function failEffect(engine: SqlEngine, effect: PersistenceEffect, reason: string, detail?: string): Promise<void> {
+  await engine.executeRaw(`UPDATE persistence_effects SET state='failed',execution_token=NULL,claim_expires_at=NULL,error_code=$3,error_detail=$4,updated_at=now()
+    WHERE id=$1 AND execution_token=$2::uuid AND recovery IS NULL`, [effect.id, effect.execution_token, reason, detail ?? null]);
 }
 
 /** Only public kind/state/reason, aggregated so withdrawal page counts cannot leak. */

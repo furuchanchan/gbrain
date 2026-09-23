@@ -25,6 +25,15 @@ import { dispatchFactsBackstopEffect } from './effect-facts.ts';
 import type { EffectRecovery, PersistenceEffect } from './effect-model.ts';
 import { recoveryStagingFile } from './staging.ts';
 import { selectEffectRecoveries } from './effect-recovery-scan.ts';
+import { resolveAiTimeoutMs } from '../ai/gateway.ts';
+
+/**
+ * #5274: an embed-deadline miss retries with linear backoff (30s × attempts,
+ * capped at 5 min) and fails terminally after 8 attempts, so a page a slow
+ * embedder can never finish degrades instead of re-embedding forever.
+ */
+const EFFECT_TIMEOUT_MAX_ATTEMPTS = 8;
+const EFFECT_TIMEOUT_MAX_DELAY_MS = 300_000;
 
 export interface EffectWorkerOptions {
   hostId: string;
@@ -124,10 +133,20 @@ async function embedPage(engine: BrainEngine, config: GBrainConfig, effect: Pers
   const chunks = prepared.chunks;
   const [stamp] = await engine.executeRaw<{ embedding_signature: string | null }>('SELECT embedding_signature FROM pages WHERE id=$1', [snapshot.page.id]);
   if (chunks.length && !(stamp?.embedding_signature === signature && chunks.every(chunk => chunk.embedding))) {
-    const deadline = AbortSignal.timeout(25_000);
+    const timeoutMs = resolveAiTimeoutMs('GBRAIN_EFFECT_EMBED_TIMEOUT_MS', 25_000);
+    const deadline = AbortSignal.timeout(timeoutMs);
     const signal = opts.signal ? AbortSignal.any([deadline, opts.signal]) : deadline;
     // Providers are never invoked while a native lock or DB transaction is held.
-    const vectors = await (opts.embedding?.embed ?? embedBatch)(wrapChunkTextsForStoredMode(prepared.snapshot.page, chunks), { abortSignal: signal, maxRetries: 0 });
+    let vectors: Awaited<ReturnType<typeof embedBatch>>;
+    try {
+      vectors = await (opts.embedding?.embed ?? embedBatch)(wrapChunkTextsForStoredMode(prepared.snapshot.page, chunks), { abortSignal: signal, maxRetries: 0 });
+    } catch (error) {
+      if (deadline.aborted && !opts.signal?.aborted) {
+        throw new OperationError('effect_timeout',
+          `The embedding provider did not finish this page within ${timeoutMs}ms. Raise GBRAIN_EFFECT_EMBED_TIMEOUT_MS for slow embedders.`);
+      }
+      throw error;
+    }
     if (vectors.length !== chunks.length) throw new OperationError('embedding_unavailable', 'The provider returned an incomplete embedding batch.');
     const installed = await engine.transaction(async tx => {
       await guardEffectSource(tx, effect, opts.hostId);
@@ -146,6 +165,12 @@ async function embedPage(engine: BrainEngine, config: GBrainConfig, effect: Pers
 
 async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, error: unknown): Promise<void> {
   const code = error instanceof OperationError ? error.code : 'effect_unavailable';
+  const detail = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  // effect_timeout is the classified embed-deadline miss (#5274): without a
+  // cap, a page that always misses the deadline re-embeds every ~30s forever.
+  if (code === 'effect_timeout' && effect.attempts >= EFFECT_TIMEOUT_MAX_ATTEMPTS) {
+    await failEffect(engine, effect, code, detail); return;
+  }
   // Source replacement is final only without recovery. Unknown physical bytes
   // retain their record and continue to block this root for explicit repair.
   if (code === 'source_changed' && !effect.recovery) {
@@ -153,7 +178,10 @@ async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, err
     const [source] = await engine.executeRaw<{ incarnation: string; archived: boolean }>('SELECT incarnation,archived FROM sources WHERE id=$1', [effect.source_id]);
     if (!current?.recovering && (!source || source.archived || source.incarnation !== effect.source_incarnation)) { await failEffect(engine, effect, code); return; }
   }
-  await retryEffect(engine, effect, code, ['projection_pending', 'revision_conflict', 'writer_busy', 'writer_pool_capacity'].includes(code) ? 250 : 30_000);
+  const delayMs = ['projection_pending', 'revision_conflict', 'writer_busy', 'writer_pool_capacity'].includes(code) ? 250
+    : code === 'effect_timeout' ? Math.min(EFFECT_TIMEOUT_MAX_DELAY_MS, 30_000 * Math.max(1, effect.attempts))
+    : 30_000;
+  await retryEffect(engine, effect, code, delayMs, detail);
 }
 
 /** Bounded, idempotent work. Recovery obtains kernel exclusion before a DB claim. */

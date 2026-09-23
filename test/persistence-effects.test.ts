@@ -199,3 +199,53 @@ test('Git retry disables legacy hooks, preserves unrelated staging and never reb
   expect(await publishGitEffect(root, 'page.md')).toMatchObject({ git: 'unchanged' });
   expect(git(root, ['rev-parse', 'HEAD'])).toBe(head);
 });
+
+import type { embedBatch } from '../src/core/embedding.ts';
+import { withEnv } from './helpers/with-env.ts';
+
+async function queueEmbeddingEffect() {
+  const f = await fixture(); const a = await admit(f); const row = (await claimNextWrite(engine, hostId))!;
+  expect(row.id).toBe(a.id);
+  await publishMutation(engine, row, { observedRevision: f.snapshot.revision, apply: async tx => {
+    await tx.putPage('page', page('Current'), { sourceId: f.sourceId }); return {};
+  } }, hostId);
+  const prepared = (await readProjectionSnapshot(engine, 'page', f.sourceId, { allowUnsealed: true }))!;
+  await installPageProjection(engine, prepared, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Current' }], { seal: true });
+  await onlyEffects(row.id);
+  return f;
+}
+
+const hangingEmbed: typeof embedBatch = async (_texts, o) => new Promise<never>((_, rej) => {
+  o?.abortSignal?.addEventListener('abort', () => rej(new Error('The operation timed out.')));
+});
+
+const effectRow = async (sourceId: string) => (await engine.executeRaw<{ state: string; error_code: string | null; error_detail: string | null; attempts: number; next_attempt_at: string }>(
+  "SELECT state,error_code,error_detail,attempts,next_attempt_at::text FROM persistence_effects WHERE kind='embedding' AND source_id=$1", [sourceId]))[0]!;
+
+test('an embed that misses the effect deadline records effect_timeout + detail, not effect_unavailable (#5274)', async () => {
+  const f = await queueEmbeddingEffect();
+  await withEnv({ GBRAIN_EFFECT_EMBED_TIMEOUT_MS: '50' }, async () => {
+    await runPersistenceEffects(engine, { engine: 'pglite' }, { hostId, limit: 1,
+      embedding: { signature: 'test:1536', model: 'test', embed: hangingEmbed } });
+  });
+  const effect = await effectRow(f.sourceId);
+  expect(effect.state).toBe('queued');
+  expect(effect.error_code).toBe('effect_timeout');
+  expect(effect.error_detail).toContain('GBRAIN_EFFECT_EMBED_TIMEOUT_MS');
+  expect(effect.attempts).toBe(1);
+});
+
+test('repeated effect_timeout fails terminally instead of re-embedding forever (#5274)', async () => {
+  const f = await queueEmbeddingEffect();
+  await withEnv({ GBRAIN_EFFECT_EMBED_TIMEOUT_MS: '50' }, async () => {
+    for (let i = 0; i < 8; i++) {
+      await engine.executeRaw("UPDATE persistence_effects SET next_attempt_at=now() WHERE kind='embedding' AND source_id=$1", [f.sourceId]);
+      await runPersistenceEffects(engine, { engine: 'pglite' }, { hostId, limit: 1,
+        embedding: { signature: 'test:1536', model: 'test', embed: hangingEmbed } });
+    }
+  });
+  const effect = await effectRow(f.sourceId);
+  expect(effect.state).toBe('failed');
+  expect(effect.error_code).toBe('effect_timeout');
+  expect(effect.attempts).toBe(8);
+});

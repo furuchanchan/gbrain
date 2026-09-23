@@ -7,6 +7,7 @@ ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS claim_expires_at timest
 ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS error_code text;
+ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS error_detail text;
 ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS outcome jsonb;
 ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS recovery jsonb;
 ALTER TABLE persistence_effects ADD COLUMN IF NOT EXISTS recovery_bytes bigint NOT NULL DEFAULT 0 CHECK (recovery_bytes>=0);
