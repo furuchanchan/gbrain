@@ -387,6 +387,13 @@ export async function doctorReportRemote(
   // v0.41.19.0 (Issue 5): sync --all consolidation nudge for multi-source brains.
   checks.push(await checkSyncConsolidation(engine));
 
+  // #5353: frozen durable sync cursor — pure DB read, but a receipt path is
+  // local-owner detail, so the remote surface gets aggregate counts only.
+  {
+    const { checkManagedSyncWedge } = await import('./checks/managed-sync-wedge.ts');
+    checks.push(await checkManagedSyncWedge(engine, { remote: true }));
+  }
+
   // v0.42.x (#1794, 4A): pool-budget nudge when GBRAIN_MAX_CONNECTIONS is set.
   checks.push(await checkPoolBudget(engine));
 

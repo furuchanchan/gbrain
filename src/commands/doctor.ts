@@ -4008,6 +4008,14 @@ export async function buildChecks(
     // v0.41.19.0 (Issue 5): sync --all consolidation nudge.
     progress.heartbeat('sync_consolidation');
     checks.push(await checkSyncConsolidation(engine));
+    // #5353: a terminal managed-sync write freezes its durable cursor —
+    // incremental sync replays blocked_by_failures while sync_freshness
+    // stays green (it measures commit lag, not cursor liveness).
+    progress.heartbeat('managed_sync_wedge');
+    {
+      const { checkManagedSyncWedge } = await import('./doctor/checks/managed-sync-wedge.ts');
+      checks.push(await checkManagedSyncWedge(engine));
+    }
     // v0.42.7 (#1696): link-extraction lag. --source scopes it (explicit-only
     // parse, like orphan_ratio); bare doctor stays brain-wide. Fix: extract --stale.
     progress.heartbeat('links_extraction_lag');
