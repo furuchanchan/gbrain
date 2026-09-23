@@ -2,6 +2,12 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [v0.52.40.0] — embed --stale surfaces per-page skip reasons
+
+`gbrain embed --stale` no longer silently drops pages the stale selector found — a missing/unsealed projection, projection text drift, or an install refusal now records a named failure with a stderr reason, and a run that selected chunks but embedded none ends with a warning that the backlog is unchanged.
+
+**Say to your agent:** "embed --stale tells you why a page was skipped instead of silently reporting success."
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
