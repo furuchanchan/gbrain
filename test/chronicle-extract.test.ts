@@ -106,10 +106,52 @@ describe('runChronicleExtract', () => {
     expect(await countEvents()).toBe(before);
   });
 
-  test('no events → no_events status', async () => {
+  test('dated page with no judge events emits a deterministic depth event', async () => {
     const none: ChronicleJudge = async () => ({ events: [] });
     const r = await runChronicleExtract(engine, { slug: 'meetings/2026-06-18-sync', judge: none });
+    expect(r.status).toBe('extracted');
+    expect(r.reason).toBe('deterministic_depth_fallback');
+    expect(r.events_written).toBe(1);
+    const day = await engine.getTimelineForDate('2026-06-18', { sourceId: 'default' });
+    expect(day.length).toBe(1);
+    expect(day[0].summary).toBe('Weekly sync');
+  });
+
+  test('undated page with no judge events stays no_events', async () => {
+    await engine.putPage('meetings/undated-x', { type: 'meeting', title: '', compiled_truth: LONG_BODY });
+    const none: ChronicleJudge = async () => ({ events: [] });
+    const r = await runChronicleExtract(engine, { slug: 'meetings/undated-x', judge: none });
     expect(r.status).toBe('no_events');
+    expect(r.events_written).toBe(0);
+  });
+
+  test('is idempotent across judge paraphrases for unchanged source content', async () => {
+    const paraphrase: ChronicleJudge = async () => ({
+      events: [{ when: '2026-06-18T15:30:00Z', who: ['people/alpha'], what: 'Follow-up ownership taken by Alpha', kind: 'commitment' }],
+    });
+    const first = await runChronicleExtract(engine, { slug: 'meetings/2026-06-18-sync', judge: paraphrase });
+    expect(first.status).toBe('extracted');
+    const other: ChronicleJudge = async () => ({
+      events: [{ when: '2026-06-18T15:30:00Z', who: ['people/alpha'], what: 'Alpha agreed to own the follow-up', kind: 'commitment' }],
+    });
+    const second = await runChronicleExtract(engine, { slug: 'meetings/2026-06-18-sync', judge: other });
+    expect(second.status).toBe('skipped');
+    expect(second.reason).toBe('already_extracted_for_source_hash');
+    expect(second.events_written).toBe(0);
+  });
+
+  test('honors the configured per-page event cap', async () => {
+    await engine.setConfig('chronicle.max_events_per_page', '2');
+    try {
+      const flood: ChronicleJudge = async () => ({
+        events: [0, 1, 2, 3].map((i) => ({ when: '2026-06-18T15:30:00Z', who: [], what: `event ${i}`, kind: 'meeting' })),
+      });
+      const r = await runChronicleExtract(engine, { slug: 'meetings/2026-06-18-sync', judge: flood });
+      expect(r.status).toBe('extracted');
+      expect(r.events_written).toBe(2);
+    } finally {
+      await engine.setConfig('chronicle.max_events_per_page', '');
+    }
   });
 
   // #2606: a truncated or unparseable judge response must NOT be recorded as

@@ -265,35 +265,96 @@ const chronicle_backfill: Operation = {
   localOnly: true,
   params: {
     since: { type: 'string', description: 'Only pages updated on/after this date (YYYY-MM-DD).' },
-    limit: { type: 'number', description: 'Max pages per type to sweep (default 1000).' },
+    limit: { type: 'number', description: 'Max pages per type to ENQUEUE (default config chronicle.backfill.limit, else 1000).' },
     dry_run: { type: 'boolean', description: 'Count eligible pages without enqueuing.' },
+    force: { type: 'boolean', description: 'Bypass the run-hour/cooldown gates for an explicit local run.' },
   },
   handler: async (ctx, p) => {
     const { isChronicleEligible } = await import('../chronicle/eligibility.ts');
     const TYPES = ['meeting', 'conversation', 'calendar-event'] as const;
-    const limit = typeof p.limit === 'number' ? p.limit : 1000;
+    const parseIntConfig = (raw: string | null, min: number, max = Number.MAX_SAFE_INTEGER): number | null => {
+      if (raw == null || raw.trim() === '') return null;
+      const n = Number(raw);
+      return Number.isSafeInteger(n) && n >= min && n <= max ? n : null;
+    };
+    const configuredLimit = parseIntConfig(await ctx.engine.getConfig('chronicle.backfill.limit'), 1);
+    const limit = typeof p.limit === 'number' ? p.limit : (configuredLimit ?? 1000);
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be a positive safe integer');
     const updated_after = typeof p.since === 'string' ? p.since : undefined;
     const dryRun = p.dry_run === true;
-    const scope = sourceScopeOpts(ctx);
-    type QueueLike = { add: (n: string, d: Record<string, unknown>) => Promise<unknown> };
-    let queue: QueueLike | null = null;
-    if (!dryRun) {
-      const { MinionQueue } = await import('../minions/queue.ts');
-      queue = new MinionQueue(ctx.engine) as unknown as QueueLike;
+    const [runHourRaw, cooldownRaw, lastRunAt] = await Promise.all([
+      ctx.engine.getConfig('chronicle.backfill.run_hour_utc'),
+      ctx.engine.getConfig('chronicle.backfill.cooldown_hours'),
+      ctx.engine.getConfig('chronicle.backfill.last_run_at'),
+    ]);
+    const runHourUtc = parseIntConfig(runHourRaw, 0, 23);
+    const cooldownHours = parseIntConfig(cooldownRaw, 1);
+    if (!dryRun && p.force !== true) {
+      const now = new Date();
+      if (runHourUtc !== null && now.getUTCHours() !== runHourUtc) {
+        return { scanned: 0, eligible: 0, enqueued: 0, dry_run: false,
+          skipped: 'scheduled_window_inactive', run_hour_utc: runHourUtc, limit, errors: [] };
+      }
+      if (cooldownHours !== null && lastRunAt) {
+        const next = new Date(lastRunAt).getTime() + cooldownHours * 60 * 60 * 1000;
+        if (Number.isFinite(next) && now.getTime() < next) {
+          return { scanned: 0, eligible: 0, enqueued: 0, dry_run: false,
+            skipped: 'cooldown_active', cooldown_hours: cooldownHours,
+            last_run_at: lastRunAt, next_run_at: new Date(next).toISOString(), limit, errors: [] };
+        }
+      }
     }
-    let scanned = 0, eligible = 0, enqueued = 0;
+    const scope = sourceScopeOpts(ctx);
+    const { MinionQueue } = await import('../minions/queue.ts');
+    const queue = dryRun ? null : new MinionQueue(ctx.engine);
+    // A completed no-event run IS work, and must advance the cursor. Keep the
+    // cursor source-bound, and accept only successful or in-flight ledger
+    // entries — a failed extraction must never suppress a retry.
+    const coveredRows = await ctx.engine.executeRaw<{
+      slug: string; source_id: string; covered_at: Date | string;
+    }>(
+      `SELECT data->>'slug' AS slug,
+         COALESCE(NULLIF(data->>'sourceId', ''), 'default') AS source_id,
+         MAX(COALESCE(finished_at, created_at)) AS covered_at
+       FROM minion_jobs
+       WHERE name = 'chronicle_extract' AND data->>'slug' IS NOT NULL
+         AND (status IN ('waiting', 'active', 'delayed', 'waiting-children')
+           OR (status = 'completed' AND (
+             result->>'status' IN ('extracted', 'no_events')
+             OR (result->>'status' = 'skipped' AND result->>'reason' = 'already_extracted_for_source_hash')
+           )))
+       GROUP BY data->>'slug', COALESCE(NULLIF(data->>'sourceId', ''), 'default')`,
+    );
+    const coveredAt = new Map<string, number>();
+    for (const row of coveredRows) {
+      const ts = new Date(row.covered_at).getTime();
+      if (Number.isFinite(ts)) coveredAt.set(JSON.stringify([row.source_id, row.slug]), ts);
+    }
+    let scanned = 0, eligible = 0, enqueued = 0, alreadyCovered = 0;
     const errors: { slug: string; error: string }[] = [];
     for (const type of TYPES) {
-      const pages = await ctx.engine.listPages({ type, updated_after, limit, ...scope });
+      // Scan past the enqueue cap so covered head rows cannot starve the tail.
+      const scanLimit = Math.min(50_000, Math.max(5_000, limit * 20));
+      const pages = await ctx.engine.listPages({ type, updated_after, limit: scanLimit, ...scope });
+      let typeEligible = 0;
       for (const page of pages) {
         scanned++;
         const dreamGenerated = (page.frontmatter as Record<string, unknown> | undefined)?.dream_generated === true;
         const elig = isChronicleEligible({ type: page.type, slug: page.slug, body: page.compiled_truth, dreamGenerated });
         if (!elig.ok) continue;
+        const sourceId = page.source_id;
+        const covered = coveredAt.get(JSON.stringify([sourceId, page.slug]));
+        const updated = new Date(page.updated_at).getTime();
+        if (covered !== undefined && Number.isFinite(updated) && covered >= updated) {
+          alreadyCovered++;
+          continue;
+        }
+        if (typeEligible >= limit) break;
+        typeEligible++;
         eligible++;
-        if (dryRun || !queue) continue;
+        if (!queue) continue;
         try {
-          await queue.add('chronicle_extract', { slug: page.slug, sourceId: page.source_id });
+          await queue.add('chronicle_extract', { slug: page.slug, sourceId });
           enqueued++;
         } catch (e) {
           // Never swallow — surface per-page failures (the #2057 no-swallow pattern).
@@ -301,7 +362,10 @@ const chronicle_backfill: Operation = {
         }
       }
     }
-    return { scanned, eligible, enqueued, dry_run: dryRun, errors };
+    if (!dryRun && enqueued > 0) {
+      await ctx.engine.setConfig('chronicle.backfill.last_run_at', new Date().toISOString());
+    }
+    return { scanned, eligible, enqueued, already_covered: alreadyCovered, dry_run: dryRun, limit, errors };
   },
   cliHints: { name: 'chronicle-backfill' },
 };

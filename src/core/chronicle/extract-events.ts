@@ -6,8 +6,9 @@
 //   →  write event pages (content-addressed, idempotent)  →  project to timeline
 //
 // The judge is injectable so the deterministic write path is testable without a
-// real gateway. The default judge calls the chat gateway; when no gateway is
-// configured it returns zero events (auto-emit is a no-op, never an error).
+// real gateway. The default judge calls the chat gateway; when it cannot return
+// sub-events, a DATED eligible page still emits one deterministic depth event
+// rather than disappearing from the timeline entirely.
 import type { BrainEngine } from '../engine.ts';
 import { computeContentHash } from '../ingestion/types.ts';
 
@@ -25,6 +26,7 @@ export interface ChronicleJudgeInput {
   body: string;
   effectiveDate: string | null;   // depth page effective_date (deterministic when)
   attendees: string[];            // deterministic who from frontmatter
+  maxEvents: number;              // hard output cap for the judge prompt
 }
 export interface ChronicleJudgeResult {
   events: ChronicleEventProposal[];
@@ -44,6 +46,16 @@ export interface ChronicleExtractResult {
   status: 'extracted' | 'no_events' | 'skipped';
   events_written: number;
   reason?: string;
+}
+
+const DEFAULT_MAX_EVENTS_PER_PAGE = 7;
+const CHRONICLE_EXTRACTION_VERSION = 'chronicle_extract_v2_source_hash';
+
+async function maxEventsPerPage(engine: BrainEngine): Promise<number> {
+  const raw = await engine.getConfig('chronicle.max_events_per_page');
+  if (raw == null || raw === '') return DEFAULT_MAX_EVENTS_PER_PAGE;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_EVENTS_PER_PAGE;
 }
 
 const KIND_VOCAB = new Set([
@@ -102,6 +114,45 @@ function collectAttendees(fm: Record<string, unknown>): string[] {
 }
 
 /**
+ * The facts a depth page already carries deterministically: its date, its
+ * title, and its frontmatter attendees. Invents nothing.
+ */
+function deterministicDepthEvent(input: {
+  pageType: string;
+  title: string;
+  effectiveDate: string | null;
+  attendees: string[];
+}): ChronicleEventProposal | null {
+  if (!input.effectiveDate || Number.isNaN(new Date(input.effectiveDate).getTime())) return null;
+  const kind = input.pageType === 'calendar-event'
+    ? 'event'
+    : input.pageType === 'conversation' ? 'call' : 'meeting';
+  const what = input.title.trim();
+  if (!what) return null;
+  return { when: input.effectiveDate, who: input.attendees, what: what.slice(0, 500), kind };
+}
+
+/** True when this exact body has already been extracted at this version. */
+async function hasCurrentChronicleEvents(
+  engine: BrainEngine,
+  opts: { slug: string; sourceId: string; sourceContentHash: string },
+): Promise<boolean> {
+  const pages = await engine.listPages({
+    type: 'event',
+    slugPrefix: 'life/events/',
+    sourceId: opts.sourceId,
+    limit: 5000,
+  });
+  return pages.some((page) => {
+    const fm = (page.frontmatter ?? {}) as Record<string, unknown>;
+    const event = (fm.event ?? {}) as Record<string, unknown>;
+    return event.depth === opts.slug &&
+      fm.source_content_hash === opts.sourceContentHash &&
+      fm.chronicle_extraction_version === CHRONICLE_EXTRACTION_VERSION;
+  });
+}
+
+/**
  * Run the chronicle extractor for one depth page. Idempotent: event slugs are
  * content-addressed (re-run upserts the same pages) and the projection upserts
  * on (event_page_id, date). A crash between writes re-runs to the same state.
@@ -116,20 +167,29 @@ export async function runChronicleExtract(
   if (!page) return { slug: opts.slug, status: 'skipped', events_written: 0, reason: 'page_not_found' };
 
   const fm = (page.frontmatter ?? {}) as Record<string, unknown>;
+  const sourceContentHash = computeContentHash(page.compiled_truth ?? '');
+  if (await hasCurrentChronicleEvents(engine, { slug: opts.slug, sourceId, sourceContentHash })) {
+    return {
+      slug: opts.slug, status: 'skipped', events_written: 0,
+      reason: 'already_extracted_for_source_hash',
+    };
+  }
   const edRaw = page.effective_date as unknown;
+  const slugDate = opts.slug.match(/(?:^|\/)(\d{4}-\d{2}-\d{2})(?:-|\/|$)/)?.[1] ?? null;
   const effectiveDate: string | null =
     edRaw instanceof Date ? edRaw.toISOString()
     : typeof edRaw === 'string' && edRaw ? edRaw
     : typeof fm.date === 'string' ? fm.date
-    : null;
+    : slugDate;
   const attendees = collectAttendees(fm);
+  const maxEvents = await maxEventsPerPage(engine);
 
   const judge = opts.judge ?? defaultJudge(engine);
   let result: ChronicleJudgeResult;
   try {
     result = await judge({
       slug: opts.slug, type: page.type, title: page.title,
-      body: page.compiled_truth ?? '', effectiveDate, attendees,
+      body: page.compiled_truth ?? '', effectiveDate, attendees, maxEvents,
     });
   } catch (e) {
     if ((e as Error)?.name === 'AbortError') throw e;
@@ -142,8 +202,16 @@ export async function runChronicleExtract(
   if (result?.failure) {
     return { slug: opts.slug, status: 'skipped', events_written: 0, reason: `judge_${result.failure}` };
   }
-  const proposals = Array.isArray(result?.events) ? result.events : [];
-  if (proposals.length === 0) return { slug: opts.slug, status: 'no_events', events_written: 0 };
+  let proposals = Array.isArray(result?.events) ? result.events.slice(0, maxEvents) : [];
+  let usedDeterministicFallback = false;
+  if (proposals.length === 0) {
+    const fallback = deterministicDepthEvent({
+      pageType: page.type, title: page.title, effectiveDate, attendees,
+    });
+    if (!fallback) return { slug: opts.slug, status: 'no_events', events_written: 0 };
+    proposals = [fallback];
+    usedDeterministicFallback = true;
+  }
   // PARSE BARRIER — reject the WHOLE batch on any malformed proposal; no partial writes.
   if (!proposals.every(isValidProposal)) {
     return { slug: opts.slug, status: 'skipped', events_written: 0, reason: 'malformed_proposal' };
@@ -168,6 +236,8 @@ export async function runChronicleExtract(
           kind: normalizeKind(ev.kind), depth: opts.slug,
         },
         captured_via: 'life-chronicle:auto',
+        chronicle_extraction_version: CHRONICLE_EXTRACTION_VERSION,
+        source_content_hash: sourceContentHash,
       },
       effective_date: safeDate(when),
     }, { sourceId });
@@ -176,7 +246,12 @@ export async function runChronicleExtract(
     });
     written++;
   }
-  return { slug: opts.slug, status: 'extracted', events_written: written };
+  return {
+    slug: opts.slug,
+    status: 'extracted',
+    events_written: written,
+    ...(usedDeterministicFallback ? { reason: 'deterministic_depth_fallback' } : {}),
+  };
 }
 
 const JUDGE_SYSTEM = `You segment a meeting/transcript page into discrete timeline EVENTS.
@@ -215,7 +290,8 @@ function defaultJudge(engine: BrainEngine): ChronicleJudge {
           content:
             `<page slug="${input.slug}" type="${input.type}" date="${input.effectiveDate ?? ''}">\n` +
             `${input.title}\n\n${body}\n</page>\n\n` +
-            `Known attendees: ${input.attendees.slice(0, 10).join(', ') || '(none)'}.\nExtract the events.`,
+            `Known attendees: ${input.attendees.slice(0, 10).join(', ') || '(none)'}.\n` +
+            `Extract at most ${input.maxEvents} material events.`,
         }],
         maxTokens,
       });

@@ -63,4 +63,60 @@ describe('chronicle_backfill op', () => {
       { slug: 'meetings/other-src', sourceId: 'other-src' },
     ]);
   });
+
+  test('honors the configured backfill limit when no explicit limit is supplied', async () => {
+    await engine.setConfig('chronicle.backfill.limit', '1');
+    try {
+      await engine.putPage('meetings/m1', { type: 'meeting', title: 'm1', compiled_truth: LONG });
+      await engine.putPage('meetings/m2', { type: 'meeting', title: 'm2', compiled_truth: LONG });
+      const r = await operationsByName.chronicle_backfill.handler(mkCtx(), {}) as { limit: number; enqueued: number; errors: unknown[] };
+      expect(r.limit).toBe(1);
+      expect(r.enqueued).toBe(1);
+      expect(r.errors).toHaveLength(0);
+    } finally {
+      await engine.setConfig('chronicle.backfill.limit', '');
+    }
+  });
+
+  test('advances past a completed no-events page instead of starving the next batch', async () => {
+    await engine.putPage('meetings/m1', { type: 'meeting', title: 'm1', compiled_truth: LONG });
+    await engine.putPage('meetings/m2', { type: 'meeting', title: 'm2', compiled_truth: LONG });
+
+    const first = await operationsByName.chronicle_backfill.handler(mkCtx(), { limit: 1 }) as { enqueued: number; already_covered: number };
+    expect(first.enqueued).toBe(1);
+    expect(first.already_covered).toBe(0);
+
+    const firstJobs = await engine.executeRaw<{ id: number; slug: string }>(
+      `SELECT id, data->>'slug' AS slug FROM minion_jobs WHERE name='chronicle_extract' ORDER BY id`);
+    expect(firstJobs).toHaveLength(1);
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET status='completed',
+         result='{"status":"no_events","events_written":0}'::jsonb,
+         finished_at=now(), updated_at=now() WHERE id=$1`, [firstJobs[0]!.id]);
+
+    const second = await operationsByName.chronicle_backfill.handler(mkCtx(), { limit: 1 }) as { enqueued: number; already_covered: number };
+    expect(second.enqueued).toBe(1);
+    expect(second.already_covered).toBe(1);
+
+    const allJobs = await engine.executeRaw<{ slug: string }>(
+      `SELECT data->>'slug' AS slug FROM minion_jobs WHERE name='chronicle_extract' ORDER BY id`);
+    expect(allJobs).toHaveLength(2);
+    expect(allJobs[1]!.slug).not.toBe(allJobs[0]!.slug);
+  });
+
+  test('skips outside the configured run hour unless forced', async () => {
+    const nextHour = (new Date().getUTCHours() + 1) % 24;
+    await engine.setConfig('chronicle.backfill.run_hour_utc', String(nextHour));
+    try {
+      await engine.putPage('meetings/m1', { type: 'meeting', title: 'm1', compiled_truth: LONG });
+      const skipped = await operationsByName.chronicle_backfill.handler(mkCtx(), {}) as { skipped?: string; enqueued: number };
+      expect(skipped.skipped).toBe('scheduled_window_inactive');
+      expect(skipped.enqueued).toBe(0);
+      const forced = await operationsByName.chronicle_backfill.handler(mkCtx(), { force: true }) as { enqueued: number; errors: unknown[] };
+      expect(forced.enqueued).toBe(1);
+      expect(forced.errors).toHaveLength(0);
+    } finally {
+      await engine.setConfig('chronicle.backfill.run_hour_utc', '');
+    }
+  });
 });
