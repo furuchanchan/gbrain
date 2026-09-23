@@ -840,11 +840,11 @@ export const BUILTIN_PATTERNS: readonly PatternEntry[] = [
     // Serialized-utterance shape seen when a renderer interpolates a
     // structured speaker object instead of a display name (#5364):
     // `{'source': 'microphone', 'attribution': 'me'}: text`
-    // The greedy `[^}]*` before the key group makes the capture land on
-    // the LAST 'name'/'attribution' key in the dict, so a line carrying
-    // both (`'attribution': 'them', 'name': 'alice'`) yields 'alice',
-    // falling back to 'me'/'them' when 'name' is absent.
-    regex: /^\{[^}]*'(?:name|attribution)':\s*'([^']+)'[^}]*\}:\s+(.*)$/,
+    // The top-level alternation tries `'name'` across the whole dict
+    // before falling back to `'attribution'`, so 'name' wins regardless
+    // of key order — `{'name': 'alice', 'attribution': 'them'}` yields
+    // 'alice', and 'me'/'them' is used only when 'name' is absent.
+    regex: /^\{(?:[^}]*'name':\s*|[^}]*'attribution':\s*)'([^']+)'[^}]*\}:\s+(.*)$/,
     captures: {
       speaker_group: 1,
       text_group: 2,
@@ -858,6 +858,7 @@ export const BUILTIN_PATTERNS: readonly PatternEntry[] = [
     test_positive: [
       "{'source': 'microphone', 'attribution': 'me'}: hello",
       "{'source': 'speaker', 'attribution': 'them', 'name': 'someone'}: hi there",
+      "{'source': 'speaker', 'name': 'someone', 'attribution': 'them'}: name key first",
       "{'attribution': 'me'}: bare dict form",
     ],
     test_negative: [

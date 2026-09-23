@@ -1397,3 +1397,25 @@ describe('date-fallback anchoring applies to every pattern (#4681)', () => {
     expect('date_fallback_count' in JSON.parse(JSON.stringify(r))).toBe(false);
   });
 });
+
+describe('python-dict-utterance — serialized speaker objects (#5364)', () => {
+  test("'name' wins over 'attribution' regardless of dict key order", () => {
+    const body = [
+      "{'source': 'speaker', 'attribution': 'them', 'name': 'Beta Example'}: name declared last",
+      "{'source': 'speaker', 'name': 'Beta Example', 'attribution': 'them'}: name declared first",
+    ].join('\n');
+    const r = parseConversation(body, { fallbackDate: '2026-06-02' });
+    expect(r.matched_pattern_id).toBe('python-dict-utterance');
+    expect(r.messages).toHaveLength(2);
+    expect(r.messages[0].speaker).toBe('Beta Example');
+    expect(r.messages[1].speaker).toBe('Beta Example');
+  });
+
+  test("falls back to 'attribution' when 'name' is absent", () => {
+    const body = "{'source': 'microphone', 'attribution': 'me'}: hello";
+    const r = parseConversation(body, { fallbackDate: '2026-06-02' });
+    expect(r.matched_pattern_id).toBe('python-dict-utterance');
+    expect(r.messages).toHaveLength(1);
+    expect(r.messages[0].speaker).toBe('me');
+  });
+});

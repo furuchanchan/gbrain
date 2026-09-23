@@ -494,7 +494,7 @@ describe('runExtractConversationFactsCore', () => {
       title: 'Serialized-payload transcript',
       compiled_truth: [
         "{'source': 'microphone', 'attribution': 'me'}: first",
-        "{'source': 'speaker', 'attribution': 'them', 'name': 'Beta Example'}: second",
+        "{'source': 'speaker', 'name': 'Beta Example', 'attribution': 'them'}: second",
         "{'source': 'microphone', 'attribution': 'me'}: third",
       ].join('\n'),
       timeline: '',
