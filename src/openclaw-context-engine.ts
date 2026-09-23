@@ -6,7 +6,12 @@
  * sessions lose track of the user's current time, location, and state.
  *
  * Enable in openclaw.json:
- *   plugins.slots.contextEngine: "gbrain-context"
+ *   plugins.slots.contextEngine: "gbrain-context-engine"
+ *
+ * (OpenClaw 2026.9+ reads the slot value as BOTH a plugin id for activation
+ * and an engine id for turn resolution; the engine registers under the
+ * plugin id as well as its original `gbrain-context` id, so either value
+ * resolves — see gbrain#5343.)
  *
  * @module
  */
@@ -63,19 +68,34 @@ interface PluginCtx {
   [key: string]: unknown;
 }
 
+const PLUGIN_ID = 'gbrain-context-engine';
+
+function buildEngine(ctx: PluginCtx, engineId: string) {
+  const hostResolver =
+    typeof ctx.resolveEntities === 'function'
+      ? ctx.resolveEntities
+      : typeof ctx.brainQuery === 'function'
+        ? ctx.brainQuery
+        : undefined;
+  const engine = createGBrainContextEngine({
+    workspaceDir: ctx.workspaceDir,
+    resolveEntities: hostResolver,
+  }) as { info: { id: string } };
+  // The returned engine's info.id must match the id it was registered
+  // under — hosts that look the slot value up in the engine registry may
+  // compare the two.
+  engine.info.id = engineId;
+  return engine;
+}
+
 export function register(api: PluginApi) {
-  api.registerContextEngine(ENGINE_ID, (ctx: PluginCtx) => {
-    const hostResolver =
-      typeof ctx.resolveEntities === 'function'
-        ? ctx.resolveEntities
-        : typeof ctx.brainQuery === 'function'
-          ? ctx.brainQuery
-          : undefined;
-    return createGBrainContextEngine({
-      workspaceDir: ctx.workspaceDir,
-      resolveEntities: hostResolver,
-    });
-  });
+  api.registerContextEngine(ENGINE_ID, (ctx) => buildEngine(ctx, ENGINE_ID));
+  // OpenClaw 2026.9+ resolves plugins.slots.contextEngine as both a plugin
+  // id (activation) and an engine id (turn resolution) — the same string
+  // must satisfy both lookups, so the engine also registers under the
+  // plugin id. Older hosts key the slot on the engine id alone, which the
+  // ENGINE_ID registration above keeps serving. (#5343)
+  api.registerContextEngine(PLUGIN_ID, (ctx) => buildEngine(ctx, PLUGIN_ID));
 }
 
 const entry: PluginEntry = {

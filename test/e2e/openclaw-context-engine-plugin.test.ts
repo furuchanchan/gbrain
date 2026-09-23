@@ -61,9 +61,31 @@ describe('openclaw-context-engine plugin entry', () => {
 
     (pluginEntry as PluginEntryShape).register(stubApi);
 
-    expect(calls).toHaveLength(1);
+    // OpenClaw 2026.9+ resolves the contextEngine slot as both a plugin id
+    // and an engine id, so the engine registers under both names (#5343).
+    expect(calls).toHaveLength(2);
     expect(calls[0].id).toBe(ENGINE_ID);
+    expect(calls[1].id).toBe('gbrain-context-engine');
     expect(typeof calls[0].factory).toBe('function');
+    expect(typeof calls[1].factory).toBe('function');
+  });
+
+  it('the plugin-id registration reports a matching engine info.id', () => {
+    type RegisterCall = { id: string; factory: (ctx: { workspaceDir: string }) => any };
+    const calls: RegisterCall[] = [];
+    (pluginEntry as PluginEntryShape).register({
+      registerContextEngine: (id: string, factory: RegisterCall['factory']) => {
+        calls.push({ id, factory });
+      },
+    });
+    const tmp = mkdtempSync(join(tmpdir(), 'gbrain-plugin-id-'));
+    try {
+      for (const call of calls) {
+        expect(call.factory({ workspaceDir: tmp }).info.id).toBe(call.id);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('factory returns a working ContextEngine bound to the workspace', async () => {

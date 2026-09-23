@@ -114,7 +114,8 @@
   },
   "contracts": {
     "contextEngines": [
-      "gbrain-context"
+      "gbrain-context",
+      "gbrain-context-engine"
     ]
   }
 }

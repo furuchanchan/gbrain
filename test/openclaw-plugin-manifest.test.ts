@@ -138,6 +138,9 @@ describe('root OpenClaw plugin manifest', () => {
     expect(manifest.configSchema).toBeDefined();
     expect(typeof manifest.configSchema).toBe('object');
     expect(manifest.contracts?.contextEngines).toContain('gbrain-context');
+    // OpenClaw 2026.9+ resolves the contextEngine slot as both a plugin id
+    // and an engine id — the contract advertises both registered ids (#5343).
+    expect(manifest.contracts?.contextEngines).toContain('gbrain-context-engine');
     expect(entrySource).toContain('export function register');
   });
 

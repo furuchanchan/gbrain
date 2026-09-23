@@ -16,20 +16,24 @@ manifest carries an `mcpServers.gbrain` entry that runs the bundled
 plugins use; it resolves your installed `gbrain` via `GBRAIN_BIN`, then
 `~/.bun/bin/gbrain`, then `PATH`, so it works under launchd's bare PATH and
 never needs a build step) plus the bundled skills — and declares the
-`gbrain-context` context engine. To route OpenClaw's context-engine slot
+context engine (registered under both `gbrain-context-engine` and
+`gbrain-context`). To route OpenClaw's context-engine slot
 through gbrain, two steps, in this order:
 
 1. Install and enable the plugin by its own id, `gbrain-context-engine`
    (the `id` in `openclaw.plugin.json`).
-2. Set the slot to the engine id the plugin registers:
+2. Set the slot to the plugin id — on OpenClaw 2026.9+ the slot value is
+   looked up as both a plugin id and an engine id:
 
    ```
-   plugins.slots.contextEngine = gbrain-context
+   plugins.slots.contextEngine = gbrain-context-engine
    ```
 
-The slot value is the engine id, not the plugin id, so setting the slot alone
-does not activate the plugin — and an unregistered engine falls back to
-OpenClaw's default silently. Do step 1 first.
+The plugin registers the engine under both `gbrain-context-engine` and the
+original `gbrain-context` id, so the `gbrain-context` slot value keeps
+working on hosts that key the slot on the engine id alone. Setting the slot
+alone does not activate the plugin — and an unregistered engine falls back
+to OpenClaw's default silently. Do step 1 first.
 
 ## Option 2: `openclaw mcp add`
 
