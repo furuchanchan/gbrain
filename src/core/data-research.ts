@@ -381,31 +381,43 @@ export function stripEmailHtml(html: string): string {
     text = text.slice(0, MAX_HTML_SIZE) + '\n...[truncated]';
   }
 
-  // Phase 1: Remove <style> and <script> blocks entirely
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+  // Decoding can REVEAL markup, so decode and strip together until the text
+  // is stable. Bounded at four passes so hostile input cannot spin here; in
+  // practice singly-encoded input converges on pass two (#5327).
+  for (let pass = 0; pass < 4; pass++) {
+    const before = text;
 
-  // Phase 2: Convert block elements to newlines
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
+    // Phase 1: Decode HTML entities
+    text = text.replace(/&nbsp;/gi, ' ');
+    text = text.replace(/&amp;/gi, '&');
+    text = text.replace(/&lt;/gi, '<');
+    text = text.replace(/&gt;/gi, '>');
+    text = text.replace(/&quot;/gi, '"');
+    text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
 
-  // Phase 3: Strip remaining HTML tags (non-greedy)
-  text = text.replace(/<[^>]*?>/g, '');
+    // Phase 2: Remove comments, conditional blocks, <style> and <script>
+    text = text.replace(/<!--[\s\S]*?-->/g, '');
+    text = text.replace(/<!\[if\s[^\]]*mso[^\]]*\]>[\s\S]*?<!\[endif\]>/gi, '');
+    text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+    text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
 
-  // Phase 4: Strip inline CSS artifacts (skip on large inputs for performance)
+    // Phase 3: Convert block elements to newlines
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
+
+    // Phase 4: Strip remaining TAG-SHAPED markup, preserving plain "<" and ">"
+    text = text.replace(/<\/?[a-z][^>]*?>/gi, '');
+    text = text.replace(/<(?:!doctype|\?xml)[^>]*?>/gi, '');
+
+    if (text === before) break;
+  }
+
+  // Phase 5: Strip inline CSS artifacts (skip on large inputs for performance)
   if (text.length < 100000) {
     text = text.replace(/@media[^{]*\{[^}]*\}/g, '');
     text = text.replace(/\.[a-zA-Z][\w-]*\s*\{[^}]*\}/g, '');
     text = text.replace(/#[a-zA-Z][\w-]*\s*\{[^}]*\}/g, '');
   }
-
-  // Phase 5: Decode HTML entities
-  text = text.replace(/&nbsp;/gi, ' ');
-  text = text.replace(/&amp;/gi, '&');
-  text = text.replace(/&lt;/gi, '<');
-  text = text.replace(/&gt;/gi, '>');
-  text = text.replace(/&quot;/gi, '"');
-  text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
 
   // Phase 6: Collapse whitespace
   text = text.replace(/[ \t]+/g, ' ');

@@ -261,6 +261,42 @@ describe('data-research', () => {
       expect(result).toContain('>');
     });
 
+    test('#5327 — strips entity-REVEALED markup (decoded tags, css, conditional blocks)', () => {
+      // Decoding last left everything that arrived entity-encoded untouched:
+      // the decode step re-materialized <style>/<div> AFTER the strip phases
+      // had already run, so encoded markup survived into the page body.
+      const encoded = [
+        '&lt;style&gt;.quoted_reply { display:none } css junk&lt;/style&gt;',
+        '&lt;div class=&quot;quoted_reply&quot;&gt;Human &amp;nbsp; message&lt;/div&gt;',
+        '&lt;!--[if mso]&gt;&lt;style&gt;.cond { color:red }&lt;/style&gt;CONDITIONAL JUNK&lt;![endif]--&gt;',
+        'Keep&amp;nbsp;&amp;nbsp;text',
+        '&amp;lt;div&amp;gt;Double encoded body&amp;lt;/div&amp;gt;',
+      ].join('\n');
+      const result = stripEmailHtml(encoded);
+      expect(result).toContain('Human');
+      expect(result).toContain('message');
+      expect(result).toContain('Keep');
+      expect(result).toContain('text');
+      expect(result).toContain('Double encoded body');
+      expect(result).not.toContain('css junk');
+      expect(result).not.toContain('display:none');
+      expect(result).not.toContain('CONDITIONAL JUNK');
+      expect(result).not.toContain('color:red');
+      expect(result).not.toContain('&lt;');
+      expect(result).not.toContain('&gt;');
+      expect(result).not.toContain('&nbsp;');
+      expect(result).not.toContain('<div');
+      expect(result).not.toContain('<style');
+    });
+
+    test('#5327 — comments and plain angle brackets survive correctly', () => {
+      expect(stripEmailHtml('a <!-- hidden note --> b')).toBe('a b');
+      // tag-shaped regex: a bare "<" in prose is not a tag and must survive
+      const cmp = stripEmailHtml('x &lt; y and 1 &lt; 2');
+      expect(cmp).toContain('x < y');
+      expect(cmp).toContain('1 < 2');
+    });
+
     test('truncates >500KB input (ReDoS prevention)', () => {
       // Use a string just over 500KB to trigger truncation
       const huge = '<p>' + 'x'.repeat(510 * 1024) + '</p>';
