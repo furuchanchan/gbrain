@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.13.0] - 2026-09-23
+
+**OpenClaw 2026.9 finds the context engine again.** The 2026.9 slot expects a
+plugin to register its engine under the plugin's own id; gbrain registered
+only under the engine name, so the slot failed to resolve and context
+injection silently went absent. The engine now registers under both ids —
+existing installs keep working, and 2026.9 resolves the slot it asked for.
+
+**Say to your agent:** *"Update the gbrain plugin in OpenClaw 2026.9 and the
+context slot resolves without config changes."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
