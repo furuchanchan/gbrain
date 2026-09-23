@@ -2,6 +2,18 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.21.0] - 2026-09-23
+
+**Backup coverage proves the remote actually has your brain.** The monthly
+backup check used to verify only that an `origin` URL was configured — a
+deleted repo, revoked credential, or unpushed branch still read green. The
+probe now runs `git ls-remote` against origin and reports the real state:
+missing remote, missing branch, unpushed commits, or offline (warn-only when
+the network is down, never a false failure).
+
+**Say to your agent:** *"Run `gbrain backup` — coverage now reflects what the
+remote really holds."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
