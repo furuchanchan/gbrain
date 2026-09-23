@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.24.0] - 2026-09-23
+
+**Google embedding batches fill the provider's real limit.** The google recipe
+capped batches at a conservative default far below the provider's 100-request
+cap — large reindexes ran roughly 3× more round-trips than necessary.
+`max_batch_items` now declares the real 100-item cap, so embedding sweeps
+finish in a third of the calls.
+
+**Say to your agent:** *"Re-run a bulk embed — batches now pack to the
+provider limit."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
