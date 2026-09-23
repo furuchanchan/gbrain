@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.30.0] - 2026-09-23
+
+**Connector sources get a real refusal, not 'not a git repository'.** A
+managed brain could try to sync a connector source (Gmail, calendar) through
+the filesystem path and fail with a bare git error. Source kind is now checked
+before the git probe, so a connector source gets a typed refusal that names
+the actual problem instead of a misleading filesystem diagnosis.
+
+**Say to your agent:** *"Sync that source again — the error now says it is a
+connector, not a filesystem failure."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
