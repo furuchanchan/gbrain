@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.23.0] - 2026-09-23
+
+**Expiring facts keep their exact expiry time.** A `valid_until` fact written
+with a precise timestamp used to round-trip to a coarse day — an expiry meant
+for 17:00 quietly became end-of-day, and one meant for the next morning
+shifted the whole window. Fence cells now preserve instant precision, so
+time-boxed facts expire when you said they would.
+
+**Say to your agent:** *"Nothing to run — new `valid_until` values keep their
+timestamps."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
