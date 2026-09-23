@@ -27,7 +27,7 @@
 
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import type { VoiceGateMode } from './templates.ts';
-import { TIER_DEFAULTS } from '../model-config.ts';
+import { resolveTierDefault } from '../model-config.ts';
 
 /**
  * Verdict the Haiku judge returns for a candidate string. Pass-through
@@ -147,7 +147,7 @@ CANDIDATE:
 {CANDIDATE}`;
 
 /**
- * Default judge — Haiku-based rubric verdict. Production path; tests
+ * Default judge — utility-tier rubric verdict. Production path; tests
  * inject a stub.
  */
 export async function defaultJudge(input: {
@@ -160,7 +160,7 @@ export async function defaultJudge(input: {
     .replace('{CANDIDATE}', input.candidate);
   const result = await gatewayChat({
     messages: [{ role: 'user', content: prompt }],
-    model: TIER_DEFAULTS.utility,
+    model: resolveTierDefault('utility'),
     maxTokens: 100,
   });
   return parseJudgeOutput(result.text);
