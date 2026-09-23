@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.22.0] - 2026-09-23
+
+**A stuck write stops bouncing between queued and running.** A write claim
+that kept expiring — crash loop, wedged worker — used to requeue forever,
+starving every write behind it. Claims now carry a durable attempt counter;
+after the bound is exhausted the write fails terminally with a typed reason
+and frees the queue for the work behind it.
+
+**Say to your agent:** *"Nothing to run — bounded claim retries apply from the
+next queued write."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
