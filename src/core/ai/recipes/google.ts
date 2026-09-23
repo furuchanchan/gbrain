@@ -59,6 +59,12 @@ export const google: Recipe = {
       // staying efficient. chars_per_token ~4 matches Gemini's SentencePiece
       // density on English. Tunable; recursion stays the backstop.
       max_batch_tokens: 20_000,
+      // BatchEmbedContentsRequest caps at 100 requests per batch — a hard
+      // COUNT limit the token budget can't bound (one-line facts stay far
+      // under 20k tokens while sailing past 100 items). Without this the
+      // whole array rode out as one request and the provider rejected the
+      // entire page's facts wholesale. (#5321)
+      max_batch_items: 100,
       chars_per_token: 4,
       safety_factor: 0.8,
     },
