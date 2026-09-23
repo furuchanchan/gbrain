@@ -969,6 +969,90 @@ describe('v0.32.4 — sync_freshness check', () => {
     // must include the id so the CLI command actually works.
     expect(result.message).toContain(`'wiki-id'`);
   });
+
+  // #5353: the durable managed-sync cursor persists a frozen `pending` write;
+  // when that write is terminal-non-committed and no lock is running, every
+  // incremental run replays the dead request (blocked_by_failures) while
+  // last_sync_at keeps the check green. Stub shapes the three executeRaw
+  // calls the check makes: sources → op_checkpoints → persistence_requests.
+  function makeWedgeStub(sourceRows: any[], cursorHeaders: any[], requestState: string | null): any {
+    return {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('op_checkpoints')) {
+          return cursorHeaders.map((completed_keys) => ({ completed_keys }));
+        }
+        if (sql.includes('persistence_requests')) {
+          return requestState === null ? [] : [{ state: requestState }];
+        }
+        return sourceRows;
+      },
+    };
+  }
+
+  test('#5353 — cursor frozen on a dead (failed) write while last_sync_at is fresh → fail "wedged"', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    const engine = makeWedgeStub(
+      [{ id: 'wiki', name: '', local_path: '/tmp/wiki', last_sync_at: agoMs(60 * 1000) }],
+      [[{ sourceId: 'wiki', done: false, index: 3, total: 9, pending: { requestId: 'req-dead-1' } }]],
+      'failed',
+    );
+    const result = await checkSyncFreshness(engine);
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('wedged managed-sync lane');
+    expect(result.message).toContain(`'wiki'`);
+    expect(result.message).toContain('--retry-failed');
+  });
+
+  test('#5353 — frozen dead write of state conflict/cancelled also wedges the lane', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    for (const state of ['conflict', 'cancelled']) {
+      const engine = makeWedgeStub(
+        [{ id: 'wiki', name: '', local_path: '/tmp/wiki', last_sync_at: agoMs(60 * 1000) }],
+        [[{ sourceId: 'wiki', done: false, index: 0, total: 4, pending: { requestId: 'req-dead-2' } }]],
+        state,
+      );
+      const result = await checkSyncFreshness(engine);
+      expect(result.status).toBe('fail');
+      expect(result.message).toContain('wedged managed-sync lane');
+    }
+  });
+
+  test('#5353 — unfinished cursor with an in-flight pending write → no wedge (normal resume)', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    const engine = makeWedgeStub(
+      [{ id: 'wiki', name: '', local_path: '/tmp/wiki', last_sync_at: agoMs(60 * 1000) }],
+      [[{ sourceId: 'wiki', done: false, index: 3, total: 9, pending: { requestId: 'req-live-1' } }]],
+      'running',
+    );
+    const result = await checkSyncFreshness(engine);
+    expect(result.status).toBe('ok');
+  });
+
+  test('#5353 — done cursor and cursor without pending are never wedges', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    const engine = makeWedgeStub(
+      [{ id: 'wiki', name: '', local_path: '/tmp/wiki', last_sync_at: agoMs(60 * 1000) }],
+      [
+        [{ sourceId: 'wiki', done: true, index: 9, total: 9, pending: { requestId: 'req-done' } }],
+        [{ sourceId: 'wiki', done: false, index: 2, total: 9 }], // enumerated, nothing frozen yet
+      ],
+      'failed', // even a failed-looking request row must not fire on non-pending cursors
+    );
+    const result = await checkSyncFreshness(engine);
+    expect(result.status).toBe('ok');
+  });
+
+  test('#5353 — missing op_checkpoints table (pre-managed brain) → staleness check unaffected', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    const engine: any = {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('op_checkpoints')) throw new Error('relation "op_checkpoints" does not exist');
+        return [{ id: 'wiki', name: '', local_path: '/tmp/wiki', last_sync_at: agoMs(60 * 1000) }];
+      },
+    };
+    const result = await checkSyncFreshness(engine);
+    expect(result.status).toBe('ok');
+  });
 });
 
 // ============================================================================

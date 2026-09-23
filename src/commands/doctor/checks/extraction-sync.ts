@@ -1263,6 +1263,37 @@ export async function checkSyncFreshness(
     // source is judged against the same number (and the env read + warn-once
     // machinery runs once, not once per source).
     const stalenessCeilingSeconds = resolveStalenessCeilingSeconds();
+
+    // #5353: wedged managed-sync lane. `gbrain sync`'s durable cursor
+    // (op_checkpoints, op='managed-sync') persists the frozen `pending`
+    // write across runs; when that write is in a terminal non-committed
+    // state and nothing holds a live sync lock, every incremental run
+    // replays the SAME dead request — `blocked_by_failures` forever, while
+    // `last_sync_at` keeps this check green. Read the cursors + pending
+    // request states once for all sources; a missing op_checkpoints /
+    // persistence_requests table (pre-managed-persistence brain, stub
+    // engine) swallows to an empty map so this can only ADD a wedge
+    // verdict, never mask staleness.
+    const wedgedLanes = new Map<string, { requestId: string; index: number; total: number }>();
+    try {
+      const cursorRows = await engine.executeRaw<{
+        completed_keys: [{ sourceId?: string; done?: boolean; index?: number; total?: number;
+          pending?: { requestId?: string } }];
+      }>(`SELECT completed_keys FROM op_checkpoints WHERE op='managed-sync'`);
+      for (const row of cursorRows ?? []) {
+        const header = row.completed_keys?.[0];
+        const requestId = header?.pending?.requestId;
+        if (!header?.sourceId || header.done === true || !requestId) continue;
+        try {
+          const [req] = await engine.executeRaw<{ state: string }>(
+            `SELECT state FROM persistence_requests WHERE id=$1::uuid`, [requestId]);
+          if (req && (req.state === 'failed' || req.state === 'conflict' || req.state === 'cancelled')) {
+            wedgedLanes.set(header.sourceId, { requestId, index: header.index ?? 0, total: header.total ?? 0 });
+          }
+        } catch { /* persistence_requests unavailable on this engine — skip */ }
+      }
+    } catch { /* no op_checkpoints table — not a managed-persistence brain */ }
+
     for (const source of sources) {
       // Embed source.id in user-visible messages so `gbrain sync --source <id>`
       // matches what the user copy-pastes. Show display name in parens when set.
@@ -1298,6 +1329,23 @@ export async function checkSyncFreshness(
           `Source ${display} has held the sync lock for ${heldFor} ` +
           `(pid ${liveSnap.holder_pid} on ${liveSnap.holder_host}) — heartbeating but not finishing. ` +
           `Run \`gbrain sync --break-lock --source ${source.id}\` after confirming the holder is wedged.`,
+        );
+        hasFailures = true;
+        stale_count++;
+        continue;
+      }
+
+      // #5353: no live lock + the durable cursor's frozen pending write is
+      // dead → the incremental lane is permanently blocked even though
+      // last_sync_at reads fresh. Fails (not warn): agent writes silently
+      // stop reaching the brain, the exact invisibility this issue reports.
+      const wedge = wedgedLanes.get(source.id);
+      if (wedge) {
+        issues.push(
+          `Source ${display} has a wedged managed-sync lane — durable cursor frozen on a dead write ` +
+          `(entry ${wedge.index + 1}/${wedge.total}); every incremental sync replays the same ` +
+          `blocked_by_failures. Run \`gbrain sync --source ${source.id} --retry-failed\` after fixing ` +
+          `the failing file (see sync-failures.jsonl).`,
         );
         hasFailures = true;
         stale_count++;
