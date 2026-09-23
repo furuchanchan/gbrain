@@ -36,7 +36,14 @@ import {
 
 const REPO_ROOT = resolve(import.meta.dir, '..');
 const SRC_PATH = resolve(REPO_ROOT, 'src/commands/extract-conversation-facts.ts');
-const SRC = readFileSync(SRC_PATH, 'utf-8');
+// The console summary (including the lock-busy exit-3 path) is peeled to a
+// sibling module; structural guards cover the whole command surface.
+const SRC = [
+  SRC_PATH,
+  resolve(REPO_ROOT, 'src/commands/extract-conversation-facts-summary.ts'),
+]
+  .map((p) => readFileSync(p, 'utf-8'))
+  .join('\n');
 
 beforeEach(() => {
   _resetLockBusyLogCacheForTest();
@@ -136,7 +143,7 @@ describe('extract-conversation-facts — structural contracts (T5)', () => {
 
   test('exit 3 fires when lock-busy pages remain (codex #3)', () => {
     expect(SRC).toMatch(
-      /pages_lock_skipped\s*>\s*0[\s\S]{0,200}process\.exit\(3\)/,
+      /pages_lock_skipped\s*>\s*0[\s\S]{0,200}(?:process\.exit\(3\)|return 3)/,
     );
   });
 
