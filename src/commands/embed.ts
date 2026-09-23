@@ -1908,12 +1908,32 @@ async function embedAllStale(
           // NORMAL post-model-migration path, so raw-text embedding here
           // quietly converted whole corpora to the unwrapped convention.
           const prepared = await observed(pacer, () => readProjectionSnapshot(engine, slug, keySourceId));
-          if (!prepared) return;
+          // #5289: was a silent return — a page with no sealed projection
+          // (managed brain / pending projection job) skipped embed forever
+          // while --stale kept selecting its NULL chunks: the exact silent
+          // no-op the issue reports. Record + name it so the run cannot
+          // read as a clean pass.
+          if (!prepared) {
+            const err = new Error('no sealed page projection snapshot — the projection is pending or missing; the stale chunks cannot be re-embedded until projections settle');
+            recordFailure(result, stale.length, slug, err);
+            serr(`\n  ${slug}: skipped — no sealed projection snapshot (${stale.length} stale chunk(s) left)`);
+            noteEmbedQuarantineFailure(key, slug);
+            return;
+          }
           const selected = new Map(stale.map(c => [c.chunk_index, c]));
           const existing = prepared.chunks;
           stale = existing.filter(c => selected.get(c.chunk_index)?.chunk_text === c.chunk_text)
             .map(c => ({ ...selected.get(c.chunk_index)!, ...c }));
-          if (!stale.length) return;
+          // #5289: was a silent return — the projection's rebuilt
+          // chunk_text diverged from the stored stale rows, so every row
+          // filtered out and the page was skipped without a word.
+          if (!stale.length) {
+            const err = new Error('projection chunk_text no longer matches the stored stale rows — the stale set cannot be re-embedded against this projection');
+            recordFailure(result, selected.size, slug, err);
+            serr(`\n  ${slug}: skipped — ${selected.size} stored stale chunk(s) no longer match the projection (${existing.length} live chunk(s))`);
+            noteEmbedQuarantineFailure(key, slug);
+            return;
+          }
           const pageRow = prepared.snapshot.page;
           const { embeddings, failed, firstError } = await embedPageTexts(
             wrapChunkTextsForStoredMode(pageRow, stale), { abortSignal: effectiveSignal });
@@ -1942,7 +1962,16 @@ async function embedAllStale(
               await restampIfDemotedToTitleTier(tx, prepared.snapshot.page, slug, keySourceId);
             }
             return true;
-          }))) return;
+          }))) {
+            // #5289: was a silent return — installPageEmbeddings' internal
+            // fences (revision/projection/indexing-context drift) refused
+            // the write and the page vanished from the run with no trace.
+            const err = new Error('page revision or projection drifted between read and install — re-run to retry');
+            recordFailure(result, stale.length, slug, err);
+            serr(`\n  ${slug}: skipped — revision/projection drift refused the vector install (${stale.length} stale chunk(s) left)`);
+            noteEmbedQuarantineFailure(key, slug);
+            return;
+          }
           result.embedded += stale.length - failed;
           if (failed > 0) {
             recordFailure(result, failed, slug, firstError);
@@ -2004,6 +2033,18 @@ async function embedAllStale(
   }
 
   if (!staleOpts?.quiet) slog(`Embedded ${result.embedded} chunks across ${totalProcessedPages} pages`);
+
+  // #5289: the exact failure shape the issue reports — the stale selector
+  // found rows (dry-run counted them too) yet the run embedded nothing and
+  // previously exited 0 with no signal. Guard loudly: any selected-but-
+  // unprocessed work is a backlog left untouched, never a clean pass.
+  if (totalChunksLoaded > 0 && result.embedded === 0 && !staleOpts?.quiet) {
+    serr(
+      `\n  [embed] WARNING: ${totalChunksLoaded} stale chunk(s) were selected but 0 were embedded — ` +
+      `the backlog is unchanged and a dry-run will report the same count. See the per-page ` +
+      `skip/failure lines above for the reason.`,
+    );
+  }
 
   // #1946 (OV2a): a catch-up pass that completed without being aborted but left
   // chunks unembedded means those chunks are stuck (a non-transient embed

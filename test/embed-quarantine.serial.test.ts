@@ -153,3 +153,25 @@ describe('embed --stale failure quarantine', () => {
     expect(totalPoisonCalls).toBe(1);
   });
 });
+
+describe('embed --stale silent-skip surfaces (#5289)', () => {
+  test('a page whose projection snapshot never reads is recorded, not silently skipped', async () => {
+    // Pre-fix shape: readProjectionSnapshot returned null (page projection
+    // unsealed / missing on a managed brain) and embedOneKey returned
+    // silently — the run printed "Embedded 0 chunks across 0 pages" and
+    // exited 0 while --dry-run kept reporting the same backlog.
+    const engine = mockEngine({
+      countStaleChunks: async () => POISON_ROWS.length,
+      listStaleChunks: async () => POISON_ROWS,
+      readPageSnapshot: async () => null,
+      getChunks: async () => [],
+    });
+
+    const result = await runEmbedCore(engine, { stale: true });
+    expect(result.embedded).toBe(0);
+    expect(result.failures).toBe(POISON_ROWS.length);
+    const samples = JSON.stringify(result.failure_samples);
+    expect(samples).toContain('poison');
+    expect(samples).toContain('projection');
+  });
+});
