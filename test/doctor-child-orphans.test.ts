@@ -41,7 +41,7 @@ describe('childTableOrphansCheck (#1063)', () => {
     expect(result.status).toBe('warn');
     expect(result.message).toContain('5 orphan row(s)');
     expect(result.message).toContain('content_chunks.page_id=5');
-    expect(result.message).toContain('DELETE FROM content_chunks WHERE page_id NOT IN (SELECT id FROM pages)');
+    expect(result.message).toContain('DELETE FROM content_chunks WHERE NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = content_chunks.page_id)');
   });
 
   test('orphans in multiple tables → aggregated breakdown + multi-line cleanup', async () => {
@@ -74,10 +74,10 @@ describe('childTableOrphansCheck (#1063)', () => {
     // (NULL is a valid SET NULL outcome, not an orphan).
     const filesSql = capturedSql.find((s) => s.includes('FROM files WHERE'));
     expect(filesSql).toBeDefined();
-    expect(filesSql!).toContain('page_id IS NOT NULL AND page_id NOT IN');
+    expect(filesSql!).toContain('page_id IS NOT NULL AND NOT EXISTS');
     const linksOrigSql = capturedSql.find((s) => s.includes('FROM links WHERE') && s.includes('origin_page_id'));
     expect(linksOrigSql).toBeDefined();
-    expect(linksOrigSql!).toContain('origin_page_id IS NOT NULL AND origin_page_id NOT IN');
+    expect(linksOrigSql!).toContain('origin_page_id IS NOT NULL AND NOT EXISTS');
     // NOT-NULL FK tables MUST NOT have the IS NOT NULL filter (it'd be redundant)
     const ccSql = capturedSql.find((s) => s.includes('FROM content_chunks WHERE'));
     expect(ccSql).toBeDefined();
@@ -140,6 +140,24 @@ describe('childTableOrphansCheck (#1063)', () => {
     expect(queriedTables.size).toBe(expectedTables.size);
     for (const t of expectedTables) {
       expect(queriedTables.has(t)).toBe(true);
+    }
+  });
+
+  test('#5328 — every orphan query uses correlated NOT EXISTS, never NOT IN', async () => {
+    // NOT IN (SELECT id FROM pages) can't plan as an anti-join (hashed
+    // subplan over the whole id set, once per table) and is three-valued:
+    // one NULL in the parent id set makes the predicate NULL everywhere and
+    // the check reports zero orphans. Pin the anti-join-able shape.
+    const capturedSql: string[] = [];
+    const engine = makeMockEngine(async (sql: string) => {
+      capturedSql.push(sql);
+      return [{ n: 0 }];
+    });
+    await childTableOrphansCheck(engine);
+    expect(capturedSql.length).toBe(10);
+    for (const sql of capturedSql) {
+      expect(sql).not.toContain('NOT IN (SELECT id FROM pages)');
+      expect(sql).toContain('NOT EXISTS (SELECT 1 FROM pages p WHERE p.id =');
     }
   });
 });

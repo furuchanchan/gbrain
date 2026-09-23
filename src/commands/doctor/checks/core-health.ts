@@ -501,18 +501,23 @@ export async function childTableOrphansCheck(engine: BrainEngine): Promise<Check
   const errors: string[] = [];
   for (const { table, col, allowNull } of targets) {
     try {
-      // NOT IN subquery is portable across postgres + PGLite. The `pages.id`
-      // subquery covers every existing parent row.
+      // Correlated NOT EXISTS is equally portable across postgres + PGLite,
+      // and unlike NOT IN it can be planned as an anti-join (no hashed
+      // subplan over the whole pages id set, once per child table). It is
+      // also not three-valued: a NULL anywhere in the parent id set can
+      // never make the predicate NULL and report zero orphans (#5328).
       const nullFilter = allowNull ? `${col} IS NOT NULL AND ` : '';
+      const orphanPredicate =
+        `NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = ${table}.${col})`;
       const rows = await engine.executeRaw<{ n: string | number }>(
-        `SELECT COUNT(*)::int AS n FROM ${table} WHERE ${nullFilter}${col} NOT IN (SELECT id FROM pages)`,
+        `SELECT COUNT(*)::int AS n FROM ${table} WHERE ${nullFilter}${orphanPredicate}`,
       );
       const n = Number(rows[0]?.n ?? 0);
       if (n > 0) {
         totalOrphans += n;
         breakdown.push(`${table}.${col}=${n}`);
         cleanupSql.push(
-          `DELETE FROM ${table} WHERE ${nullFilter}${col} NOT IN (SELECT id FROM pages);`,
+          `DELETE FROM ${table} WHERE ${nullFilter}${orphanPredicate};`,
         );
       }
     } catch (e) {
