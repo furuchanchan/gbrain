@@ -2,6 +2,18 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.52.20.0] - 2026-09-23
+
+**Doctor flags a sync cursor frozen on a dead write.** A managed-worktree sync
+whose durable write died could leave its cursor parked forever — every later
+sync looked healthy while no new page ever landed. A new
+`managed_sync_wedge` check joins the sync cursor against terminal write
+receipts and reports the wedge with the repair command, instead of counting a
+stuck lane as caught up.
+
+**Say to your agent:** *"Run `gbrain doctor` — a wedged managed sync now
+reports the exact checkpoint to repair."*
+
 ## [0.52.2.0] - 2026-09-22
 
 **Repair a memory page without guessing which copy to overwrite.** GBrain keeps
