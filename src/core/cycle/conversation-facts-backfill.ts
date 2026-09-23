@@ -226,6 +226,8 @@ export async function runPhaseConversationFactsBackfill(
     pages_skipped_non_extractable: 0,
     pages_marked_non_extractable: 0,
     pages_skipped_unrecognized_speaker: 0,
+    pages_skipped_unparsed: 0,
+    pages_skipped_type_mismatch: 0,
     pages_failed: 0,
     pages_llm_fallback: 0,
     // v0.41.15.0 (D6 + D11): new counters from the per-page lock

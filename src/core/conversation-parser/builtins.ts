@@ -833,6 +833,41 @@ export const BUILTIN_PATTERNS: readonly PatternEntry[] = [
     source_doc:
       'gbrain nightly transcript ingest: compiled_truth bodies use markdown headings per turn',
   },
+
+  {
+    id: 'python-dict-utterance',
+    origin: 'builtin',
+    // Serialized-utterance shape seen when a renderer interpolates a
+    // structured speaker object instead of a display name (#5364):
+    // `{'source': 'microphone', 'attribution': 'me'}: text`
+    // The greedy `[^}]*` before the key group makes the capture land on
+    // the LAST 'name'/'attribution' key in the dict, so a line carrying
+    // both (`'attribution': 'them', 'name': 'alice'`) yields 'alice',
+    // falling back to 'me'/'them' when 'name' is absent.
+    regex: /^\{[^}]*'(?:name|attribution)':\s*'([^']+)'[^}]*\}:\s+(.*)$/,
+    captures: {
+      speaker_group: 1,
+      text_group: 2,
+    },
+    date_source: 'frontmatter',
+    time_format: '24h',
+    timezone_policy: 'utc_assumed_with_warn',
+    multi_line: false,
+    quick_reject: /^\{/,
+    score_full_body: true,
+    test_positive: [
+      "{'source': 'microphone', 'attribution': 'me'}: hello",
+      "{'source': 'speaker', 'attribution': 'them', 'name': 'someone'}: hi there",
+      "{'attribution': 'me'}: bare dict form",
+    ],
+    test_negative: [
+      "{'speaker': 'alice'}: no name or attribution key",
+      '{"name": "alice"}: double-quoted JSON, not python-dict shape',
+      'plain text, no dict prefix',
+    ],
+    source_doc:
+      'Serialized speaker-object utterances (#5364): renderer interpolated a dict into the transcript line',
+  },
 ];
 
 /**

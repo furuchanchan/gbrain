@@ -487,6 +487,19 @@ describe('runExtractConversationFactsCore', () => {
       timeline: '',
       frontmatter: { date: '2026-06-02' },
     });
+    // #5364 — serialized speaker-object utterances (renderer interpolated a
+    // dict): pre-fix this page matched NO built-in pattern.
+    await engine.putPage('conversations/python-dict-example', {
+      type: 'conversation',
+      title: 'Serialized-payload transcript',
+      compiled_truth: [
+        "{'source': 'microphone', 'attribution': 'me'}: first",
+        "{'source': 'speaker', 'attribution': 'them', 'name': 'Beta Example'}: second",
+        "{'source': 'microphone', 'attribution': 'me'}: third",
+      ].join('\n'),
+      timeline: '',
+      frontmatter: { date: '2026-06-02' },
+    });
     await engine.putPage('people/alice-example', {
       type: 'person',
       title: 'Alice Example',
@@ -614,6 +627,29 @@ describe('runExtractConversationFactsCore', () => {
     expect(result.pages_considered).toBe(0);
   });
 
+  test('python-dict utterances parse and segment (#5364)', async () => {
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/python-dict-example',
+      dryRun: true,
+      sleepMs: 0,
+    });
+    expect(result.pages_processed).toBe(1);
+    expect(result.segments_processed).toBeGreaterThanOrEqual(1);
+    expect(result.pages_skipped_unparsed).toBe(0);
+  });
+
+  test('unparseable page counts as unparsed, not a checkpoint skip (#5364)', async () => {
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/novel-format-example',
+      dryRun: true,
+      sleepMs: 0,
+    });
+    expect(result.pages_skipped).toBe(0);
+    expect(result.pages_skipped_unparsed).toBe(1);
+  });
+
   test('native imessage page types are eligible by default', async () => {
     const result = await runExtractConversationFactsCore(engine, {
       sourceId: 'default',
@@ -632,7 +668,10 @@ describe('runExtractConversationFactsCore', () => {
       sleepMs: 0,
     });
     expect(result.pages_llm_fallback).toBe(0);
-    expect(result.pages_skipped).toBe(1);
+    expect(result.pages_skipped).toBe(0);
+    // #5364 — an unparseable page is a distinct skip cause, not the
+    // "no new segments" checkpoint-resume case.
+    expect(result.pages_skipped_unparsed).toBe(1);
     expect(fallbackCalls).toBe(0);
   });
 
@@ -645,7 +684,8 @@ describe('runExtractConversationFactsCore', () => {
       sleepMs: 0,
     });
     expect(result.pages_llm_fallback).toBe(0);
-    expect(result.pages_skipped).toBe(1);
+    expect(result.pages_skipped).toBe(0);
+    expect(result.pages_skipped_unparsed).toBe(1);
     expect(fallbackCalls).toBe(0);
   });
 
@@ -736,7 +776,8 @@ describe('runExtractConversationFactsCore', () => {
       });
       expect(result.budget_exhausted).toBe(true);
       expect(result.pages_processed).toBe(0);
-      expect(result.pages_skipped).toBe(1);
+      expect(result.pages_skipped).toBe(0);
+      expect(result.pages_skipped_unparsed).toBe(1);
       expect(result.spent_usd).toBeGreaterThan(1);
       expect(fallbackCalls).toBe(1);
     });
@@ -782,7 +823,8 @@ describe('runExtractConversationFactsCore', () => {
         },
         controller.signal,
       );
-      expect(result.pages_skipped).toBe(1);
+      expect(result.pages_skipped).toBe(0);
+      expect(result.pages_skipped_unparsed).toBe(1);
       expect(result.pages_llm_fallback).toBe(0);
       expect(fallbackCalls).toBe(1);
     });
@@ -1251,7 +1293,10 @@ describe('runExtractConversationFactsCore', () => {
         types: ['conversation'],
         sleepMs: 0,
       });
-      expect(result.pages_failed).toBe(1);
+      // Both parseable conversation pages (imessage + python-dict) reach
+      // extraction and hit the synthetic outage; the unparseable
+      // novel-format page never gets this far.
+      expect(result.pages_failed).toBe(2);
       expect(result.pages_processed).toBe(0);
     } finally {
       engineAny.insertFacts = originalInsertFacts;
@@ -1335,7 +1380,7 @@ describe('runExtractConversationFactsCore', () => {
       types: ['conversation'],
       sleepMs: 0,
     });
-    expect(result.pages_failed).toBe(1);
+    expect(result.pages_failed).toBe(2);
     expect(result.pages_processed).toBe(0);
   });
 

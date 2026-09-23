@@ -347,6 +347,12 @@ export interface ExtractConversationFactsResult {
    *  distinct speakers (attribution would be wrong). Non-terminal: no
    *  durable audit row is written, so a future parser/pattern fix retries. */
   pages_skipped_unrecognized_speaker: number;
+  /** #5364 — pages whose body produced ZERO segments at all (nothing
+   *  parses, or too few messages): a distinct cause from pages_skipped,
+   *  which is the ordinary checkpoint-resume "already processed" case. */
+  pages_skipped_unparsed: number;
+  /** Pages named via --slug/--slugs that are not a conversation type. */
+  pages_skipped_type_mismatch: number;
   /** Pages whose claim reached extraction but failed before durable outcome. */
   pages_failed: number;
   /**
@@ -998,7 +1004,27 @@ async function processPage(
   const allSegments = splitIntoSegments(messages);
   const segments = splitIntoSegments(messages, { sinceIso });
   if (segments.length === 0) {
-    state.result.pages_skipped++;
+    // #5364 — split the skip cause: zero segments AT ALL means "nothing
+    // parses" (a defect signal worth surfacing), while zero NEW segments
+    // against non-empty allSegments is the ordinary "already processed"
+    // checkpoint-resume case. declinedUnrecognizedSpeaker is already
+    // counted under pages_skipped_unrecognized_speaker.
+    if (!declinedUnrecognizedSpeaker && allSegments.length === 0) {
+      state.result.pages_skipped_unparsed++;
+      // A conversation-type page whose body has non-trivial content but
+      // matched no pattern at all is the silent failure from #5364 —
+      // warn per page so it is visible without --verbose.
+      if (
+        parseResult.phase === 'no_match' &&
+        body.split('\n').filter((l) => l.trim().length > 0).length >= 2
+      ) {
+        process.stderr.write(
+          `[extract-conversation-facts] ${page.slug}: transcript content present but no speaker-turn pattern matched (phase=no_match); skipping — check the page's speaker format\n`,
+        );
+      }
+    } else if (!declinedUnrecognizedSpeaker) {
+      state.result.pages_skipped++;
+    }
     if (
       !state.dryRun &&
       parseResult.phase !== 'no_match' &&
@@ -1298,6 +1324,8 @@ export async function runExtractConversationFactsCore(
     pages_skipped_non_extractable: 0,
     pages_marked_non_extractable: 0,
     pages_skipped_unrecognized_speaker: 0,
+    pages_skipped_unparsed: 0,
+    pages_skipped_type_mismatch: 0,
     pages_failed: 0,
     pages_llm_fallback: 0,
     pages_lock_skipped: 0,
@@ -1462,7 +1490,7 @@ export async function runExtractConversationFactsCore(
           continue;
         }
         if (!concreteTypes.includes(page.type)) {
-          result.pages_skipped++;
+          result.pages_skipped_type_mismatch++;
           continue;
         }
         await processPageWithLock(page);
@@ -1474,7 +1502,7 @@ export async function runExtractConversationFactsCore(
         return;
       }
       if (!concreteTypes.includes(page.type)) {
-        result.pages_skipped++;
+        result.pages_skipped_type_mismatch++;
         return;
       }
 
@@ -1946,6 +1974,8 @@ export async function runExtractConversationFacts(
     pages_skipped_non_extractable: 0,
     pages_marked_non_extractable: 0,
     pages_skipped_unrecognized_speaker: 0,
+    pages_skipped_unparsed: 0,
+    pages_skipped_type_mismatch: 0,
     pages_failed: 0,
     pages_llm_fallback: 0,
     pages_lock_skipped: 0,
@@ -1993,6 +2023,8 @@ export async function runExtractConversationFacts(
       aggregate.pages_skipped_completed += perSource.pages_skipped_completed;
       aggregate.pages_skipped_non_extractable += perSource.pages_skipped_non_extractable;
       aggregate.pages_marked_non_extractable += perSource.pages_marked_non_extractable;
+      aggregate.pages_skipped_unparsed += perSource.pages_skipped_unparsed;
+      aggregate.pages_skipped_type_mismatch += perSource.pages_skipped_type_mismatch;
       aggregate.pages_skipped_unrecognized_speaker += perSource.pages_skipped_unrecognized_speaker;
       aggregate.pages_failed += perSource.pages_failed;
       aggregate.pages_llm_fallback += perSource.pages_llm_fallback;
@@ -2022,6 +2054,12 @@ export async function runExtractConversationFacts(
   );
   if (aggregate.pages_skipped > 0) {
     console.log(`  Skipped ${aggregate.pages_skipped} page(s) with no new segments since last checkpoint.`);
+  }
+  if (aggregate.pages_skipped_unparsed > 0) {
+    console.log(`  Skipped ${aggregate.pages_skipped_unparsed} page(s) with no parseable speaker turns (content present but no pattern matched, or too few messages).`);
+  }
+  if (aggregate.pages_skipped_type_mismatch > 0) {
+    console.log(`  Skipped ${aggregate.pages_skipped_type_mismatch} page(s) that are not a conversation type.`);
   }
   if (aggregate.pages_skipped_too_large > 0) {
     console.log(`  Skipped ${aggregate.pages_skipped_too_large} page(s) exceeding ${MAX_PAGE_BODY_BYTES / 1024 / 1024}MB body cap.`);
