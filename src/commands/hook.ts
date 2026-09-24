@@ -77,6 +77,7 @@ import { gateWritebackTurn, WRITEBACK_SKIP_REASONS } from '../core/facts/writeba
 import { resolveWritebackConfigFromFile } from '../core/facts/writeback-config.ts';
 import { memorableGateAllowed, recordAndRelayReceipt, redactedToolCallsJson } from '../core/context/hook-heartbeat.ts';
 import { captureSpecFor } from '../core/transcripts/capture-spec.ts';
+import { isClaudeCliSelfTranscriptPath } from '../core/ai/providers/claude-cli-scratch.ts';
 import {
   heartbeatPath,
   hookStatusPath,
@@ -1685,6 +1686,13 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
     }
     if (!conf.ok) {
       degrade(`transcript_${conf.reason}`);
+    } else if (isClaudeCliSelfTranscriptPath(conf.path) || (ws !== undefined && isClaudeCliSelfTranscriptPath(ws))) {
+      // gbrain's own claude-cli subprocess sessions run from a per-PID scratch
+      // cwd (gbrain-claude-cli-cwd-<pid>). Capturing their transcripts would
+      // re-ingest the brain's own LLM calls as "conversations" — the same
+      // self-ingestion loop transcript discovery already filters (#4472),
+      // applied here so the corpus writer shares the rule.
+      reason = 'self_transcript_skipped';
     } else {
       const parsed = spec.parse(conf.path, { collectToolCalls: memorableAllowed });
       if (sessionId === 'unknown') {

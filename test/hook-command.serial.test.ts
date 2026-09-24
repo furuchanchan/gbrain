@@ -791,6 +791,28 @@ describe('session-end', () => {
     });
     expect(existsSync(join(liveDir, 'sess-gc.txt'))).toBe(false);
   });
+
+  test('claude-cli self-transcripts are skipped, never written to the corpus', async () => {
+    const projRoot = join(tmp, 'projects');
+    const ws = join(tmp, 'ws');
+    mkdirSync(ws, { recursive: true });
+    // Claude Code stores the session transcript under
+    // projects/<slugified-scratch-cwd>/, so the gbrain-claude-cli-cwd-<pid>
+    // fingerprint lands inside the transcript path itself.
+    const transcript = seedTranscript(join(projRoot, 'gbrain-claude-cli-cwd-4242'), 's.jsonl', [
+      userLine('extraction call content must never land'),
+    ]);
+    expect(
+      await runHook(['session-end'], {
+        stdin: JSON.stringify({ session_id: 'sess-self', transcript_path: transcript, cwd: ws }),
+        transcriptRoot: projRoot,
+      }),
+    ).toBe(0);
+    expect(existsSync(join(home(), 'transcripts', 'corpus', 'sess-self.txt'))).toBe(false);
+    const hb = await lastHeartbeat();
+    expect(hb?.outcome).toBe('ok');
+    expect(hb?.reason).toBe('self_transcript_skipped');
+  });
 });
 
 // ── heartbeat [S3#7] ────────────────────────────────────────────────────────
