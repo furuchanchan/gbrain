@@ -20,6 +20,13 @@ export interface GoogleSourceConfig {
   services: GoogleService[];
   /** Backfill/reconcile window in days (default 90). */
   historyDays: number;
+  /**
+   * Calendar forward horizon in days (default 60). Bounds BOTH the windowed
+   * list's timeMax and a local filter on incremental syncToken results —
+   * singleEvents=true makes Google replay the whole recurring series on any
+   * change, so without it each RSVP imports ~700 phantom instances (#5442).
+   */
+  futureDays: number;
   /** Calendar swept by this source (default DEFAULT_CALENDAR_ID). One calendar per
    *  source so each keeps its own sync token — point a second source at a
    *  secondary calendar id to ingest it too. */

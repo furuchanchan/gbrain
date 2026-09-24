@@ -192,6 +192,8 @@ export interface AddSourceOpts {
     services: string[];
     /** Backfill/reconcile window in days. */
     historyDays: number;
+    /** Calendar forward horizon in days (default 60 — also bounds incremental results, #5442). */
+    futureDays?: number;
     /** Calendar swept by this source (default DEFAULT_CALENDAR_ID). */
     calendarId?: string;
     /** Managed dir where pages are materialized. */
@@ -655,6 +657,9 @@ export async function addSource(
       g_account: opts.google.account,
       g_services: opts.google.services.join(','),
       g_history_days: opts.google.historyDays,
+      // Only written when set so every existing source's config keeps its
+      // exact shape (60 stays the parse-time fallback).
+      ...(opts.google.futureDays !== undefined ? { g_future_days: opts.google.futureDays } : {}),
       // Only written when non-default so every existing source's config keeps
       // its exact shape (DEFAULT_CALENDAR_ID stays the parse-time fallback).
       ...(opts.google.calendarId && opts.google.calendarId !== DEFAULT_CALENDAR_ID

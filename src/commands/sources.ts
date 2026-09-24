@@ -138,7 +138,7 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
         '[--repos owner/name,...] [--dir <path>] ' +
         '[--app-id <n> --app-pem <path>] [--app-install <n>]\n' +
         '       google kind: --account <email> [--services gmail,calendar,contacts] ' +
-        '[--history-days <n>] [--calendar-id <id>] [--dir <path>]   (connect first: gbrain google connect)\n' +
+        '[--history-days <n>] [--future-days <n>] [--calendar-id <id>] [--dir <path>]   (connect first: gbrain google connect)\n' +
         '                    [--access vault|command|env] [--token-command "<cmd>"] [--token-env <VAR>]   (non-vault Google access: gog/gcloud/gateway)',
     );
     process.exit(2);
@@ -169,6 +169,7 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
   let gTokenEnv: string | undefined;
   let gServices: string[] = ['gmail', 'calendar', 'contacts'];
   let gHistoryDays = 90;
+  let gFutureDays: number | undefined;
   let gCalendarId: string = DEFAULT_CALENDAR_ID;
 
   for (let i = 1; i < args.length; i++) {
@@ -220,6 +221,15 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
         process.exit(2);
       }
       gHistoryDays = v;
+      continue;
+    }
+    if (a === '--future-days') {
+      const v = Number(args[++i]);
+      if (!Number.isInteger(v) || v <= 0) {
+        console.error('--future-days must be a positive integer.');
+        process.exit(2);
+      }
+      gFutureDays = v;
       continue;
     }
     if (a === '--calendar-id') {
@@ -428,6 +438,7 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
             account: gAccount!,
             services: gServices,
             historyDays: gHistoryDays,
+            ...(gFutureDays !== undefined ? { futureDays: gFutureDays } : {}),
             calendarId: gCalendarId,
             dir: ghDir ?? defaultCloneDir(`${id}-google`),
             access: (gAccess ?? 'vault') as 'vault' | 'command' | 'env',

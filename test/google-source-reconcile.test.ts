@@ -845,6 +845,119 @@ describe('syncToken 410 recovery', () => {
   });
 });
 
+// ── #5442 calendar window on the incremental path ────────────────────────────
+
+describe('calendar: the sync window bounds incremental results too (#5442)', () => {
+  const evt = (id: string, summary: string, startIso: string) => ({
+    id,
+    status: 'confirmed',
+    summary,
+    start: { dateTime: startIso },
+    end: { dateTime: new Date(Date.parse(startIso) + 3_600_000).toISOString() },
+    organizer: { email: 'a@example.com' },
+    attendees: [{ email: 'a@example.com', self: true, responseStatus: 'accepted' }],
+  });
+  const calendarSlugs = async (): Promise<string[]> =>
+    (await engine.executeRaw<{ slug: string }>(
+      `SELECT slug FROM pages WHERE source_id = 'gsrc' AND deleted_at IS NULL AND slug LIKE 'calendar/%' ORDER BY slug`,
+    )).map((r) => r.slug);
+
+  test('a syncToken delta replays the whole series — only in-window instances are imported', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-calwin-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    fx.calendarEvents = [
+      evt('evt-win-1', 'Weekly sync', new Date(daysAgoMs(1)).toISOString()),
+    ];
+    try {
+      await insertGoogleSource(dir);
+      await withHome(async () => {
+        await sweep(dir, fx, vault, {}, 'calendar');
+        expect(await calendarSlugs()).toHaveLength(1);
+
+        // An RSVP upstream replays EVERY expanded instance of the series:
+        // ~700 pages spanning years — only the in-window one may land.
+        fx.calendarDelta = [
+          evt('evt-win-1', 'Weekly sync', new Date(daysAgoMs(1)).toISOString()),
+          evt('evt-far-future', 'Weekly sync', new Date(Date.now() + 500 * 86_400_000).toISOString()),
+          evt('evt-far-past', 'Weekly sync', new Date(daysAgoMs(500)).toISOString()),
+        ];
+        const { result: res, err } = await capturedStderr(() => sweep(dir, fx, vault, {}, 'calendar'));
+        expect(res.status).not.toBe('partial');
+        expect(err).toContain('skipped 2 calendar instance(s) outside the sync window');
+        const slugs = await calendarSlugs();
+        expect(slugs).toHaveLength(1);
+        expect(slugs[0]).not.toContain('far-future');
+        expect(slugs[0]).not.toContain('far-past');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('g_future_days narrows the forward horizon on the initial windowed list too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-calfd-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    fx.calendarEvents = [
+      evt('evt-tomorrow', 'Standup', new Date(Date.now() + 86_400_000).toISOString()),
+      evt('evt-next-month', 'Quarterly', new Date(Date.now() + 30 * 86_400_000).toISOString()),
+    ];
+    try {
+      await insertGoogleSource(dir);
+      await withHome(async () => {
+        const res = await sweep(dir, fx, vault, {}, 'calendar', { cfg: { g_future_days: 7 } });
+        expect(res.added).toBe(1);
+        const slugs = await calendarSlugs();
+        expect(slugs).toHaveLength(1);
+        expect(slugs[0]).toContain('standup');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('--full reconcile soft-deletes live calendar pages outside the window', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-calrec-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    try {
+      await insertGoogleSource(dir);
+      // Overflow left by pre-fix incremental imports.
+      await engine.putPage(
+        'calendar/2040/06/2040-06-15-phantom-aaaa1111',
+        {
+          type: 'meeting',
+          title: 'Phantom instance',
+          compiled_truth: 'Weekly sync',
+          frontmatter: { event_id: 'evt-phantom', start: new Date(Date.now() + 500 * 86_400_000).toISOString() },
+        },
+        { sourceId: 'gsrc' },
+      );
+      await engine.putPage(
+        'calendar/2026/09/2026-09-25-real-bbbb2222',
+        {
+          type: 'meeting',
+          title: 'Real meeting',
+          compiled_truth: 'Team lunch',
+          frontmatter: { event_id: 'evt-real', start: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+        },
+        { sourceId: 'gsrc' },
+      );
+      await withHome(async () => {
+        const res = await sweep(dir, fx, vault, { full: true }, 'calendar');
+        expect(res.status).not.toBe('partial');
+        expect(res.deleted).toBe(1);
+        const slugs = await calendarSlugs();
+        expect(slugs).toHaveLength(1);
+        expect(slugs[0]).toContain('real');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── loops_extract enqueue completeness ───────────────────────────────────────
 
 describe('loops_extract enqueue completeness', () => {

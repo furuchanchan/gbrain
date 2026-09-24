@@ -129,7 +129,7 @@ export function parseSourceLifecycleArgs(args: string[], generatedId = randomUUI
       || access === 'env' && !values.has('token-env') || access === 'vault' && (values.has('token-command') || values.has('token-env'))) {
       throw invalid('Google access must be vault, command with --token-command, or env with --token-env.');
     }
-    opts.google = { account, services, historyDays: number('history-days', 90)!, calendarId: values.get('calendar-id') ?? DEFAULT_CALENDAR_ID,
+    opts.google = { account, services, historyDays: number('history-days', 90)!, futureDays: number('future-days'), calendarId: values.get('calendar-id') ?? DEFAULT_CALENDAR_ID,
       dir: absolute(values.get('dir') ?? defaultCloneDir(`${id}-google`)), access: access as 'vault' | 'command' | 'env',
       tokenCommand: values.get('token-command'), tokenEnv: values.get('token-env') };
   }

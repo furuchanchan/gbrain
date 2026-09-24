@@ -91,6 +91,12 @@ export function parseGoogleSourceConfig(
     config.g_history_days > 0
       ? Math.min(3650, Math.floor(config.g_history_days))
       : 90;
+  const futureDays =
+    typeof config.g_future_days === 'number' &&
+    Number.isFinite(config.g_future_days) &&
+    config.g_future_days > 0
+      ? Math.min(3650, Math.floor(config.g_future_days))
+      : 60;
   const calendarId =
     typeof config.g_calendar_id === 'string' && config.g_calendar_id.trim().length > 0
       ? config.g_calendar_id.trim()
@@ -103,6 +109,7 @@ export function parseGoogleSourceConfig(
     account,
     services: services.length > 0 ? services : [...ALL_GOOGLE_SERVICES],
     historyDays,
+    futureDays,
     calendarId,
     dir,
     access,
@@ -433,7 +440,7 @@ async function sweepCalendar(
   const now = Date.now();
   const windowOpts = {
     timeMinIso: new Date(now - deps.cfg.historyDays * 86_400_000).toISOString(),
-    timeMaxIso: new Date(now + 60 * 86_400_000).toISOString(),
+    timeMaxIso: new Date(now + deps.cfg.futureDays * 86_400_000).toISOString(),
   };
   // The stored token is bound to the calendar it was minted for (legacy state
   // without calendar_id predates secondary calendars, so it was primary's).
@@ -466,8 +473,22 @@ async function sweepCalendar(
       throw e;
     }
   }
+  // Incremental syncToken results cannot carry timeMin/timeMax, so Google
+  // replays EVERY expanded instance of a changed recurring series — years
+  // of phantom pages per RSVP (#5442). Apply the same window locally; a
+  // cancelled skeleton carries no start and must still reach the delete
+  // path below (it can't be evaluated, and reconcileCalendarWindow cleans
+  // up anything it shouldn't touch).
+  const windowStartMs = now - deps.cfg.historyDays * 86_400_000;
+  const windowEndMs = now + deps.cfg.futureDays * 86_400_000;
+  let outOfWindow = 0;
   for (const ev of result.events) {
     if (deps.opts.signal?.aborted) return;
+    const startMs = Date.parse(ev.startIso);
+    if (Number.isFinite(startMs) && (startMs < windowStartMs || startMs > windowEndMs)) {
+      outOfWindow++;
+      continue;
+    }
     // The page path derives from MUTABLE fields (start date, summary) while
     // identity is the immutable event id — look up the existing page by
     // frontmatter event_id so reschedules move (old page deleted) and
@@ -484,10 +505,58 @@ async function sweepCalendar(
     }
     await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
   }
+  if (outOfWindow > 0) {
+    deps.log(`[google] skipped ${outOfWindow} calendar instance(s) outside the sync window`);
+  }
   if (result.nextSyncToken) {
     state.calendar_sync_token = result.nextSyncToken;
     state.calendar_id = deps.cfg.calendarId;
   }
+}
+
+/**
+ * Window reconcile for calendar/ (#5442): soft-delete live calendar pages
+ * whose event start falls outside [now - historyDays, now + futureDays].
+ * Drains overflow imported before the sweep filtered incremental results —
+ * deleting pages is not enough on its own because the next series change
+ * would re-import them; with the sweep filter in place this only needs to
+ * run on --full, same cadence as reconcileGmailDeletes.
+ */
+async function reconcileCalendarWindow(
+  deps: GoogleSyncDeps,
+  summary: GoogleSyncSummary,
+): Promise<void> {
+  const now = Date.now();
+  const windowStartMs = now - deps.cfg.historyDays * 86_400_000;
+  const windowEndMs = now + deps.cfg.futureDays * 86_400_000;
+  const rows = await deps.engine.executeRaw<{ slug: string; source_path: string | null; frontmatter: unknown }>(
+    `SELECT slug, source_path, frontmatter FROM pages WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE 'calendar/%'`,
+    [deps.sourceId],
+  );
+  const stale: Array<{ slug: string; source_path: string | null }> = [];
+  for (const r of rows) {
+    const fm =
+      typeof r.frontmatter === 'string'
+        ? (JSON.parse(r.frontmatter) as Record<string, unknown>)
+        : ((r.frontmatter ?? {}) as Record<string, unknown>);
+    const startIso = typeof fm.start === 'string' ? fm.start : null;
+    const startMs = startIso ? Date.parse(startIso) : NaN;
+    // Unparseable/missing start → out of scope, keep (same policy as gmail).
+    if (!Number.isFinite(startMs) || (startMs >= windowStartMs && startMs <= windowEndMs)) continue;
+    stale.push({ slug: r.slug, source_path: r.source_path });
+  }
+  if (stale.length === 0) return;
+  const { massReconcileAllowed } = await import('../../commands/sync.ts');
+  if (stale.length > 200 && !massReconcileAllowed()) {
+    deps.log(`[google] mass-delete guard refused ${stale.length} deletes for source ${deps.sourceId}`);
+    return;
+  }
+  if (deps.managed) {
+    for (const page of stale) if (await deps.managed.delete(page.slug, page.source_path)) summary.deleted++;
+    return;
+  }
+  await deps.engine.deletePages(stale.map((s) => s.slug), { sourceId: deps.sourceId });
+  summary.deleted += stale.length;
 }
 
 // ── Gmail sweep ──────────────────────────────────────────────────────────────
@@ -1124,6 +1193,7 @@ async function runGoogleSyncInner(engine: BrainEngine, sourceId: string, cfg: Go
       const stop = startHeartbeat(progress, 'calendar sweep');
       try {
         await sweepCalendar(deps, calendar, state, activePack, summary, countedSlugs);
+        if (opts.full) await reconcileCalendarWindow(deps, summary);
       } catch (e) {
         if (managed) rethrowConnectorWriteError(e);
         serviceErrors.push(`calendar: ${e instanceof Error ? e.message : String(e)}`);
