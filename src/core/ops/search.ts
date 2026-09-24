@@ -149,6 +149,7 @@ async function buildRetrievalResponseMeta(
     ...(m ? {
       vector_enabled: m.vector_enabled,
       expansion_applied: m.expansion_applied,
+      ...(m.degraded_arms?.length ? { degraded_arms: m.degraded_arms } : {}),
       ...(m.cache ? { cache: m.cache.status } : {}),
       ...(m.token_budget ? { token_budget: m.token_budget } : {}),
       ...(m.vector_pool_underfilled ? { vector_pool_underfilled: m.vector_pool_underfilled } : {}),
@@ -220,6 +221,25 @@ async function resolveSnippetCap(ctx: OperationContext, p: Record<string, unknow
     }
   } catch { /* fail-open to the default */ }
   return DEFAULT_AGENT_SNIPPET_CHARS;
+}
+
+/**
+ * Payload-level warning, complementing the typed metadata channel. An empty
+ * result set keeps the existing degraded-miss envelope rather than throwing,
+ * so its cache and budget diagnostics survive. (#5324)
+ */
+function stampArmWarning(results: SearchResult[], meta: HybridSearchMeta | null, ctx?: OperationContext): void {
+  const arms = new Set(meta?.degraded_arms ?? []);
+  for (const entry of meta?.degraded ?? []) {
+    if (entry.stage === 'title_arm_failed') arms.add('titles');
+    if (entry.stage === 'keyword_arm_failed') arms.add('keyword');
+  }
+  if (!arms.size) return;
+  const warning = `partial retrieval: search arm(s) [${[...arms].join(', ')}] failed — the corpus was not fully searched; treat absence of a fact as unknown, not as absent`;
+  if (results.length) results[0] = { ...results[0], search_warning: warning };
+  // Plain-text CLI output does not render arbitrary result fields, so the local
+  // path also gets a logger line. Never log the raw backend error.
+  if (ctx?.remote === false) ctx.logger.warn(warning);
 }
 
 const search: Operation = {
@@ -341,6 +361,7 @@ const search: Operation = {
     const latency_ms = Date.now() - startedAt;
     bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
     maybeCaptureSearch(ctx, queryText, results, latency_ms, true, capturedMeta);
+    stampArmWarning(results, capturedMeta, ctx);
     // #3800: cap AFTER capture/meta so eval + cache see the real payload.
     return searchOutput(ctx, results, await buildRetrievalResponseMeta(ctx, scope, queryText, results, capturedMeta, { conceptHint: true, types }), snippetCap);
   },
@@ -787,6 +808,7 @@ const query: Operation = {
       );
     }
 
+    stampArmWarning(results, capturedMeta, ctx);
     // WP2/D3: query never nudges toward itself — no concept hint here.
     // #1663: the CRAG grade rides the same retrieval meta channel.
     const responseMeta = {
