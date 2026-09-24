@@ -73,3 +73,27 @@ describe('thin-client envelope handling (ENG-17 skew guard)', () => {
     expect(extractResponseMeta({ content: [{ type: 'text', text: '[]' }], _meta: ['not-an-object'] })).toBeUndefined();
   });
 });
+
+describe('formatResult list_pages TSV escaping (#5433)', () => {
+  const page = (title: string) => ({
+    slug: 'notes/x', type: 'note', updated_at: '2026-09-24T10:00:00Z', title,
+  });
+
+  test('a title containing a newline or tab stays a single 4-column row', () => {
+    const out = formatResult('list_pages', [page('first line\nsecond\tpart')], {});
+    const rows = out.trim().split('\n');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].split('\t')).toHaveLength(4);
+    expect(rows[0]).toContain('first line\\nsecond\\tpart');
+  });
+
+  test('backslashes escape before control chars (lossless for awk/read)', () => {
+    const out = formatResult('list_pages', [page('a\\b')], {});
+    expect(out.trim().split('\n')).toHaveLength(1);
+    expect(out).toContain('a\\\\b');
+  });
+
+  test('ordinary titles render unchanged', () => {
+    expect(formatResult('list_pages', [page('plain title')], {})).toContain('\tplain title\n');
+  });
+});

@@ -21,6 +21,7 @@ import { readdirSync, statSync, lstatSync, existsSync } from 'fs';
 import { join, relative, dirname } from 'path';
 import { isAborted } from '../core/abort-check.ts';
 import { parseMarkdown, type ParseValidationCode } from '../core/markdown.ts';
+import { parseDateLoose } from '../core/effective-date.ts';
 import {
   assessContentSanity,
   type OperatorLiteral,
@@ -182,17 +183,20 @@ export function lintContent(content: string, filePath: string, opts: LintContent
           fixable: false,
         });
       }
-      if (!fm.match(/^created:/m)) {
-        // #3958: when the page's own frontmatter carries a capture timestamp
-        // (captured_at / ingested_at), `--fix` can promote it to `created` —
-        // mark the finding fixable so the operator knows --fix will heal it.
-        const promotable = /^(?:captured_at|ingested_at):/m.test(fm);
+      // Temporal provenance, not one required key: the native serializer never
+      // writes `created`, and effective-date resolution reads event_date /
+      // date / published. Any parseable temporal field satisfies the check —
+      // the `missing-created` rule name is kept for compatibility, fires only
+      // when NONE of the accepted keys parses, and is never fixable (--fix
+      // must not fabricate a creation date from capture time).
+      const fmObj = parsed.frontmatter ?? {};
+      const temporal = ['created', 'event_date', 'date', 'published', 'captured_at', 'ingested_at']
+        .some(key => parseDateLoose(fmObj[key]) !== null);
+      if (!temporal) {
         issues.push({
           file: filePath, line: 1, rule: 'missing-created',
-          message: promotable
-            ? 'Frontmatter missing required field: created (promotable from captured_at/ingested_at)'
-            : 'Frontmatter missing required field: created',
-          fixable: promotable,
+          message: 'Frontmatter missing a parseable temporal field (created/event_date/date/published/captured_at/ingested_at)',
+          fixable: false,
         });
       }
     }
@@ -311,11 +315,13 @@ export function lintContent(content: string, filePath: string, opts: LintContent
 }
 
 /**
- * #3958: promote `captured_at:` (preferred) or `ingested_at:` to `created:`
- * when the frontmatter has no `created:` of its own. The value is copied
- * verbatim (quoting preserved) and inserted directly below the source line.
- * No-op when there is no frontmatter, `created:` already exists, or neither
- * capture field is present. Pure + exported for tests.
+ * @deprecated Not called by fixContent — ingest time is not creation time, so
+ * --fix must not fabricate `created`. Kept exported for direct callers/tests.
+ * Promotes `captured_at:` (preferred) or `ingested_at:` to `created:` when
+ * the frontmatter has no `created:` of its own. The value is copied verbatim
+ * (quoting preserved) and inserted directly below the source line. No-op when
+ * there is no frontmatter, `created:` already exists, or neither capture
+ * field is present. Pure.
  */
 export function promoteCreatedFromCapture(content: string): string {
   if (!content.startsWith('---')) return content;
@@ -343,10 +349,10 @@ export function fixContent(content: string): string {
   fixed = fixed.replace(/^```(?:markdown|md)\s*\n/, '');
   fixed = fixed.replace(/\n```\s*$/, '');
 
-  // #3958: missing-created is fixable when the page's own frontmatter
-  // carries a capture timestamp. Runs after the fence unwrap so a wrapped
-  // page's frontmatter is visible to the promotion.
-  fixed = promoteCreatedFromCapture(fixed);
+  // `created` is deliberately NOT synthesized from captured_at/ingested_at:
+  // ingest time is not creation time, and writing it rewrote native pages on
+  // every lint --fix cycle, diverging the file from the DB serialization.
+  // promoteCreatedFromCapture stays exported (deprecated) for direct callers.
 
   // Clean up excessive blank lines left by fixes
   fixed = fixed.replace(/\n{3,}/g, '\n\n');

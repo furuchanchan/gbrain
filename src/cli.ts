@@ -1762,8 +1762,12 @@ export function formatResult(
     case 'list_pages': {
       const pages = result as any[];
       if (pages.length === 0) return 'No pages found.\n';
+      // TSV cells are free text — escape so a title containing \t/\r/\n
+      // can't add columns or split a row. --json output stays untouched.
+      const cell = (v: unknown): string => String(v ?? '')
+        .replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       return pages.map(p =>
-        `${p.slug}\t${p.type}\t${p.updated_at?.toString().slice(0, 10) || '?'}\t${p.title}`,
+        `${cell(p.slug)}\t${cell(p.type)}\t${cell(p.updated_at?.toString().slice(0, 10) || '?')}\t${cell(p.title)}`,
       ).join('\n') + '\n';
     }
     case 'search':
