@@ -398,3 +398,24 @@ test('continuous foreground arrivals cannot starve a bounded sync batch', async 
     }finally{stopping=true;clearInterval(timer);await Promise.all(admitted);await disposePersistenceConsumer(engine);}
   }
 }),120_000);
+
+test('managed sync matches pages whose stored source_path uses Windows separators (#5398)', async () => withEnv({GBRAIN_HOME:home},async()=>{
+  const platform=Object.getOwnPropertyDescriptor(process,'platform')!;
+  const win32=<T>(fn:()=>Promise<T>)=>{Object.defineProperty(process,'platform',{value:'win32'});return fn().finally(()=>Object.defineProperty(process,'platform',platform));};
+  for(const engine of engines){
+    const f=await fixture(engine,{'notes/example.md':'---\ntitle: Example\n---\nA note about the project.\n'});
+    expect((await performManagedSync(engine,{sourceId:f.id,noPull:true})).status).toBe('first_sync');
+    // A value written by the pre-managed sync on Windows.
+    await engine.executeRaw(`UPDATE pages SET source_path='notes\\example.md' WHERE source_id=$1`,[f.id]);
+    // Full-mode discovery must not enqueue a delete for the page.
+    const full=await win32(async()=>(await discoverManagedSync(engine,{sourceId:f.id,noPull:true,full:true})).entries);
+    expect(full.some(e=>e.action==='delete')).toBe(false);
+    // Incremental discovery must pass the identity freeze without
+    // page_identity_changed for the same stored value.
+    writeFileSync(join(f.root,'notes/example.md'),'---\ntitle: Example\n---\nAn updated note about the project.\n'); commit(f.root);
+    const inc=await win32(async()=>(await discoverManagedSync(engine,{sourceId:f.id,noPull:true})).entries);
+    expect(inc).toHaveLength(1);
+    expect(inc[0]).toMatchObject({sourcePath:'notes/example.md',action:'import'});
+    await engine.executeRaw(`UPDATE pages SET source_path='notes/example.md' WHERE source_id=$1`,[f.id]);
+  }
+}),120_000);

@@ -10,6 +10,7 @@ import { isSyncable, isCodeFilePath, matchesAnyGlob, resolveSlugForPath } from '
 import { resolveSlugRootMode } from '../sync-anchor.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { getWorktreeBinding, type WorktreeBinding } from './ownership.ts';
+import { storedSourcePath } from './source-path.ts';
 import { localHostId } from './identity.ts';
 import { sha256 } from './digest.ts';
 import { currentCompanyBrainSync } from '../company-brain/profile.ts';
@@ -97,7 +98,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     const present = new Set(paths.map(sourcePath));
     for (const path of paths) put(path, 'import');
     const pages = await engine.executeRaw<{ source_path: string }>('SELECT source_path FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND source_path IS NOT NULL', [sourceId]);
-    for (const page of pages) if (!present.has(page.source_path)) put(slugMode === 'source-root' && scope ? `${scope}/${page.source_path}` : page.source_path, 'delete');
+    for (const page of pages) { const stored = storedSourcePath(page.source_path); if (!present.has(stored)) put(slugMode === 'source-root' && scope ? `${scope}/${stored}` : stored, 'delete'); }
   }
   if (working) {
     for (const path of [...dirty.added, ...dirty.modified]) put(path, 'import', true);
@@ -110,7 +111,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     const present = new Set(included.map(entry => entry.path));
     for (const entry of included) entries.set(entry.path, { path: entry.path, sourcePath: entry.path, action: 'import', working: false, slug: entry.page!.slug });
     const pages = await engine.executeRaw<{ source_path: string }>('SELECT source_path FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND source_path IS NOT NULL', [sourceId]);
-    for (const page of pages) if (!present.has(page.source_path)) entries.set(page.source_path, { path: page.source_path, sourcePath: page.source_path, action: 'delete', working: false });
+    for (const page of pages) { const stored = storedSourcePath(page.source_path); if (!present.has(stored)) entries.set(stored, { path: stored, sourcePath: stored, action: 'delete', working: false }); }
   }
   const selected = [...entries.values()].sort((a, b) => a.action.localeCompare(b.action) || a.path.localeCompare(b.path));
   if (selected.some(e => !/\.mdx?$/i.test(e.path) && !isCodeFilePath(e.path))) throw new OperationError('writer_coordinator_required', 'Managed image sync requires a prepared importer; this sync was refused before any page write.');
@@ -122,7 +123,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     'SELECT id,slug,source_path,knowledge_revision FROM pages WHERE source_id=$1', [sourceId]);
   const bySlug = new Map(identities.map(p => [p.slug, p]));
   const byPath = new Map<string, typeof identities>();
-  for (const page of identities) if (page.source_path) byPath.set(page.source_path, [...(byPath.get(page.source_path) ?? []), page]);
+  for (const page of identities) if (page.source_path) { const stored = storedSourcePath(page.source_path); byPath.set(stored, [...(byPath.get(stored) ?? []), page]); }
   for (const entry of selected) {
     const origins = byPath.get(entry.sourcePath) ?? [];
     if (origins.length > 1) throw new OperationError('page_identity_changed', 'Several pages claim the same imported origin.');
@@ -130,7 +131,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     if (!slug && entry.action === 'import') slug = parseMarkdown(readSyncContent(discovered, entry), '').slug;
     if (!slug) throw new OperationError('invalid_params', 'The imported file has no usable page slug.');
     const page = origins[0] ?? bySlug.get(slug);
-    if (page?.source_path != null && page.source_path !== entry.sourcePath) throw new OperationError('page_identity_changed', 'A different origin occupies the imported slug.');
+    if (page?.source_path != null && storedSourcePath(page.source_path) !== entry.sourcePath) throw new OperationError('page_identity_changed', 'A different origin occupies the imported slug.');
     Object.assign(entry, { slug, pageId: page?.id ?? null, revision: page?.knowledge_revision ?? null });
   }
   if (!working) {

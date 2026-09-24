@@ -10,6 +10,7 @@ import { SOURCE_CONFIG_OBJECT_SQL } from '../source-config-sql.ts';
 import { sameCanonicalImport } from '../page-state/import-guard.ts';
 import { assertPageRevision } from '../page-state/types.ts';
 import { sealPageTextProjection } from '../page-state/projections.ts';
+import { storedSourcePath } from './source-path.ts';
 import { prepareCanonicalProjections } from './canonical-projections.ts';
 import { digest, sha256 } from './digest.ts';
 import { preserveProtectedTakes } from './protected-takes.ts';
@@ -89,7 +90,7 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
   const source = { sourceId: row.source_id };
   const snapshot = await engine.readPageSnapshot(row.slug, { ...source, includeDeleted: true });
   assertPageRevision(snapshot, p.expected_revision === null ? {} : { expectedRevision: p.expected_revision });
-  if ((snapshot?.page.id ?? null) !== row.page_id || (snapshot?.page.source_path != null && snapshot.page.source_path !== p.sourcePath)) {
+  if ((snapshot?.page.id ?? null) !== row.page_id || (snapshot?.page.source_path != null && storedSourcePath(snapshot.page.source_path) !== p.sourcePath)) {
     throw new OperationError('page_identity_changed', 'The imported path no longer names the accepted page.');
   }
   if (p.kind === 'managed_sync_delete') return { observedRevision: snapshot?.revision ?? null, noop: !snapshot || snapshot.page.deleted_at != null,

@@ -10,6 +10,7 @@ import { assertPersistenceAccepting, foregroundWriteCompletions, startPersistenc
 import { discoverManagedSync, resolveManagedSyncContext, readSyncContent, readSyncFile, syncGit, type SyncDiscovery } from './sync-discovery.ts';
 import { managedSyncAuthority, validateSyncAuthority, validateManagedSyncOptions, type SyncAuthority } from './sync-authority.ts';
 import type { SyncIntent } from './sync-prepare.ts';
+import { storedSourcePath } from './source-path.ts';
 import { currentCompanyBrainSync, getCompanyBrainProfile, readCompanyBrainPlan } from '../company-brain/profile.ts';
 import { readCommittedBlob } from '../company-brain/revision.ts';
 import { refreshProjectionStatistics } from '../search/projection-statistics.ts';
@@ -136,7 +137,7 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string): Pr
     slug = entry.slug!; pageId = entry.pageId ?? null; revision = entry.revision ?? null;
     const snapshot = await engine.readPageSnapshot(slug, { sourceId: cursor.sourceId, includeDeleted: true });
     if ((snapshot?.page.id ?? null) !== pageId || (snapshot?.revision ?? null) !== revision ||
-        (snapshot?.page.source_path != null && snapshot.page.source_path !== entry.sourcePath)) {
+        (snapshot?.page.source_path != null && storedSourcePath(snapshot.page.source_path) !== entry.sourcePath)) {
       throw new OperationError('revision_conflict', 'A page changed after this sync cursor was enumerated.');
     }
   }
