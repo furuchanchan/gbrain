@@ -120,6 +120,24 @@ describe('contextual_retrieval_coverage doctor check', () => {
     expect(result.status).toBe('ok');
   });
 
+  test('managed brain is not prescribed reindex --markdown (#5377)', async () => {
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title, compiled_truth, chunker_version, contextual_retrieval_mode)
+       VALUES ('default', $1, 'concept', 'Old chunker', 'body', 2, 'title')`,
+      ['test/managed-drift'],
+    );
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+    try {
+      const result = await checkContextualRetrievalCoverage(engine);
+      expect(result.status).toBe('warn');
+      expect(result.message).toContain('older chunker_version');
+      expect(result.message).toContain('managed');
+      expect(result.message).not.toContain('reindex --markdown');
+    } finally {
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    }
+  });
+
   test('audit summary line surfaces recent synopsis failures', async () => {
     // Drop a failure event into the audit JSONL.
     const { computeSynopsisAuditFilename } = await import('../src/core/audit-synopsis.ts');

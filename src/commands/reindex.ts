@@ -34,6 +34,7 @@ import { resolve } from 'path';
 import { runSlidingPool } from '../core/worker-pool.ts';
 import { resolveWorkersWithClamp } from '../core/sync-concurrency.ts';
 import { refreshProjectionStatistics } from '../core/search/projection-statistics.ts';
+import { assertUnmanagedCanonicalWriter } from '../core/persistence/maintenance.ts';
 
 interface ReindexOpts {
   /** Cap total pages reindexed. Useful for triage runs on huge brains. */
@@ -353,6 +354,22 @@ export async function runReindex(engine: BrainEngine, args: string[]): Promise<R
       process.stderr.write(`[reindex] DRY-RUN: would re-chunk ${target} of ${pending} pending markdown pages${scope}.\n`);
     }
     return { pending, pendingAfter: pending, reindexed: 0, skipped: 0, failed: 0, dryRun: true, chunkerVersion: MARKDOWN_CHUNKER_VERSION, type };
+  }
+
+  // issue #5377: on a managed brain every selected page is refused by the
+  // writer-coordinator guard inside importFromFile/importFromContent — refuse
+  // the whole sweep up front instead of one identical error per page.
+  try {
+    await assertUnmanagedCanonicalWriter(engine, 'markdown reindex');
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (opts.json) {
+      process.stdout.write(JSON.stringify({ error: message, pending }) + '\n');
+    } else {
+      process.stderr.write(`[reindex] ${message}\n`);
+    }
+    setCliExitVerdict(2);
+    return { pending, pendingAfter: pending, reindexed: 0, skipped: 0, failed: 0, dryRun: false, chunkerVersion: MARKDOWN_CHUNKER_VERSION, type };
   }
 
   const reporter = createProgress(cliOptsToProgressOptions(getCliOptions()));

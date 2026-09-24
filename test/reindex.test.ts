@@ -489,6 +489,27 @@ describe('gbrain reindex --markdown (v0.32.7)', () => {
     }
   });
 
+  test('managed brain refuses the whole sweep up front (#5377)', async () => {
+    await seedLegacyPage('managed/page', 'managed body');
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+    try {
+      const { result, stderr } = await captureOutput(() =>
+        runReindex(engine, ['--markdown', '--limit', '1', '--no-embed']));
+      expect(result.reindexed).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.pendingAfter).toBe(1);
+      expect(stderr).toContain('cannot mutate a managed brain');
+      expect(stderr).not.toContain('managed/page:');
+      expect(currentExitCode()).toBe(2);
+      const rows = await engine.executeRaw<{ chunker_version: number }>(
+        `SELECT chunker_version FROM pages WHERE slug = 'managed/page'`,
+      );
+      expect(Number(rows[0]?.chunker_version)).toBe(1);
+    } finally {
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    }
+  });
+
   test('failed rows remain in the reported pending count', async () => {
     await seedLegacyPage('notes/fails', 'will fail');
     await seedLegacyPage('notes/succeeds', 'will succeed');

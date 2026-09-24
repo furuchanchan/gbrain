@@ -105,6 +105,21 @@ export async function checkContextualRetrievalCoverage(
       };
     }
 
+    // issue #5377: on a managed brain `gbrain reindex --markdown` cannot repair
+    // these pages — every direct import is refused by the writer-coordinator
+    // guard. Don't prescribe a command that can only fail.
+    let managedBrain = false;
+    if (needsReindex) {
+      try {
+        const managed = await engine.executeRaw<{ enabled: boolean }>(
+          'SELECT enabled FROM persistence_brain WHERE singleton=1',
+        );
+        managedBrain = managed?.[0]?.enabled === true;
+      } catch {
+        // Schemas predating managed writers lack the table — treat as unmanaged.
+      }
+    }
+
     const parts: string[] = [];
     if (chunkerDrift > 0) {
       parts.push(`${chunkerDrift} page(s) at older chunker_version`);
@@ -115,7 +130,11 @@ export async function checkContextualRetrievalCoverage(
     if (modeNull > 0) {
       parts.push(`${modeNull} page(s) never evaluated against CR ladder`);
     }
-    const fixHint = needsReindex ? ` Run \`gbrain reindex --markdown\` to align.` : '';
+    const fixHint = !needsReindex
+      ? ''
+      : managedBrain
+        ? ' This brain is managed — the markdown reindex sweep cannot run on it; pages must be re-evaluated through the managed writer coordinator.'
+        : ' Run `gbrain reindex --markdown` to align.';
     return {
       name: 'contextual_retrieval_coverage',
       status: needsReindex ? 'warn' : 'ok',
