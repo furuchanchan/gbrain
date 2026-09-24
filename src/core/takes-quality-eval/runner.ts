@@ -125,6 +125,10 @@ async function callOneModel(
       system: 'You are an evaluation judge. Return strict JSON in the requested shape. Do not include markdown fences in your final response.',
       messages: [{ role: 'user', content: systemPrompt }],
       maxTokens: 2000,
+      // A reasoning-tier model would otherwise spend this bounded output
+      // budget on thinking and return no judge JSON at all. Other providers
+      // ignore this option.
+      anthropicThinking: 'disabled',
       abortSignal,
     });
     try {

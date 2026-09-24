@@ -3511,6 +3511,13 @@ export interface ChatOpts {
    */
   cacheSystem?: boolean;
   /**
+   * Per-call extended-thinking mode. Applied only when the resolved recipe is
+   * the Anthropic one; ignored for every other provider. Exists so a caller
+   * with a strict output contract and a small `maxTokens` can opt out of a
+   * deployment-wide thinking default without rebuilding the option bag.
+   */
+  anthropicThinking?: 'disabled' | 'adaptive';
+  /**
    * JSON Schema the reply must conform to (#4863). Honored ONLY on
    * openai-compatible recipes that declare `supports_structured_outputs` —
    * backends that enforce `response_format: json_schema` server-side
@@ -4037,6 +4044,17 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   applyConfiguredChatProviderOptions(providerOptions, cfg, recipe.id, modelId);
   // Call-scoped options merge last so they win over configured siblings.
   providerOptions = deepMergeRecords(providerOptions, opts.providerOptions);
+
+  // Explicit per-call thinking mode, applied AFTER the config deep-merge so
+  // `opts.anthropicThinking` always wins over `provider_chat_options`. The
+  // spread preserves every other configured anthropic option — cacheControl in
+  // particular, which the cacheControlValue derivation below depends on.
+  if (recipe.id === 'anthropic' && opts.anthropicThinking) {
+    providerOptions.anthropic = {
+      ...providerOptions.anthropic,
+      thinking: { type: opts.anthropicThinking },
+    };
+  }
 
   // Derive ONE canonical cache-control value AFTER config merging and reuse
   // it for every breakpoint (system block, last tool def, call-level). If
