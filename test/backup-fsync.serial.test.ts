@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { privateWrite } from '../src/core/agent-install/state.ts';
 import { readBackupArchive, writeBackupArchive } from '../src/core/backup/archive.ts';
+import { syncRestoredTree } from '../src/core/backup/snapshot.ts';
 
 for (const platform of ['linux', 'win32'] as const) {
   test(`backup file durability preserves fsync while directory opens follow the ${platform} guard`, () => {
@@ -78,3 +79,31 @@ test('unexpected directory I/O errors remain fatal even on Windows', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+for (const platform of ['linux', 'win32'] as const) {
+  test(`syncRestoredTree opens regular files with a writable handle on ${platform === 'win32' ? 'Windows' : 'POSIX'}`, () => {
+    const tmp = fs.mkdtempSync(join(tmpdir(), 'gbrain-restore-fsync-'));
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const open = fs.openSync;
+    const fileFlags: string[] = [];
+    const opened = spyOn(fs, 'openSync').mockImplementation((path, flags, mode) => {
+      if (fs.existsSync(path) && fs.statSync(path).isFile()) fileFlags.push(String(flags));
+      return open(path, flags, mode);
+    });
+    try {
+      fs.writeFileSync(join(tmp, 'one.md'), 'one');
+      fs.mkdirSync(join(tmp, 'nested'));
+      fs.writeFileSync(join(tmp, 'nested', 'two.md'), 'two');
+      Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+      syncRestoredTree(tmp);
+      expect(fileFlags.length).toBe(2);
+      // FlushFileBuffers on win32 requires write access: the read-only 'r'
+      // descriptor EPERMs. POSIX keeps the read-only open.
+      expect(fileFlags).toEqual([platform === 'win32' ? 'r+' : 'r', platform === 'win32' ? 'r+' : 'r']);
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor);
+      opened.mockRestore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}

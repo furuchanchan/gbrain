@@ -75,7 +75,7 @@ function relativeInside(root: string, path: string): string | null {
 }
 
 /** Persist restored file contents AND directory entries before the ready receipt. */
-function syncRestoredTree(path: string): void {
+export function syncRestoredTree(path: string): void {
   const stat = lstatSync(path);
   if (stat.isDirectory()) {
     for (const name of readdirSync(path)) syncRestoredTree(join(path, name));
@@ -83,7 +83,9 @@ function syncRestoredTree(path: string): void {
     return;
   }
   if (!stat.isFile()) throw new AgentInstallError('unsupported_file', 'Unexpected file type in restored staging.');
-  const fd = openSync(path, 'r');
+  // Windows maps fsync to FlushFileBuffers, which requires a handle opened
+  // with write access; a read-only descriptor fails EPERM there.
+  const fd = openSync(path, process.platform === 'win32' ? 'r+' : 'r');
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
