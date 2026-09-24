@@ -192,8 +192,8 @@ describe('runExtractFacts — happy path', () => {
       `SELECT id, row_num, fact FROM facts WHERE source_markdown_slug = 'people/alice' ORDER BY row_num`,
     );
     expect(after.rows).toHaveLength(3);
-    expect(Number(after.rows[0].id)).toBe(idsBefore.get(1));
-    expect(Number(after.rows[2].id)).toBe(idsBefore.get(3));
+    expect(Number(after.rows[0].id)).toBe(Number(idsBefore.get(1)));
+    expect(Number(after.rows[2].id)).toBe(Number(idsBefore.get(3)));
     expect(Number(after.rows[1].id)).not.toBe(idsBefore.get(2));
     expect(after.rows[1].fact).toBe('Second edited');
   });
