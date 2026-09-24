@@ -138,3 +138,48 @@ describe('formatEnvOutput (providers env <id>)', () => {
     expect(out).toContain('Get a key at example.com.');
   });
 });
+
+describe('resolved base URL surface (#5302)', () => {
+  const mistral = () => getRecipe('mistral')!;
+
+  test('recipe default is reported with provenance', () => {
+    const out = formatEnvOutput(mistral(), {});
+    expect(out).toContain('Base URL: https://api.mistral.ai/v1  (recipe default)');
+    expect(out).toContain('provider_base_urls.mistral');
+  });
+
+  test('file-plane provider_base_urls wins for openai-compat recipes', () => {
+    const out = formatEnvOutput(mistral(), {}, {
+      provider_base_urls: { mistral: 'https://api.eu.mistral.ai/v1' },
+    });
+    expect(out).toContain('Base URL: https://api.eu.mistral.ai/v1  (provider_base_urls.mistral (file plane))');
+    expect(out).not.toContain('recipe default');
+  });
+
+  test('a known *_BASE_URL env var resolves for openai-compat when no config override', () => {
+    const ollama = getRecipe('ollama')!;
+    const out = formatEnvOutput(ollama, { OLLAMA_BASE_URL: 'http://host:11434/v1' });
+    expect(out).toContain('Base URL: http://host:11434/v1  (OLLAMA_BASE_URL env var)');
+  });
+
+  test('file-plane beats env for openai-compat (config wins over env)', () => {
+    const ollama = getRecipe('ollama')!;
+    const out = formatEnvOutput(ollama, { OLLAMA_BASE_URL: 'http://host:11434/v1' }, {
+      provider_base_urls: { ollama: 'http://other:11434/v1' },
+    });
+    expect(out).toContain('Base URL: http://other:11434/v1  (provider_base_urls.ollama (file plane))');
+  });
+
+  test('native recipes: env wins over file plane', () => {
+    const anthropic = getRecipe('anthropic')!;
+    const out = formatEnvOutput(anthropic, { ANTHROPIC_BASE_URL: 'https://proxy.example/v1' }, {
+      provider_base_urls: { anthropic: 'https://file.example/v1' },
+    });
+    expect(out).toContain('Base URL: https://proxy.example/v1  (ANTHROPIC_BASE_URL env var)');
+    // file plane fills in only when env is empty:
+    const out2 = formatEnvOutput(anthropic, {}, {
+      provider_base_urls: { anthropic: 'https://file.example/v1' },
+    });
+    expect(out2).toContain('Base URL: https://file.example/v1  (provider_base_urls.anthropic (file plane))');
+  });
+});

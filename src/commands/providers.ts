@@ -9,7 +9,7 @@ import { listRecipes, getRecipe } from '../core/ai/recipes/index.ts';
 import { configureGateway, embedOne, isAvailable as gwIsAvailable, chat as gwChat } from '../core/ai/gateway.ts';
 import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 import { probeOllama, probeLMStudio } from '../core/ai/probes.ts';
-import { loadConfig } from '../core/config.ts';
+import { loadConfig, type GBrainConfig } from '../core/config.ts';
 import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
 import { lookupEmbeddingPrice } from '../core/embedding-pricing.ts';
 import type { Recipe } from '../core/ai/types.ts';
@@ -49,7 +49,58 @@ export function envReady(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): 
   return required.every(k => !!env[k]);
 }
 
-export function formatEnvOutput(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): string {
+/**
+ * #5302: resolve which base URL the gateway will actually hit for a recipe,
+ * with provenance — until now there was no non-destructive way to see it
+ * (a broken-override negative test was the only check).
+ *
+ * Resolution mirrors the real paths:
+ *  - openai-compat recipes: `provider_base_urls.<id>` (file plane; a
+ *    DB-plane value set via `gbrain config set` applies at runtime when no
+ *    file-plane value exists) > known `*_BASE_URL` env vars (the set
+ *    buildGatewayConfig folds into base_urls) > `recipe.base_url_default`.
+ *  - native recipes (anthropic/openai): env `*_BASE_URL` > file-plane
+ *    `provider_base_urls.<id>` — the SDK path folds the file value into env
+ *    only when env is empty (foldNativeBaseUrlsFromFilePlane).
+ */
+const PROVIDERS_BASE_URL_ENVS: Record<string, string> = {
+  'llama-server': 'LLAMA_SERVER_BASE_URL',
+  'llama-server-reranker': 'LLAMA_SERVER_RERANKER_BASE_URL',
+  ollama: 'OLLAMA_BASE_URL',
+  lmstudio: 'LMSTUDIO_BASE_URL',
+  litellm: 'LITELLM_BASE_URL',
+  openrouter: 'OPENROUTER_BASE_URL',
+  anthropic: 'ANTHROPIC_BASE_URL',
+  openai: 'OPENAI_BASE_URL',
+};
+
+export interface ResolvedBaseUrl { url: string; source: string; }
+
+export function resolveRecipeBaseUrl(
+  recipe: Recipe,
+  env: NodeJS.ProcessEnv = process.env,
+  fileCfg: Pick<GBrainConfig, 'provider_base_urls'> | null = null,
+): ResolvedBaseUrl | null {
+  const fileUrl = fileCfg?.provider_base_urls?.[recipe.id];
+  const envKey = PROVIDERS_BASE_URL_ENVS[recipe.id];
+  const envUrl = envKey ? env[envKey] : undefined;
+  const native = recipe.tier === 'native';
+  if (native ? envUrl?.trim() : fileUrl?.trim()) {
+    return native
+      ? { url: envUrl!.trim(), source: `${envKey} env var` }
+      : { url: fileUrl!.trim(), source: `provider_base_urls.${recipe.id} (file plane)` };
+  }
+  if (!native && envUrl?.trim()) return { url: envUrl!.trim(), source: `${envKey} env var` };
+  if (native && fileUrl?.trim()) return { url: fileUrl!.trim(), source: `provider_base_urls.${recipe.id} (file plane)` };
+  if (recipe.base_url_default) return { url: recipe.base_url_default, source: 'recipe default' };
+  return null;
+}
+
+export function formatEnvOutput(
+  recipe: Recipe,
+  env: NodeJS.ProcessEnv = process.env,
+  fileCfg: Pick<GBrainConfig, 'provider_base_urls'> | null = null,
+): string {
   const lines: string[] = [];
   lines.push(`${recipe.name} (${recipe.id})`);
   lines.push('');
@@ -69,6 +120,12 @@ export function formatEnvOutput(recipe: Recipe, env: NodeJS.ProcessEnv = process
     for (const k of optional) {
       lines.push(`  ${k.padEnd(32)} ${env[k] ? '✓ set' : '✗ not set'}`);
     }
+  }
+  const resolved = resolveRecipeBaseUrl(recipe, env, fileCfg);
+  if (resolved) {
+    lines.push('');
+    lines.push(`Base URL: ${resolved.url}  (${resolved.source})`);
+    lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
   }
   if (recipe.auth_env?.setup_url) {
     lines.push('');
@@ -303,7 +360,10 @@ function runEnv(args: string[]): void {
     console.error(`Unknown provider: ${id}. Run \`gbrain providers list\` to see known providers.`);
     process.exit(1);
   }
-  console.log(formatEnvOutput(recipe));
+  // File-plane config feeds the resolved-base-URL line; absent pre-init.
+  let fileCfg: ReturnType<typeof loadConfig> | null = null;
+  try { fileCfg = loadConfig(); } catch { fileCfg = null; }
+  console.log(formatEnvOutput(recipe, process.env, fileCfg));
 }
 
 async function runExplain(args: string[]): Promise<void> {
