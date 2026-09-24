@@ -93,7 +93,13 @@ d('Postgres put_page persistence', () => {
     await disposePersistenceConsumer(engine);
     const before = await snapshot();
     const disk = readFileSync(join(root, `${slug}.md`), 'utf8');
-    const binding = await getWorktreeBinding(engine, 'default');
+    // A committed receipt can precede the fixture's ownership/binding
+    // registration becoming visible (#5315). Wait for the binding before
+    // asserting, mirroring the acquireWorktree wait below.
+    let binding: Awaited<ReturnType<typeof getWorktreeBinding>> = null;
+    for (const deadline = Date.now() + 5000; Date.now() < deadline && !binding; await Bun.sleep(25)) {
+      binding = await getWorktreeBinding(engine, 'default');
+    }
     expect(binding).not.toBeNull();
     const holder = await acquireWorktree(binding!, 5000);
     expect(holder).not.toBeNull();
