@@ -883,6 +883,52 @@ export async function computeAtomProvenanceDriftCheck(
       ? Math.round(((Date.now() - oldestExtMs) / 86_400_000) * 10) / 10
       : null;
     const ratio = total > 0 ? drifted / total : 0;
+
+    // Exact-quote presence probe over drifted atoms whose bound source page is
+    // still live: a changed source_hash means the source was edited, NOT that
+    // the quote is gone. Bounded sample (500 atoms); a probe failure leaves the
+    // counts at 'unchecked' — never fails the check. This is not semantic
+    // revalidation; it just reports whether the recorded source_quote still
+    // literally appears in the bound page.
+    let quoteProbed = 0;
+    let quotePresent = 0;
+    if (sourceChanged > 0) {
+      try {
+        const probe = await engine.executeRaw<{ probed: string | number; present: string | number }>(
+          `WITH live_hashes AS MATERIALIZED (
+             SELECT DISTINCT source_id, substring(content_hash from 1 for 16) AS sh
+               FROM pages WHERE deleted_at IS NULL AND content_hash IS NOT NULL
+           )
+           SELECT count(*) AS probed,
+                  count(*) FILTER (WHERE position(a.frontmatter->>'source_quote' IN p.compiled_truth) > 0) AS present
+             FROM (
+               SELECT source_id, frontmatter FROM pages
+                WHERE type = 'atom' AND deleted_at IS NULL
+                  AND NULLIF(frontmatter->>'source_slug','') IS NOT NULL
+                  AND frontmatter->>'source_hash' IS NOT NULL
+                  AND frontmatter->>'source_hash' NOT LIKE 'pending:%'
+                  AND NULLIF(frontmatter->>'source_quote','') IS NOT NULL
+                LIMIT 500
+             ) a
+             JOIN pages p
+               ON p.source_id = a.source_id
+              AND p.slug = a.frontmatter->>'source_slug'
+              AND p.deleted_at IS NULL
+             LEFT JOIN live_hashes h
+               ON h.source_id = a.source_id
+              AND h.sh = a.frontmatter->>'source_hash'
+            WHERE h.sh IS NULL`,
+          []);
+        const pr = probe?.[0];
+        if (pr) {
+          quoteProbed = num(pr.probed);
+          quotePresent = num(pr.present);
+        }
+      } catch { /* the probe is best-effort; unchecked beats unverified */ }
+    }
+    const quoteMissing = quoteProbed - quotePresent;
+    const quoteUnchecked = Math.max(0, sourceChanged - quoteProbed);
+
     const details = {
       total_atoms: total,
       slug_unbound: slugUnbound,
@@ -891,6 +937,13 @@ export async function computeAtomProvenanceDriftCheck(
       source_gone: sourceGone,
       drift_pct: total > 0 ? Math.round(ratio * 1000) / 10 : 0,
       oldest_drifted_days: oldestDays ?? undefined,
+      source_quote_probe: {
+        bound_atoms: sourceChanged,
+        probed: quoteProbed,
+        present: quotePresent,
+        missing: quoteMissing,
+        unchecked: quoteUnchecked,
+      },
     };
 
     // Slug-unbound atoms cannot be page-checked; say so instead of hiding them.
@@ -915,7 +968,8 @@ export async function computeAtomProvenanceDriftCheck(
           `${drifted}/${total} atom(s) (${details.drift_pct}%) reference a source_hash no live page carries ` +
           `— ${sourceChanged} whose source page still exists (edited), ${sourceGone} whose source page is gone` +
           (oldestDays != null ? `; oldest ${oldestDays}d` : '') + su +
-          `. These still surface in search with a source_quote that no current page contains. Fix: ${fix}`,
+          `. Hash drift is not semantic revalidation — the recorded source_quote may still be present ` +
+          `(probe over bound source pages: ${quotePresent} present / ${quoteMissing} missing / ${quoteUnchecked} unchecked). Fix: ${fix}`,
         details,
       };
     }

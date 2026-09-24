@@ -126,10 +126,23 @@ function coverageWithConfidence(sample: EntityCoverageSample): { coverage: numbe
 export async function checkEmbedStaleness(
   engine: BrainEngine,
 ): Promise<OnboardCheckResult> {
-  const staleCount = await safeCount(
-    engine,
-    `SELECT COUNT(*) AS count FROM content_chunks WHERE embedding IS NULL`,
-  );
+  // Same predicate as the embed worker (active embedding column + embed_skip /
+  // quarantine exclusions) — a raw `embedding IS NULL` count overstates the
+  // backlog and ignores the column the worker actually reads.
+  let staleCount: number;
+  try {
+    staleCount = await engine.countStaleChunks();
+  } catch (e) {
+    // "Could not measure" is never reported as "no stale chunks".
+    return {
+      check: {
+        name: 'embed_staleness',
+        status: 'warn',
+        message: `Stale-chunk count could not be measured (not verified): ${(e as Error).message}`,
+      },
+      remediations: [],
+    };
+  }
   const remediations: RemediationStep[] = [];
   let status: 'ok' | 'warn' | 'fail' = 'ok';
   let message: string;

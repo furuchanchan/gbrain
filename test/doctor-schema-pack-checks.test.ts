@@ -6,7 +6,7 @@
  *   - consistency picks the WORST source by untyped percentage;
  *   - warn fires at >= 10% (exactly 10.0% warns), stays ok at 9.9%;
  *   - empty brain -> ok / N-A;
- *   - engine.executeRaw throwing -> check stays OK (fail-open, "Skipped: ...");
+ *   - engine.executeRaw throwing -> check is WARN ("could not run / not verified");
  *   - soft-deleted pages are excluded (deleted_at IS NULL filter);
  *   - source drift: 0 or same-value schema_pack.source.* config rows -> ok,
  *     2 distinct values -> warn naming the distinct-pack count.
@@ -85,14 +85,14 @@ describe('schema_pack_consistency', () => {
     await seedPages('src-clean', 0, 10);
     const check = await checkSchemaPackConsistency(engine);
     expect(check.status).toBe('ok');
-    expect(check.message).toBe('All pages match the active schema pack across every source.');
+    expect(check.message).toBe('All active pages have a non-empty type across every source (pack membership is not checked).');
   });
 
   test('exactly 10% untyped -> warn (boundary is >=, not >)', async () => {
     await seedPages('src-x', 1, 10); // 1/10 = 10.0%
     const check = await checkSchemaPackConsistency(engine);
     expect(check.status).toBe('warn');
-    expect(check.message).toContain('Source `src-x`: 1 of 10 pages (10.0%)');
+    expect(check.message).toContain('Source `src-x`: 1 of 10 pages (10.0%) have no type set');
     expect(check.message).toContain('gbrain schema detect --source src-x');
   });
 
@@ -111,7 +111,7 @@ describe('schema_pack_consistency', () => {
     const check = await checkSchemaPackConsistency(engine);
     expect(check.status).toBe('warn');
     // The message must attribute the warn to the WORST source, not the first.
-    expect(check.message).toContain('Source `src-high`: 5 of 10 pages (50.0%)');
+    expect(check.message).toContain('Source `src-high`: 5 of 10 pages (50.0%) have no type set');
     expect(check.message).not.toContain('src-low');
   });
 
@@ -122,14 +122,14 @@ describe('schema_pack_consistency', () => {
     ); // ...but every untyped page is soft-deleted
     const check = await checkSchemaPackConsistency(engine);
     expect(check.status).toBe('ok');
-    expect(check.message).toBe('All pages match the active schema pack across every source.');
+    expect(check.message).toBe('All active pages have a non-empty type across every source (pack membership is not checked).');
   });
 
-  test('engine.executeRaw throwing -> check stays ok (fail-open), never throws', async () => {
+  test('engine.executeRaw throwing -> warn "not verified", never throws', async () => {
     const check = await checkSchemaPackConsistency(throwingEngine);
     expect(check.name).toBe('schema_pack_consistency');
-    expect(check.status).toBe('ok'); // pinned: fail-open, NOT warn/fail
-    expect(check.message).toBe('Skipped: boom-executeRaw');
+    expect(check.status).toBe('warn'); // could-not-run is never 'ok'
+    expect(check.message).toBe('Check could not run (not verified): boom-executeRaw');
   });
 });
 
@@ -167,9 +167,9 @@ describe('schema_pack_source_drift', () => {
     expect(check.message).toContain('gbrain sources list');
   });
 
-  test('engine.executeRaw throwing -> check stays ok (fail-open), never throws', async () => {
+  test('engine.executeRaw throwing -> warn "not verified", never throws', async () => {
     const check = await checkSchemaPackSourceDrift(throwingEngine);
-    expect(check.status).toBe('ok'); // pinned: fail-open, NOT warn/fail
-    expect(check.message).toBe('Skipped: boom-executeRaw');
+    expect(check.status).toBe('warn'); // could-not-run is never 'ok'
+    expect(check.message).toBe('Check could not run (not verified): boom-executeRaw');
   });
 });

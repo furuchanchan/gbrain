@@ -273,7 +273,7 @@ export async function doctorReportRemote(
   // doctor's check at the same name. Runs server-side; the result is
   // returned to the thin-client over MCP.
   try {
-    const { findMisroutedPages } = await import('../../core/multi-source-drift.ts');
+    const { findMisroutedPages, multiSourceDriftVerdict } = await import('../../core/multi-source-drift.ts');
     // Source isolation: a scoped caller's roster (and the sample slugs the
     // walk returns) stays inside its grant; unscoped = brain-wide.
     const sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
@@ -286,17 +286,15 @@ export async function doctorReportRemote(
         engine,
         nonDefaultWithPath.map(s => ({ id: s.id, local_path: s.local_path as string })),
       );
-      if (result.walk_truncated) {
-        checks.push({
-          name: 'multi_source_drift',
-          status: 'warn',
-          message: 'Multi-source drift check skipped — FS walk hit limit/timeout on the brain server.',
-        });
-      } else if (result.count > 0) {
+      const verdict = multiSourceDriftVerdict(result, nonDefaultWithPath.length);
+      const skipNote = result.git_root_skipped.length > 0
+        ? multiSourceDriftGitRootSkipNote(result.git_root_skipped)
+        : '';
+      const incompleteNote = verdict.incompleteReasons.length > 0
+        ? ` (incomplete scan: ${verdict.incompleteReasons.join('; ')})`
+        : '';
+      if (verdict.kind === 'drift') {
         const sampleStr = result.sample.map(s => `${s.slug} (intended=${s.intended_source})`).join(', ');
-        const skipNote = result.git_root_skipped.length > 0
-          ? multiSourceDriftGitRootSkipNote(result.git_root_skipped)
-          : '';
         checks.push({
           name: 'multi_source_drift',
           status: 'warn',
@@ -304,30 +302,42 @@ export async function doctorReportRemote(
             `${result.count} page slug(s) appear at 'default' but NOT at the intended source ` +
             `(e.g., ${sampleStr}). Likely pre-v0.30.3 misroutes OR an incomplete initial sync. ` +
             `Verify on the brain host: \`gbrain sources status\` then \`gbrain sync --source <id> --full\`.` +
-            skipNote,
+            skipNote + incompleteNote,
         });
-      } else {
-        // #4712: see the local doctor's twin check — 'ok' would misreport
-        // "verified clean" if every candidate source was skipped and no
-        // walk actually ran.
-        const allSkipped =
-          result.git_root_skipped.length > 0 &&
-          result.git_root_skipped.length >= nonDefaultWithPath.length;
+      } else if (verdict.kind === 'nothing_checked') {
         checks.push({
           name: 'multi_source_drift',
-          status: allSkipped ? 'warn' : 'ok',
-          message: allSkipped
-            ? `Multi-source drift check performed no verification` +
-              multiSourceDriftGitRootSkipNote(result.git_root_skipped)
-            : result.git_root_skipped.length > 0
-              ? `No cross-source slug drift detected among checked sources.` +
-                multiSourceDriftGitRootSkipNote(result.git_root_skipped)
-              : 'No cross-source slug drift detected.',
+          status: 'warn',
+          message:
+            `Multi-source drift check performed no verification on the brain server — ` +
+            `${verdict.incompleteReasons.join('; ') || 'all sources skipped'}.` + skipNote,
+        });
+      } else if (verdict.kind === 'incomplete') {
+        checks.push({
+          name: 'multi_source_drift',
+          status: 'warn',
+          message:
+            `Multi-source drift check incomplete on the brain server — ` +
+            `${verdict.incompleteReasons.join('; ')}. Not verified clean.` + skipNote,
+        });
+      } else {
+        checks.push({
+          name: 'multi_source_drift',
+          status: 'ok',
+          message: result.git_root_skipped.length > 0
+            ? `No cross-source slug drift detected among checked sources.` + skipNote
+            : 'No cross-source slug drift detected.',
         });
       }
     }
-  } catch {
-    // Best-effort, like the rest of doctorReportRemote.
+  } catch (e) {
+    // A thrown query means the check could not run — emit a warn, never
+    // silently skip (a remote caller can't tell absence from "clean").
+    checks.push({
+      name: 'multi_source_drift',
+      status: 'warn',
+      message: `Multi-source drift check could not run on the brain server (not verified): ${(e as Error).message}`,
+    });
   }
 
   // 5. Queue health (Postgres-only). PGLite has no minion_jobs in the same

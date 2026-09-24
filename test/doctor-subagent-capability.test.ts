@@ -95,3 +95,22 @@ describe('subagent_capability precedence (#4575)', () => {
     ]);
   });
 });
+
+describe('subagent_capability no_tools honesty (#5432)', () => {
+  // ollama's recipe declares supports_tools: false → 'unusable:no_tools'.
+  test('models.subagent → jobs are refused at dispatch (resolveModelDetailed returns it verbatim)', async () => {
+    const engine = fakeEngine({ 'models.subagent': 'ollama:llama3' });
+    const check = await checkSubagentCapability(engine);
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('jobs are refused at dispatch');
+    expect(check.message).not.toContain('fall back to claude-sonnet-4-6');
+  });
+
+  test('models.default / tier override → runtime falls back to claude-sonnet-4-6', async () => {
+    const engine = fakeEngine({ 'models.default': 'ollama:llama3' });
+    const check = await checkSubagentCapability(engine);
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('runtime will fall back to claude-sonnet-4-6');
+    expect(check.message).not.toContain('refused at dispatch');
+  });
+});

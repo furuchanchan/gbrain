@@ -76,14 +76,14 @@ export async function checkSchemaPackConsistency(engine: BrainEngine): Promise<C
       }
     }
     if (worstPct === 0) {
-      return { name: 'schema_pack_consistency', status: 'ok', message: 'All pages match the active schema pack across every source.' };
+      return { name: 'schema_pack_consistency', status: 'ok', message: 'All active pages have a non-empty type across every source (pack membership is not checked).' };
     }
     const pctStr = (worstPct * 100).toFixed(1);
     if (worstPct >= 0.1) {
       return {
         name: 'schema_pack_consistency',
         status: 'warn',
-        message: `Source \`${worstSrc}\`: ${worstUntyped} of ${worstTotal} pages (${pctStr}%) have no type matching the active pack. Run \`gbrain schema detect --source ${worstSrc}\` to propose a pack matching your content shape.`,
+        message: `Source \`${worstSrc}\`: ${worstUntyped} of ${worstTotal} pages (${pctStr}%) have no type set (pack membership is not checked). Run \`gbrain schema detect --source ${worstSrc}\` to propose a pack matching your content shape.`,
       };
     }
     return {
@@ -92,10 +92,12 @@ export async function checkSchemaPackConsistency(engine: BrainEngine): Promise<C
       message: `${pctStr}% untyped at worst (source \`${worstSrc}\`) — under the 10% warn threshold.`,
     };
   } catch (e) {
+    // A thrown query means the check could not run — warn "not verified",
+    // never 'ok'.
     return {
       name: 'schema_pack_consistency',
-      status: 'ok',
-      message: `Skipped: ${(e as Error).message}`,
+      status: 'warn',
+      message: `Check could not run (not verified): ${(e as Error).message}`,
     };
   }
 }
@@ -122,8 +124,8 @@ export async function checkSchemaPackSourceDrift(engine: BrainEngine): Promise<C
   } catch (e) {
     return {
       name: 'schema_pack_source_drift',
-      status: 'ok',
-      message: `Skipped: ${(e as Error).message}`,
+      status: 'warn',
+      message: `Check could not run (not verified): ${(e as Error).message}`,
     };
   }
 }

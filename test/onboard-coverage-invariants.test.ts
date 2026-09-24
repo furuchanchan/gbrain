@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
+  checkEmbedStaleness,
   checkEntityLinkCoverage,
   checkTimelineCoverage,
 } from '../src/core/onboard/checks.ts';
@@ -126,5 +127,24 @@ describe('onboard entity coverage invariants', () => {
 
     expect(result.check.message).toMatch(/^Coverage 0% ± 0\.0%/);
     expect(result.check.message).not.toContain('50%');
+  });
+});
+
+describe('embed_staleness honesty (#5432)', () => {
+  test('empty brain → ok via the worker predicate (countStaleChunks)', async () => {
+    const r = await checkEmbedStaleness(engine);
+    expect(r.check.name).toBe('embed_staleness');
+    expect(r.check.status).toBe('ok');
+    expect(r.check.message).toBe('No stale chunks');
+  });
+
+  test('countStaleChunks throwing → warn "not verified", never ok, no remediation', async () => {
+    const throwing = {
+      countStaleChunks: async () => { throw new Error('probe-failed'); },
+    } as unknown as BrainEngine;
+    const r = await checkEmbedStaleness(throwing);
+    expect(r.check.status).toBe('warn');
+    expect(r.check.message).toContain('not verified');
+    expect(r.remediations).toEqual([]);
   });
 });

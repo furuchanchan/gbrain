@@ -22,7 +22,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runSources } from '../src/commands/sources.ts';
-import { findMisroutedPages } from '../src/core/multi-source-drift.ts';
+import { findMisroutedPages, multiSourceDriftVerdict } from '../src/core/multi-source-drift.ts';
 import { writeSlugRootMode } from '../src/core/sync-anchor.ts';
 
 let engine: PGLiteEngine;
@@ -147,13 +147,16 @@ describe('findMisroutedPages — heuristic correctness', () => {
     expect(result.walk_truncated).toBe(true);
   });
 
-  test('case 6 (OV13): unreadable local_path does NOT crash; returns empty', async () => {
+  test('case 6 (OV13): unreadable local_path does NOT crash; returns empty flagged unreadable', async () => {
     const result = await findMisroutedPages(engine, [
       { id: 'src-fake', local_path: '/nonexistent/path/that/does/not/exist' },
     ]);
-    // Walk silently returns zero files; count=0, NOT throw.
+    // Walk silently returns zero files; count=0, NOT throw — but the source
+    // is flagged unreadable so the caller reports "check incomplete", not
+    // "verified clean" (#5432).
     expect(result.count).toBe(0);
     expect(result.walk_truncated).toBe(false);
+    expect(result.unreadable_sources).toEqual(['src-fake']);
   });
 
   test('case 7 (OV13): .mdx files are walked alongside .md', async () => {
@@ -219,5 +222,51 @@ describe('findMisroutedPages — heuristic correctness', () => {
     expect(result.count).toBe(1);
     expect(result.sample[0]).toMatchObject({ slug: 'people/eve', intended_source: 'src-case9-sr' });
     expect(result.git_root_skipped).toEqual(['src-case9-gr']);
+  });
+});
+
+describe('multi_source_drift honest-reporting (#5432)', () => {
+  test('verdict: unreadable-only coverage is nothing_checked, never clean', async () => {
+    const result = await findMisroutedPages(engine, [
+      { id: 'src-missing', local_path: '/nonexistent/definitely/missing' },
+    ]);
+    const v = multiSourceDriftVerdict(result, 1);
+    expect(v.kind).toBe('nothing_checked');
+    expect(v.status).toBe('warn');
+  });
+
+  test('verdict: truncated scan with no drift found is incomplete, never clean', async () => {
+    const root = makeTmpRoot('verdict-trunc');
+    for (let i = 0; i < 8; i++) seedFile(root, `t/f${i}.md`);
+    const result = await findMisroutedPages(engine, [{ id: 'src-trunc', local_path: root }], { limit: 2 });
+    expect(result.walk_truncated).toBe(true);
+    const v = multiSourceDriftVerdict(result, 1);
+    expect(v.kind).toBe('incomplete');
+    expect(v.status).toBe('warn');
+  });
+
+  test('verdict: a readable, fully-scanned, drift-free source is clean/ok', async () => {
+    const root = makeTmpRoot('verdict-clean');
+    seedFile(root, 'notes/only-here.md');
+    const result = await findMisroutedPages(engine, [{ id: 'src-clean', local_path: root }]);
+    const v = multiSourceDriftVerdict(result, 1);
+    expect(v.kind).toBe('clean');
+    expect(v.status).toBe('ok');
+  });
+
+  test('env bounds: GBRAIN_DRIFT_LIMIT truncates when opts unset; explicit opts win', async () => {
+    const root = makeTmpRoot('env-limit');
+    for (let i = 0; i < 6; i++) seedFile(root, `t/e${i}.md`);
+    const prev = process.env.GBRAIN_DRIFT_LIMIT;
+    process.env.GBRAIN_DRIFT_LIMIT = '2';
+    try {
+      const envRes = await findMisroutedPages(engine, [{ id: 'src-env', local_path: root }]);
+      expect(envRes.walk_truncated).toBe(true);
+      const optRes = await findMisroutedPages(engine, [{ id: 'src-env', local_path: root }], { limit: 100 });
+      expect(optRes.walk_truncated).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.GBRAIN_DRIFT_LIMIT;
+      else process.env.GBRAIN_DRIFT_LIMIT = prev;
+    }
   });
 });

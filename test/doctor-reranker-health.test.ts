@@ -145,7 +145,7 @@ describe('reranker_health (v0.48.2 readiness-aware)', () => {
     });
   });
 
-  test('auth rows with the key present → the legacy auth warn (key present but rejected)', async () => {
+  test('auth rows with the key present → warn describing historical failures (no live probe)', async () => {
     await inFreshAudit({ VOYAGE_API_KEY: 'pa-test' }, async () => {
       logRerankFailure({
         model: DEFAULT_RERANKER_MODEL,
@@ -157,8 +157,9 @@ describe('reranker_health (v0.48.2 readiness-aware)', () => {
       gw({ VOYAGE_API_KEY: 'pa-test' });
       const c = await checkRerankerHealth(engineWith({}));
       expect(c.status).toBe('warn');
-      expect(c.message).toContain('auth failure');
-      expect(c.message).toContain('key present but rejected');
+      expect(c.message).toContain('historical reranker auth failure');
+      expect(c.message).toContain('no live probe was performed');
+      expect(c.details?.live_probe_performed).toBe(false);
     });
   });
 
