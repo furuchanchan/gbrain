@@ -13,6 +13,7 @@ import {
   embedBackfillWorkerSurface,
   type EmbedBackfillWorkerSurface,
 } from './minions/embed-backfill-admission.ts';
+import { isFederatedV2Enabled } from './feature-flags.ts';
 import { runInlineCostGate } from './sync-cost-gate.ts';
 
 type SyncCostGateSource = {
@@ -124,6 +125,31 @@ export function syncProducedEmbeddableContent(
   result: { chunksCreated: number; added: number; modified: number; renamed: number },
 ): boolean {
   return result.chunksCreated > 0 || result.added + result.modified + result.renamed > 0;
+}
+
+/**
+ * Should a single-source `sync` deliver a deferral outcome at all — the
+ * inline cost gate's planned auto-defer, or an intrinsic >100-file
+ * `large_sync` deferral? Mirrors the `sync --all` predicate: intrinsic
+ * delivery is v2-only on worker-backed engines, and a no-worker engine
+ * always delivers so `resolveSyncEmbedBackfill` can produce the
+ * manual-drain outcome. `workerSurface` comes from the pre-sync gate; when
+ * the gate didn't run it is resolved here (a deferral can only exist when
+ * embedding was attempted anyway).
+ */
+export async function singleSourceDeferralDeliverable(
+  engine: BrainEngine,
+  opts: {
+    autoDefer: boolean;
+    workerSurface: EmbedBackfillWorkerSurface | undefined;
+    embedDeferralReason: 'large_sync' | undefined;
+  },
+): Promise<boolean> {
+  if (opts.autoDefer) return true;
+  if (opts.embedDeferralReason !== 'large_sync') return false;
+  const surface = opts.workerSurface ?? embedBackfillWorkerSurface(engine);
+  if (surface.status === 'no_worker_surface') return true;
+  return isFederatedV2Enabled(engine);
 }
 
 export type SyncEmbedBackfillOutcome =

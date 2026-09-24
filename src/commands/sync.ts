@@ -104,9 +104,11 @@ import {
   resolveSingleSyncEmbedPlan,
   resolveSyncAllEmbedPlan,
   resolveSyncEmbedBackfill,
+  singleSourceDeferralDeliverable,
   syncProducedEmbeddableContent,
   type SyncEmbedBackfillOutcome,
 } from '../core/sync-embed-backfill.ts';
+import type { EmbedBackfillWorkerSurface } from '../core/minions/embed-backfill-admission.ts';
 import {
   git,
   gitRawOutput,
@@ -5369,7 +5371,7 @@ See also:
   // the gate can never wedge an existing cron; it converts silent ungated
   // inline spend into informed inline-or-deferred spend.
   let singleSourceAutoDefer = false;
-  let singleSourceNoWorkerSurface = false;
+  let singleSourceWorkerSurface: EmbedBackfillWorkerSurface | undefined;
   let singleCostGate: Record<string, unknown> | undefined;
   if (!noEmbed && !dryRun && !watch) {
     const gateRows = await engine.executeRaw<{ local_path: string | null; config: Record<string, unknown>; last_commit: string | null; chunker_version: string | null }>(
@@ -5387,7 +5389,7 @@ See also:
         dryRun: false,
         jsonOut, yesFlag, full, includeGitignored, noAutoEmbed,
       });
-      singleSourceNoWorkerSurface = gate.workerSurface.status === 'no_worker_surface';
+      singleSourceWorkerSurface = gate.workerSurface;
       singleCostGate = gate.costGate;
       if (gate.stop) return;
       if (gate.autoDeferEmbeds) {
@@ -5461,11 +5463,16 @@ See also:
     // v0.42.42.0 (#2139, Step 4b): the inline gate auto-deferred this run's
     // embeds (non-TTY, above floor) — enqueue a capped backfill job so the
     // NULL-embedded chunks get embedded out of band instead of being stranded.
+    // Intrinsic >100-file deferrals deliver under the same predicate as
+    // `sync --all` (v2 on worker-backed engines; always when no worker
+    // surface exists so the manual-drain outcome still reaches the user).
     let singleEmbedBackfill: SyncEmbedBackfillOutcome | undefined;
     if (
-      !companyPolicy && (singleSourceAutoDefer || (
-        singleSourceNoWorkerSurface && result.embedDeferralReason === 'large_sync'
-      )) &&
+      !companyPolicy && await singleSourceDeferralDeliverable(engine, {
+        autoDefer: singleSourceAutoDefer,
+        workerSurface: singleSourceWorkerSurface,
+        embedDeferralReason: result.embedDeferralReason,
+      }) &&
       result.status !== 'dry_run' &&
       result.status !== 'up_to_date' &&
       result.status !== 'partial' && syncProducedEmbeddableContent(result)
