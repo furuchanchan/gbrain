@@ -210,3 +210,32 @@ test('a retryable root becomes eligible again after its backoff expires', async 
     await cancelWriteRequest(engine, { kind: 'local_cli', id: config.principalIds[0] }, row.request_id);
   }
 }), 15_000);
+
+test('idle ticks back off geometrically and a found write resets the poll streak (#5370)', async () => withEnv(env, async () => {
+  const sources = await fixtures(engine, config);
+  const consumer = new PersistenceConsumer(engine, { engine: 'pglite' }, async (_engine, row) => prepared(row, sources),
+    { hostId: config.hostId, pollMs: 50, idleCapMs: 400, onError: () => {} });
+  let admitted: Awaited<ReturnType<typeof admitWrite>> | undefined;
+  try {
+    // Manual ticks do not reschedule the timer — each workless tick only
+    // grows the streak and the reported next delay, doubling to the cap.
+    await consumer.tick();
+    expect(consumer.status()).toMatchObject({ idle_streak: 1, next_poll_ms: 100 });
+    await consumer.tick();
+    expect(consumer.status()).toMatchObject({ idle_streak: 2, next_poll_ms: 200 });
+    await consumer.tick();
+    expect(consumer.status()).toMatchObject({ idle_streak: 3, next_poll_ms: 400 });
+    await consumer.tick();
+    expect(consumer.status()).toMatchObject({ idle_streak: 4, next_poll_ms: 400 }); // capped
+    // A claimed write counts as work: the streak resets and the next poll is
+    // the base interval again.
+    admitted = await admitWrite(engine, admission(config, sources[0], 'wake-5370', 'body'));
+    await consumer.tick();
+    expect(consumer.status()).toMatchObject({ idle_streak: 0, next_poll_ms: 50 });
+    await waitFor(async () => (await getWriteRequestById(engine, admitted!.id))?.state === 'committed', { timeoutMs: 5_000 });
+    await assertConservation(engine);
+  } finally {
+    await consumer.stop();
+    if (admitted) await cancelWriteRequest(engine, { kind: 'local_cli', id: config.principalIds[0] }, admitted.request_id);
+  }
+}), 30_000);

@@ -27,30 +27,47 @@ export class PersistenceConsumer {
   private nextMaintenance = 0;
   private lastError: { code: string; at: string } | undefined;
   private abort = new AbortController();
+  private idleStreak = 0;
   readonly hostId: string;
   constructor(readonly engine: BrainEngine, readonly config: GBrainConfig, readonly prepare: PrepareMutation,
-    private opts: { hostId?: string; concurrency?: number; pollMs?: number; onError?: (error: unknown) => void } = {}) {
+    private opts: { hostId?: string; concurrency?: number; pollMs?: number; idleCapMs?: number; onError?: (error: unknown) => void } = {}) {
     this.hostId = opts.hostId ?? localHostId();
   }
   start(): void { this.stopping = false; this.abort = new AbortController(); this.schedule(0); }
+  /**
+   * #5370: an idle serve used to tick every 250 ms forever, so postgres.js
+   * reused every pooled connection long before its 20 s `idle_timeout` could
+   * release it — dozens of quiet `gbrain serve` processes exhausted
+   * `max_connections`. A tick that finds no work doubles the next delay
+   * (250 ms → 30 s cap, above idle_timeout); real work or an explicit
+   * schedule(0) wake resets to the base interval.
+   */
+  private nextDelay(): number {
+    const base = this.opts.pollMs ?? 250;
+    if (this.idleStreak === 0) return base;
+    return Math.min(base * 2 ** this.idleStreak, this.opts.idleCapMs ?? 30_000);
+  }
   private schedule(ms: number): void {
     if (this.stopping) return;
+    if (ms === 0) this.idleStreak = 0;
     if (ms === 0 && this.tickPromise) { this.wakeRequested = true; return; }
     if (this.timer && ms !== 0) return;
     if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => { this.timer = undefined; void this.tick().finally(() => this.schedule(this.opts.pollMs ?? 250)); }, ms);
+    this.timer = setTimeout(() => { this.timer = undefined; void this.tick().finally(() => this.schedule(this.nextDelay())); }, ms);
     this.timer.unref?.();
   }
   async tick(): Promise<void> {
     if (this.tickPromise) return this.tickPromise;
-    this.tickPromise = this.doTick().catch(error => { this.report(error); }).finally(() => {
+    this.tickPromise = this.doTick()
+      .then(found => { this.idleStreak = found ? 0 : this.idleStreak + 1; })
+      .catch(error => { this.report(error); }).finally(() => {
       this.tickPromise = undefined;
       if (this.wakeRequested) { this.wakeRequested = false; this.schedule(0); }
     });
     return this.tickPromise;
   }
-  private async doTick(): Promise<void> {
-    if (this.stopping) return;
+  private async doTick(): Promise<boolean> {
+    if (this.stopping) return false;
     await refreshManagedFilesystemRoots(this.engine, this.engine.kind === 'pglite' ? this.config.database_path : undefined);
     if (!this.topologyWorker) this.topologyWorker = import('./topology-recovery.ts')
       .then(({ recoverSourceTopologies }) => recoverSourceTopologies(this.engine, { hostId: this.hostId, limit: 2 }))
@@ -98,13 +115,15 @@ export class PersistenceConsumer {
     if (publicationConcurrency(this.engine) === 0) {
       await this.engine.executeRaw(`UPDATE persistence_requests SET blocked_reason='writer_pool_capacity'
         WHERE state='queued' AND blocked_reason IS DISTINCT FROM 'writer_pool_capacity' AND ${PERSISTENCE_PROTOCOL_PREDICATE}`);
-      return;
+      return false;
     }
     const concurrency = this.opts.concurrency ?? 2;
     const attemptedRoots = new Set([...this.activeRoots, ...this.rootRetryAfter.keys()]);
+    let found = recovery.length > 0;
     while (!this.stopping && this.active.size < concurrency) {
       const row = await claimNextWrite(this.engine, this.hostId, 30_000, [...attemptedRoots]);
       if (!row) break;
+      found = true;
       const key = row.worktree_id ?? `db:${row.source_incarnation}`;
       attemptedRoots.add(key);
       if (this.activeRoots.has(key)) { await releaseUnpublishedClaim(this.engine, row, 'writer_busy'); break; }
@@ -116,10 +135,12 @@ export class PersistenceConsumer {
       });
       this.active.add(task);
     }
+    return found;
   }
   foregroundCompletions(worktreeId: string): number { return this.foregroundCounts.get(worktreeId) ?? 0; }
-  status(): { accepting: boolean; active_preparations: number; active_worktrees: number; last_error?: { code: string; at: string } } {
+  status(): { accepting: boolean; active_preparations: number; active_worktrees: number; idle_streak: number; next_poll_ms: number; last_error?: { code: string; at: string } } {
     return { accepting: !this.stopping, active_preparations: this.active.size, active_worktrees: this.activeRoots.size,
+      idle_streak: this.idleStreak, next_poll_ms: this.nextDelay(),
       ...(this.lastError ? { last_error: { ...this.lastError } } : {}) };
   }
   private report(error: unknown): void {
