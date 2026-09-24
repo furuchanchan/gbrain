@@ -238,6 +238,30 @@ export async function runEval(engine: BrainEngine, opts: RunOpts = {}): Promise<
         slots.push({ ok: false, modelId: m, error: `allSettled_rejected: ${String(s.reason)}` });
       }
     }
+    // One correction per malformed slot, using the same sample and the same
+    // model, driven by the existing validator. A valid-but-low score is never
+    // re-run (that would be shopping for a better mark), and a provider failure
+    // is never re-run (that is a separate retry policy).
+    for (let i = 0; i < slots.length; i++) {
+      const invalid = aggregate({ slots: [slots[i]] }).errors[0];
+      if (!invalid || !/^(parse_failed:|incomplete_scores:)/.test(invalid.error)) continue;
+      if (opts.abortSignal?.aborted) break;
+      const m = models[i];
+      if (budgetUsd !== null && cumulativeCost + estimateCost(m, 5000, 2000) > budgetUsd) {
+        budgetAborted = true;
+        process.stderr.write('[eval takes-quality] budget cap prevents malformed-slot correction\n');
+        break;
+      }
+      const correction = await callOneModel(m,
+        prompt + '\nYour previous response failed validation: ' + invalid.error +
+        '\nReturn a complete replacement in the requested JSON shape. Do not invent scores when evidence is insufficient.',
+        opts.abortSignal);
+      if (correction._usage) {
+        try { cumulativeCost += estimateCost(m, correction._usage.input_tokens, correction._usage.output_tokens); }
+        catch { /* unknown model and no budget cap: skip the cost addition */ }
+      }
+      slots[i] = correction;
+    }
     const agg = aggregate({ slots });
     lastAggregate = agg;
     successes_per_cycle.push(agg.successes);
