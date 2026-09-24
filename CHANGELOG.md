@@ -2,6 +2,20 @@
 
 All notable changes to GBrain will be documented in this file.
 
+**Withdrawal mirroring and Git scans no longer wedge on metafile pages.**
+
+A brain can hold pages whose file on disk is deliberately excluded from sync
+(`RESOLVER.md`, `README.md`, `index.md`, `schema.md`, `log.md`) — for example a
+resolver file carrying the managed durability block. Their file and database
+copies legitimately diverge, so the file-targeted scans that back withdrawals
+and Git publication could never satisfy their canonical comparison: the effect
+cursor stayed parked on that one page forever, and every sibling effect of the
+same request (Git publication, embeddings) waited behind it with zero attempts.
+
+The scans now respect the same metafile classification the sync walker uses and
+skip those pages, advancing the cursor and letting the rest of the source drain.
+No operator action is required; brains that were wedged recover the next time
+the effect worker ticks.
 ## [0.54.1.1] - 2026-09-24
 
 **Your agent can now open administration and guide another agent through a working connection.**
