@@ -129,7 +129,8 @@ describe('writeFactsAbsorbLog — ingest_log row shape', () => {
     expect(FACTS_ABSORB_REASONS).toContain('gateway_auth');
     expect(FACTS_ABSORB_REASONS).toContain('gateway_billing');
     expect(FACTS_ABSORB_REASONS).toContain('gateway_rate_limit');
-    expect(FACTS_ABSORB_REASONS.length).toBe(15);
+    expect(FACTS_ABSORB_REASONS).toContain('writer_coordinator_required');
+    expect(FACTS_ABSORB_REASONS.length).toBe(16);
   });
 
   test.each([

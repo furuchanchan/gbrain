@@ -52,6 +52,9 @@ export const FACTS_ABSORB_REASONS = [
   'gateway_auth',
   'gateway_billing',
   'gateway_rate_limit',
+  // #5362: deterministic write-coordination refusal — NOT a provider failure.
+  // Kept distinct so audit/replay never misreads it as transient gateway loss.
+  'writer_coordinator_required',
 ] as const;
 
 // v0.39.3.0 WARN-4 + CV13 — module-scoped flag so the first-occurrence
@@ -153,7 +156,12 @@ export async function writeFactsAbsorbFailure(
         ? 'gateway_rate_limit'
         : classifyFactsAbsorbError(err);
   const errorType = err instanceof Error && err.name ? err.name : 'Error';
-  await writeFactsAbsorbLog(engine, ref, reason, `provider request failed (${errorType})`, sourceId);
+  // #5362: reserve 'provider request failed' for provider failures — a
+  // coordination refusal names the actual stage instead.
+  const summary = reason === 'writer_coordinator_required'
+    ? `managed-worktree write refused by filesystem guard (${errorType})`
+    : `provider request failed (${errorType})`;
+  await writeFactsAbsorbLog(engine, ref, reason, summary, sourceId);
 }
 
 /**
@@ -166,6 +174,11 @@ export function classifyFactsAbsorbError(err: unknown): FactsAbsorbReason {
   if (!err) return 'pipeline_error';
   const msg = err instanceof Error ? err.message : String(err);
   const name = err instanceof Error ? err.name : '';
+
+  // #5362: OperationError from the managed-worktree filesystem guard is a
+  // deterministic coordination refusal — surface the typed code, never the
+  // 'provider request failed' label. Duck-typed on .code to stay import-light.
+  if (name === 'OperationError' && (err as { code?: string }).code === 'writer_coordinator_required') return 'writer_coordinator_required';
 
   // Typed extraction failures carry their reason — map precisely instead of
   // pattern-matching the message (a 401/invalid-model provider_error would

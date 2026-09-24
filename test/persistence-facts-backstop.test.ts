@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -13,6 +13,8 @@ import { publishMutation } from '../src/core/persistence/coordinator.ts';
 import { claimPersistenceEffect, publicEffectsForRequest } from '../src/core/persistence/effect-journal.ts';
 import { dispatchFactsBackstopEffect, readFactsBackstopJobPage } from '../src/core/persistence/effect-facts.ts';
 import type { WriteRequest } from '../src/core/persistence/model.ts';
+import { OperationError } from '../src/core/ops/contract.ts';
+import { classifyFactsAbsorbError, writeFactsAbsorbFailure } from '../src/core/facts/absorb-log.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { withEnv } from './helpers/with-env.ts';
 
@@ -126,4 +128,40 @@ test('confined writers and disabled extraction never receive a queued claim', ()
   const updated = await prepare({}, { content: `${content}\nAdditional content`, expected_revision: current.revision });
   const disabled = await publishMutation(engine, updated.row, updated.prepared);
   expect(disabled.outcome?.facts_backstop).toEqual({ skipped: 'extraction_disabled' });
+}));
+
+
+// #5362: a claimed-but-not-activated source root is protected by the
+// filesystem guard even with persistence_brain.enabled=false — the facts
+// backstop must refuse admission BEFORE any provider call instead of dying
+// inside the legacy fence write after paid inference.
+test('claimed-but-not-activated source root refuses admission with the typed coordinator code', () => fixture(async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gbrain-managed-src-'));
+  writeFileSync(join(root, '.gbrain-owner.json'), JSON.stringify({ version: 1, managed: true }));
+  await engine.executeRaw('UPDATE sources SET local_path=$1 WHERE id=$2', [root, 'default']);
+  const row = await publish();
+  expect(row.outcome?.facts_backstop).toEqual({ skipped: 'writer_coordinator_required' });
+  // Admission-time skip: no extraction debt and no job is created at all.
+  expect((await publicEffectsForRequest(engine, row.id)).filter(effect => effect.kind === 'facts-backstop')).toEqual([]);
+  expect(await jobs()).toHaveLength(0);
+  expect(await readFactsBackstopJobPage(engine, { slug: 'notes/example', sourceId: 'default' }))
+    .toEqual({ skipped: 'writer_coordinator_required' });
+}));
+
+test('an unclaimed filesystem source still admits the backstop', () => fixture(async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gbrain-unmanaged-src-'));
+  await engine.executeRaw('UPDATE sources SET local_path=$1 WHERE id=$2', [root, 'default']);
+  const row = await publish();
+  expect(row.outcome?.facts_backstop).toEqual({ queued: true });
+}));
+
+test('coordinator refusals keep their typed diagnosis and never claim provider failure', () => fixture(async () => {
+  const err = new OperationError('writer_coordinator_required', 'This file belongs to a managed canonical worktree.');
+  expect(classifyFactsAbsorbError(err)).toBe('writer_coordinator_required');
+  await writeFactsAbsorbFailure(engine, 'notes/example', err, 'default');
+  const [log] = await engine.executeRaw<{ summary: string }>(
+    "SELECT summary FROM ingest_log WHERE source_type='facts:absorb' ORDER BY id DESC LIMIT 1");
+  expect(log.summary).toContain('writer_coordinator_required');
+  expect(log.summary).not.toContain('provider request failed');
+  expect(log.summary).toContain('managed-worktree write refused');
 }));

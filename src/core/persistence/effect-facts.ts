@@ -7,6 +7,7 @@ import { OperationError } from '../ops/contract.ts';
 import { authorizeStoredRequest, authorizeWrite } from './authority.ts';
 import { completeEffect } from './effect-journal.ts';
 import { guardEffectSource } from './effect-recovery.ts';
+import { isManagedFilesystemPath } from './filesystem-guard.ts';
 import type { PersistenceEffect } from './effect-model.ts';
 import type { WriteRequest } from './model.ts';
 
@@ -28,6 +29,15 @@ export async function authorizeFactsBackstop(engine: BrainEngine, row: WriteRequ
   }
 }
 
+/** #5362: the filesystem guard protects a claimed root even while global
+ * activation is off — enrichment admitted in that gap dies inside the legacy
+ * fence write AFTER provider calls. Detect the protected root at admission so
+ * the refusal is durable, typed, and never burns inference or retry budget. */
+async function sourceRootManaged(engine: BrainEngine, sourceId: string): Promise<boolean> {
+  const [source] = await engine.executeRaw<{ local_path: string | null }>('SELECT local_path FROM sources WHERE id=$1', [sourceId]);
+  return !!source?.local_path && await isManagedFilesystemPath(engine, source.local_path);
+}
+
 /** Provider availability belongs to the durable job's execution process. */
 export async function prepareFactsBackstop(engine: BrainEngine, row: WriteRequest, page: ParsedPage): Promise<FactsBackstopStatus> {
   if (row.authority.restrictedNamespace || row.authority.delegated || row.authority.slugPrefixes != null) return { skipped: 'slug_bound_client' };
@@ -35,7 +45,7 @@ export async function prepareFactsBackstop(engine: BrainEngine, row: WriteReques
   if (!(await isFactsExtractionEnabled(engine))) return { skipped: 'extraction_disabled' };
   const eligible = isFactsBackstopEligible(row.slug, page);
   if (!eligible.ok) return { skipped: eligible.reason };
-  return { queued: true };
+  return await sourceRootManaged(engine, row.source_id) ? { skipped: 'writer_coordinator_required' } : { queued: true };
 }
 
 /** Optional fence on new durable jobs; old jobs retain their established input contract. */
@@ -44,6 +54,7 @@ export async function readFactsBackstopJobPage(engine: BrainEngine, data: Record
   const sourceId = typeof data.sourceId === 'string' ? data.sourceId : 'default';
   const [brain] = await engine.executeRaw<{ enabled: boolean }>('SELECT enabled FROM persistence_brain WHERE singleton=1');
   if (brain?.enabled && data.persistence_request_id === undefined) return { skipped: 'missing_write_authority' } as const;
+  if (await sourceRootManaged(engine, sourceId)) return { skipped: 'writer_coordinator_required' } as const;
   const snapshot = await engine.readPageSnapshot(slug, { sourceId });
   if (!snapshot) return { skipped: 'page_missing' } as const;
   if (data.persistence_request_id !== undefined) {
@@ -67,7 +78,7 @@ export async function dispatchFactsBackstopEffect(engine: BrainEngine, effect: P
     await tx.executeRaw("SELECT set_config('synchronous_commit','on',true)");
     await guardEffectSource(tx, effect, hostId);
     const [row] = await tx.executeRaw<WriteRequest>('SELECT * FROM persistence_requests WHERE id=$1::uuid', [effect.request_id]);
-    let skipped: string | undefined;
+    let skipped: string | undefined = await sourceRootManaged(tx, effect.source_id) ? 'writer_coordinator_required' : undefined;
     if (!row || row.state !== 'committed') skipped = 'invalid_write_request';
     if (row && !skipped) {
       try { await authorizeFactsBackstop(tx, row, true); }

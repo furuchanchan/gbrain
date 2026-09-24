@@ -2572,6 +2572,14 @@ export async function registerBuiltinHandlers(
     ).catch(async (err: unknown) => {
       const { writeFactsAbsorbFailure } = await import('../core/facts/absorb-log.ts');
       await writeFactsAbsorbFailure(engine, slug, err, sourceId);
+      // #5362: a managed-worktree coordination refusal is deterministic —
+      // dead-letter at once instead of burning the retry budget (5 attempts
+      // of paid inference) against the same filesystem guard.
+      if (err instanceof Error && err.name === 'OperationError'
+        && (err as { code?: string }).code === 'writer_coordinator_required') {
+        const { UnrecoverableError } = await import('../core/minions/errors.ts');
+        throw new UnrecoverableError(`writer_coordinator_required: ${err.message}`);
+      }
       throw err;
     });
     // Execution-time chat_unavailable in a KEYED worker is config drift —

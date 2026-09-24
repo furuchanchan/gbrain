@@ -37,11 +37,20 @@ export function hasFilesystemPublication(path: string): boolean {
   const held = active.getStore();
   return held?.active === true && held.roots.some(root => encloses(root, path));
 }
-export function assertManagedFilesystemWrite(path: string): void {
-  const managed = hasManagedRootMarker(path) || registeredManagedRoots().some(root => encloses(root, path) || encloses(path, root))
+function isManagedPath(path: string): boolean {
+  return hasManagedRootMarker(path) || registeredManagedRoots().some(root => encloses(root, path) || encloses(path, root))
     || [...managedRoots.values()].some(roots => [...roots].some(root => encloses(root, path) || encloses(path, root)));
-  if (managed && !hasFilesystemPublication(path)) throw new OperationError('writer_coordinator_required',
+}
+export function assertManagedFilesystemWrite(path: string): void {
+  if (isManagedPath(path) && !hasFilesystemPublication(path)) throw new OperationError('writer_coordinator_required',
     'This file belongs to a managed canonical worktree.', 'Submit the change through the persistence coordinator.');
+}
+/** Read-only protected-root probe (#5362): lets admission-time gates detect a
+ * claimed-but-not-activated source root without throwing, so enrichment work
+ * is refused BEFORE provider calls instead of inside the legacy fence write. */
+export async function isManagedFilesystemPath(engine: SqlEngine, path: string): Promise<boolean> {
+  await refreshManagedFilesystemRoots(engine);
+  return isManagedPath(path);
 }
 /** Invalidate inherited async contexts before the owner releases the kernel lock. */
 export async function withFilesystemPublication<T>(roots: string[], fn: () => Promise<T>): Promise<T> {
