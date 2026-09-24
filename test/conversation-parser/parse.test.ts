@@ -678,9 +678,9 @@ describe('bold-time-dash pattern (normalized Slack Markdown)', () => {
       '2026-04-09T09:15:00Z',
     );
     expect(withoutTimezone.timezone_warning).toContain('bold-time-dash');
-    // Current time-only policy records the captured wall-clock fields with Z;
-    // timezone metadata suppresses the warning but does not convert the time.
-    expect(withTimezone.messages[0].timestamp).toBe('2026-04-09T09:15:00Z');
+    // The declared timezone now actually converts the wall-clock time:
+    // 09:15 America/Los_Angeles (PDT, UTC-7) is 16:15Z.
+    expect(withTimezone.messages[0].timestamp).toBe('2026-04-09T16:15:00Z');
     expect(withTimezone.timezone_warning).toBeUndefined();
   });
 
@@ -1395,5 +1395,50 @@ describe('date-fallback anchoring applies to every pattern (#4681)', () => {
     expect(r.messages).toHaveLength(2);
     expect(r.date_fallback_count).toBeUndefined();
     expect('date_fallback_count' in JSON.parse(JSON.stringify(r))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Frontmatter timezone converts wall-clock timestamps (#5430 item E.1)
+// ---------------------------------------------------------------------------
+
+describe('parseConversation — frontmatter timezone conversion (#5430-E.1)', () => {
+  test('time-only timestamps are interpreted in the declared zone', () => {
+    const body = '**[09:00] \u{1f464} Alice:** moved to Example City';
+    const utc = parseConversation(body, { fallbackDate: '2024-03-15' });
+    const jst = parseConversation(body, {
+      page: makePage({ date: '2024-03-15', timezone: 'Asia/Tokyo' }),
+    });
+    expect(utc.messages[0].timestamp).toBe('2024-03-15T09:00:00Z');
+    // 09:00 JST (UTC+9) = 00:00 UTC, same date.
+    expect(jst.messages[0].timestamp).toBe('2024-03-15T00:00:00Z');
+  });
+
+  test('a zone on the other side of the date line shifts the UTC day', () => {
+    const body = '**Alice Example** 00:30 — late night note';
+    const r = parseConversation(body, {
+      page: makePage({ date: '2024-03-15', timezone: 'America/Los_Angeles' }),
+    });
+    // 00:30 PDT = 07:30 UTC same calendar day.
+    expect(r.messages[0].timestamp).toBe('2024-03-15T07:30:00Z');
+  });
+
+  test('an unparseable timezone name falls back to assume-UTC, no crash', () => {
+    const body = '**[09:00] \u{1f464} Alice:** hello';
+    const r = parseConversation(body, {
+      page: makePage({ date: '2024-03-15', timezone: 'Mars/Olympus' }),
+    });
+    expect(r.messages[0].timestamp).toBe('2024-03-15T09:00:00Z');
+  });
+
+  test('inline_utc patterns are NOT shifted by a declared timezone', () => {
+    // whatsapp-iso captures full date+time that the export already
+    // records as UTC — converting it again would double-shift.
+    const body = '[15/03/24, 09:00:00] Alice Example: hello';
+    const r = parseConversation(body, {
+      page: makePage({ date: '2024-03-15', timezone: 'Asia/Tokyo' }),
+    });
+    expect(r.matched_pattern_id).toBe('whatsapp-iso');
+    expect(r.messages[0].timestamp).toBe('2024-03-15T09:00:00Z');
   });
 });

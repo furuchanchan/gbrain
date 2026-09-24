@@ -155,6 +155,67 @@ function to24h(hour: number, ampm: string | undefined): number {
   return hour;
 }
 
+// Validated IANA timezone formatter cache — Intl throws RangeError on
+// unknown zones, so a bad `timezone:` value degrades to the old
+// assume-UTC behavior instead of aborting the parse.
+const tzFormatterCache = new Map<string, Intl.DateTimeFormat | null>();
+function tzFormatter(tz: string): Intl.DateTimeFormat | null {
+  let fmt = tzFormatterCache.get(tz);
+  if (fmt === undefined) {
+    try {
+      fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      });
+      fmt.formatToParts(0); // validate the zone name eagerly
+    } catch {
+      fmt = null;
+    }
+    tzFormatterCache.set(tz, fmt);
+  }
+  return fmt;
+}
+
+/**
+ * Interpret a wall-clock `date hour:minute:second` in the IANA zone `tz`
+ * and return the equivalent UTC instant in the same `YYYY-MM-DDTHH:MM:SSZ`
+ * shape the callers emit. `Intl` cannot invert zoned wall-clock time
+ * directly, so the conversion guesses UTC, reads back what that instant
+ * shows in `tz`, and corrects once by the difference — exact for every
+ * real zone and stable across DST transitions (a wall-clock time inside
+ * a DST gap lands within ±1h of the intended instant). An unknown or
+ * missing zone returns null; callers then keep the assume-UTC output.
+ */
+function wallClockToIso(
+  date: string,
+  hour: number,
+  minute: number,
+  second: number,
+  tz: string | undefined,
+): string | null {
+  if (!tz) return null;
+  const fmt = tzFormatter(tz);
+  if (!fmt) return null;
+  const [y, m, d] = date.split('-').map(Number);
+  if (![y, m, d].every(Number.isFinite)) return null;
+  const guess = Date.UTC(y, m - 1, d, hour, minute, second);
+  const parts: Record<string, string> = {};
+  for (const part of fmt.formatToParts(new Date(guess))) parts[part.type] = part.value;
+  const shownHour = Number(parts.hour) % 24; // Intl may render midnight as 24
+  const shown = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    shownHour, Number(parts.minute), Number(parts.second),
+  );
+  return new Date(guess - (shown - guess)).toISOString().replace(/\.000Z$/, 'Z');
+}
+
+function emitIso(date: string, hour: number, minute: number, tz: string | undefined): string {
+  return wallClockToIso(date, hour, minute, 0, tz)
+    ?? `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+}
+
 /**
  * Build ISO timestamp for a regex match. Handles inline-date patterns
  * (date in capture groups) AND time-only patterns (date from
@@ -174,6 +235,12 @@ function buildIso(
   dateCtx: DateContext,
 ): string | null {
   const { captures } = entry;
+  // #5430-E.1: wall-clock captures (`utc_assumed_with_warn`) are
+  // interpreted in the page's `timezone:` when one is declared —
+  // previously the key only suppressed the warning while every timestamp
+  // was still stamped as UTC. `inline_utc` patterns already carry real
+  // UTC and must not be shifted.
+  const tz = entry.timezone_policy === 'utc_assumed_with_warn' ? dateCtx.timezone : undefined;
 
   // Pattern-specific date reconstruction.
   switch (entry.id) {
@@ -189,7 +256,7 @@ function buildIso(
       if (month < 0 || !Number.isFinite(day) || !Number.isFinite(year)) return null;
       const hour = to24h(hourRaw, ampm);
       const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+      return emitIso(date, hour, minute, tz);
     }
     case 'whatsapp-iso': {
       // groups: 1=dd, 2=mm, 3=yy, 4=hh, 5=mm, 6=ss, 7=speaker, 8=text
@@ -201,7 +268,7 @@ function buildIso(
       const minute = Number(match[5]);
       if (![day, month, year, hour, minute].every(Number.isFinite)) return null;
       const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+      return emitIso(date, hour, minute, tz);
     }
     case 'whatsapp-us': {
       // groups: 1=mm, 2=dd, 3=yy, 4=hh, 5=mm, 6=ampm, 7=speaker, 8=text
@@ -215,7 +282,7 @@ function buildIso(
       if (![month, day, year, hourRaw, minute].every(Number.isFinite)) return null;
       const hour = to24h(hourRaw, ampm);
       const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+      return emitIso(date, hour, minute, tz);
     }
     case 'discord-export': {
       // groups: 1=mm, 2=dd, 3=yyyy, 4=hh, 5=mm, 6=ampm, 7=speaker
@@ -228,7 +295,7 @@ function buildIso(
       if (![month, day, year, hourRaw, minute].every(Number.isFinite)) return null;
       const hour = to24h(hourRaw, ampm);
       const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+      return emitIso(date, hour, minute, tz);
     }
     case 'teams-export': {
       // groups: 1=speaker, 2=mm, 3=dd, 4=yyyy, 5=hh, 6=mm, 7=ampm, 8=text
@@ -241,7 +308,7 @@ function buildIso(
       if (![month, day, year, hourRaw, minute].every(Number.isFinite)) return null;
       const hour = to24h(hourRaw, ampm);
       const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+      return emitIso(date, hour, minute, tz);
     }
   }
 
@@ -263,7 +330,7 @@ function buildIso(
     const ampm =
       captures.ampm_group !== undefined ? match[captures.ampm_group] : undefined;
     const hour = to24h(hourRaw, ampm);
-    return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+    return emitIso(date, hour, minute, tz);
   }
 
   // Time-only patterns: date from DateContext.
@@ -278,7 +345,7 @@ function buildIso(
     const ampm =
       captures.ampm_group !== undefined ? match[captures.ampm_group] : undefined;
     const hour = to24h(hourRaw, ampm);
-    return `${dateCtx.fallbackDate}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
+    return emitIso(dateCtx.fallbackDate, hour, minute, tz);
   }
 
   // No-time patterns (irc-classic): only frontmatter date is
@@ -286,7 +353,7 @@ function buildIso(
   // Honest: messages lose intra-day ordering, but at least they
   // parse and the day-level fact attribution is correct.
   if (entry.date_source === 'frontmatter' && captures.hour_group === undefined) {
-    return `${dateCtx.fallbackDate}T00:00:00Z`;
+    return emitIso(dateCtx.fallbackDate, 0, 0, tz);
   }
 
   return null;
