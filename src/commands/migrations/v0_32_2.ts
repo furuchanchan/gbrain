@@ -21,8 +21,11 @@
  * Idempotency: phase B only touches rows with row_num IS NULL. Re-runs
  * after a partial completion pick up where the previous run stopped.
  * Per-page atomic (.tmp + parse + rename, same primitive as
- * fence-write.ts). Dirty-tree refusal mirrors src/core/dry-fix.ts so
- * the user can review the diff before committing.
+ * fence-write.ts). Refusal is per target file: a page is only rewritten
+ * while its on-disk bytes still match the page's DB snapshot
+ * (compiled_truth + timeline + frontmatter), so uncommitted changes to
+ * unrelated files never block the backfill and uncommitted changes to
+ * the target itself always diverge from the snapshot and refuse.
  *
  * Facts with NULL entity_slug are structurally unfenceable (no page to
  * fence onto). They're skipped with a warning; the operator decides
@@ -31,7 +34,6 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 
 import type {
   Migration, OrchestratorOpts, OrchestratorResult, OrchestratorPhaseResult,
@@ -40,6 +42,8 @@ import type { BrainEngine } from '../../core/engine.ts';
 import { loadConfig, toEngineConfig } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import { parseFactsFence, renderFactsTable, replaceOrInsertFactsFence } from '../../core/facts-fence.ts';
+import { parseMarkdown } from '../../core/markdown.ts';
+import { contentHash } from '../../core/utils.ts';
 import { resolvePageWriteTarget } from '../../core/write-through.ts';
 
 let testEngineOverride: BrainEngine | null = null;
@@ -132,22 +136,44 @@ interface PhaseBOutcome {
   failed_pages: string[];
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>).sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 /**
- * Dirty-tree refusal: mirror src/core/dry-fix.ts behavior. Refuses to
- * write if any source's local_path has uncommitted changes. Dry-run
- * skips this check (no writes happen anyway).
+ * Per-target-file refusal (#5430 item B; supersedes the whole-source
+ * dirty-tree check, see #5093): a page is only rewritten while its
+ * on-disk bytes still match the page's DB snapshot — compiled_truth,
+ * timeline, and frontmatter. An uncommitted change to the target file
+ * always diverges from that snapshot (the DB never saw it), while an
+ * uncommitted change to any other file is irrelevant and no longer
+ * blocks the backfill.
  */
-function isLocalPathDirty(localPath: string): boolean {
+async function fileMatchesDbSnapshot(
+  engine: BrainEngine,
+  sourceId: string,
+  entitySlug: string,
+  filePath: string,
+): Promise<boolean> {
   try {
-    const out = execFileSync('git', ['-C', localPath, 'status', '--porcelain', '--', '.'], {
-      encoding: 'utf-8',
-      timeout: 10_000,
-    });
-    return out.trim().length > 0;
+    const page = await engine.getPage(entitySlug, { sourceId });
+    if (!page) return false;
+    const reparsed = parseMarkdown(readFileSync(filePath, 'utf-8'), `${entitySlug}.md`);
+    // parseMarkdown lifts the identity keys (type/title/tags/slug) out of
+    // frontmatter and trims a trailing newline from the body — normalize
+    // the DB snapshot the same way before comparing.
+    const { type: _t, title: _ti, slug: _s, tags: _tg, ...dbFrontmatter } = page.frontmatter ?? {};
+    return reparsed.compiled_truth.trimEnd() === (page.compiled_truth ?? '').trimEnd()
+      && (reparsed.timeline ?? '').trimEnd() === (page.timeline ?? '').trimEnd()
+      && (reparsed.slug === '' || reparsed.slug === entitySlug)
+      && stableStringify(reparsed.frontmatter) === stableStringify(dbFrontmatter);
   } catch {
-    // Not a git repo OR git not on PATH → treat as "not dirty" (the
-    // user opted out of git tracking, which is allowed). The fence
-    // writes are still atomic via .tmp + rename.
     return false;
   }
 }
@@ -234,28 +260,23 @@ async function phaseBFenceFacts(
       };
     }
 
-    // Dirty-tree refusal: check ONLY the sources we are about to write
-    // into. A dirty tree in an unrelated source (or zero fenceable rows
-    // at all) must not block a no-op or a targeted backfill (#927).
-    const targetSourceIds = new Set([...groups.keys()].map(k => k.split('\0')[0]));
-    for (const id of targetSourceIds) {
-      const localPath = localPathById.get(id);
-      if (localPath && isLocalPathDirty(localPath)) {
-        return {
-          name: 'fence_facts',
-          status: 'failed',
-          detail: `source "${id}" has uncommitted changes in ${localPath}. Commit or stash, then re-run.`,
-        };
-      }
-    }
-
     for (const [key, group] of groups) {
       const [sourceId, entitySlug] = key.split('\0');
       const filePath = filePaths.get(key)!;
       const tmpPath = `${filePath}.tmp`;
 
       try {
-        let body = readFileSync(filePath, 'utf-8');
+        const originalBody = readFileSync(filePath, 'utf-8');
+
+        // #5430-B: refuse to overwrite a target whose on-disk bytes
+        // diverge from the DB snapshot (uncommitted user edit, or the
+        // file drifted from what put_page last wrote).
+        if (!(await fileMatchesDbSnapshot(engine, sourceId, entitySlug, filePath))) {
+          outcome.failed_pages.push(`${entitySlug} (target file diverges from the DB snapshot — sync or commit it first)`);
+          continue;
+        }
+
+        let body = originalBody;
 
         // Append each legacy row, collecting the assigned row_nums.
         // Already-fenced rows (row_num already set) are skipped at the
@@ -329,12 +350,48 @@ async function phaseBFenceFacts(
         }
         renameSync(tmpPath, filePath);
 
-        // UPDATE the DB rows with their new row_nums + source_markdown_slug.
-        for (const a of assignments) {
-          await engine.executeRaw(
-            `UPDATE facts SET row_num = $1, source_markdown_slug = $2 WHERE id = $3`,
-            [a.row_num, entitySlug, a.id],
-          );
+        // #5430-B: row stamps + the page-body refresh run inside ONE
+        // transaction under the page lock. Previously each UPDATE ran
+        // autocommitted and pages.compiled_truth was never refreshed —
+        // a crash between the rename and the UPDATE loop left a fence
+        // on disk the DB did not own, and the next reconcile compared
+        // against the stale body (the #4872 class).
+        try {
+          await engine.transaction(async (tx) => {
+            await tx.lockPageKeys([{ sourceId, slug: entitySlug }]);
+            for (const a of assignments) {
+              await tx.executeRaw(
+                `UPDATE facts SET row_num = $1, source_markdown_slug = $2 WHERE id = $3`,
+                [a.row_num, entitySlug, a.id],
+              );
+            }
+            const reparsed = parseMarkdown(readFileSync(filePath, 'utf-8'), `${entitySlug}.md`);
+            const tags = await tx.getTags(entitySlug, { sourceId });
+            const newContentHash = contentHash({
+              title: reparsed.title,
+              type: reparsed.type,
+              compiled_truth: reparsed.compiled_truth,
+              timeline: reparsed.timeline,
+              frontmatter: reparsed.frontmatter,
+              tags,
+            });
+            await tx.refreshPageBody(
+              entitySlug,
+              sourceId,
+              reparsed.compiled_truth,
+              reparsed.timeline,
+              newContentHash,
+            );
+          });
+        } catch (dbErr) {
+          // Roll the renamed file back so disk never carries a fence
+          // the DB does not index; the backfill stays re-runnable.
+          try {
+            writeFileSync(filePath, originalBody, 'utf-8');
+          } catch {
+            // best-effort restore
+          }
+          throw dbErr;
         }
         outcome.fenced += assignments.length;
         outcome.pages_touched += 1;
@@ -491,5 +548,5 @@ export const __testing = {
   phaseASchema,
   phaseBFenceFacts,
   phaseCVerify,
-  isLocalPathDirty,
+  fileMatchesDbSnapshot,
 };

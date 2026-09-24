@@ -135,6 +135,15 @@ describe('phaseBFenceFacts — dry-run reporting', () => {
 });
 
 describe('phaseBFenceFacts — happy path backfill', () => {
+  test('refreshes pages.compiled_truth so the next reconcile reads the new fence (#5430-B)', async () => {
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+    expect(r.status).toBe('complete');
+    const page = await engine.getPage('people/alice', { sourceId: 'default' });
+    expect(page!.compiled_truth).toContain('Founded Acme');
+    expect(parseFactsFence(page!.compiled_truth).facts).toHaveLength(1);
+  });
+
   test('fences legacy DB rows into entity pages + updates row_num', async () => {
     const id1 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme in 2017' });
     const id2 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Prefers async over meetings' });
@@ -178,11 +187,18 @@ describe('phaseBFenceFacts — happy path backfill', () => {
 
   test('appends to existing entity page without overwriting body', async () => {
     mkdirSync(join(brainDir, 'people'), { recursive: true });
+    const fm = { type: 'person', title: 'Alice', slug: 'people/alice' };
+    const fmBody = '# Alice\n\nNotes about Alice.\n';
     writeFileSync(
       join(brainDir, 'people/alice.md'),
-      '---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n# Alice\n\nNotes about Alice.\n',
+      `---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n${fmBody}`,
       'utf-8',
     );
+    // The page's DB snapshot must match the on-disk bytes — the
+    // snapshot check (#5430-B) refuses to overwrite a diverging file.
+    await engine.putPage('people/alice', {
+      type: 'person', title: 'Alice', compiled_truth: fmBody, frontmatter: fm,
+    }, { sourceId: 'default' });
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
 
     await __testing.phaseBFenceFacts(engine, OPTS);
@@ -422,14 +438,19 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
 });
 
 describe('subdirectory source dirty check', () => {
-  test('ignores sibling changes but refuses changes inside the source', async () => {
-    execFileSync('git', ['-C', brainDir, 'init', '-q']);
-    const sourcePath = join(brainDir, 'source');
-    mkdirSync(sourcePath);
-    writeFileSync(join(brainDir, 'sibling.md'), 'Unrelated change');
-    expect(__testing.isLocalPathDirty(sourcePath)).toBe(false);
-    writeFileSync(join(sourcePath, 'local.md'), 'Local change');
-    expect(__testing.isLocalPathDirty(sourcePath)).toBe(true);
+  test('fileMatchesDbSnapshot: identical content passes, diverging content fails (#5430-B)', async () => {
+    const slug = 'people/alice';
+    const body = '# Alice\n\nSome bio.\n';
+    await engine.putPage(slug, {
+      type: 'person', title: slug, compiled_truth: body, frontmatter: {},
+    }, { sourceId: 'default' });
+    const filePath = join(brainDir, `${slug}.md`);
+    mkdirSync(join(filePath, '..'), { recursive: true });
+    writeFileSync(filePath, body);
+    expect(await __testing.fileMatchesDbSnapshot(engine, 'default', slug, filePath)).toBe(true);
+    // An uncommitted edit to the target diverges from the DB snapshot.
+    writeFileSync(filePath, body + '\nUser edited this file.\n');
+    expect(await __testing.fileMatchesDbSnapshot(engine, 'default', slug, filePath)).toBe(false);
   });
 });
 
@@ -469,13 +490,29 @@ describe('phaseBFenceFacts — dirty-tree refusal scoping (#927)', () => {
     expect(existsSync(join(brainDir, 'people/alice.md'))).toBe(true);
   });
 
-  test('still refuses when the TARGETED source is dirty', async () => {
+  test('an unrelated dirty file inside the TARGETED source no longer blocks (#5430-B)', async () => {
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1', source_id: 'other' });
+    // dirtyDir already contains an uncommitted unrelated file
+    // ('uncommitted.md') — the backfill must proceed anyway.
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('fenced=1');
+  });
+
+  test('still refuses a TARGET FILE that diverges from the DB snapshot', async () => {
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1', source_id: 'other' });
+    // Simulate an uncommitted user edit on the target page itself.
+    writeFileSync(join(dirtyDir, 'people/alice.md'), '# User edit\n');
 
     const r = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(r.status).toBe('failed');
-    expect(r.detail).toContain('"other"');
-    expect(r.detail).toContain('uncommitted changes');
+    expect(r.detail).toContain('diverges from the DB snapshot');
+    // The file is untouched and the row is still unfenced.
+    expect(readFileSync(join(dirtyDir, 'people/alice.md'), 'utf-8')).toBe('# User edit\n');
+    const rows = await engine.executeRaw<{ row_num: number | null }>(
+      `SELECT row_num FROM facts WHERE fact = 'F1'`,
+    );
+    expect(rows[0].row_num).toBeNull();
   });
 });
 
