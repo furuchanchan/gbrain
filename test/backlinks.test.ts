@@ -265,6 +265,7 @@ import {
   fixBacklinkGaps,
   insertBacklinkEntry,
   findBacklinkGaps,
+  runBacklinksCore,
   type BacklinkGap,
 } from '../src/commands/backlinks.ts';
 import { frontmatterBodyOffset, parseMarkdown, serializeMarkdown } from '../src/core/markdown.ts';
@@ -630,5 +631,69 @@ describe('parseBacklinksArgs', () => {
   test('--dir missing its value falls back to positional dir', () => {
     expect(parseBacklinksArgs(['check', '/tmp/brain', '--dir']).brainDir).toBe('/tmp/brain');
     expect(parseBacklinksArgs(['check', '--dir', '--dry-run']).brainDir).toBe('.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Managed canonical worktree fencing (#5341)
+// ---------------------------------------------------------------------------
+
+describe('managed canonical worktree (#5341)', () => {
+  const marker = JSON.stringify({ managed: true, version: 1 });
+
+  test('fixBacklinkGaps counts managed targets once and writes nothing', async () => {
+    const { root, lockRoot, cleanup } = makeFixture();
+    try {
+      writeFileSync(join(root, '.gbrain-managed'), marker);
+      const alice = `${fence}\ntype: person\ntitle: Alice\n${fence}\n# Alice\n`;
+      writeFileSync(join(root, 'people/alice.md'), alice);
+      writeFileSync(join(root, 'people/bob.md'), '# Bob\n');
+      const outcome = await fixBacklinkGaps(root, [gapFor('people/alice.md'), gapFor('people/bob.md')], false, { lockRoot });
+      expect(outcome.fixed).toBe(0);
+      expect(outcome.managed_blocked).toBe(2);
+      // One count, not one identical refusal per page.
+      expect(outcome.skipped).toHaveLength(0);
+      expect(readFileSync(join(root, 'people/alice.md'), 'utf-8')).toBe(alice);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('runBacklinksCore fix refuses once under managed activation', async () => {
+    const { root, cleanup } = makeFixture();
+    try {
+      writeFileSync(join(root, '.gbrain-managed'), marker);
+      await expect(runBacklinksCore({ action: 'fix', dir: root }))
+        .rejects.toMatchObject({ code: 'writer_coordinator_required' });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('dry-run reports application unsupported instead of claiming success', async () => {
+    const { root, cleanup } = makeFixture();
+    try {
+      writeFileSync(join(root, '.gbrain-managed'), marker);
+      writeFileSync(join(root, 'people/alice.md'), '# Alice');
+      writeFileSync(join(root, 'meetings/standup.md'), '# Standup\n\nWe discussed [Alice](people/alice).\n');
+      const result = await runBacklinksCore({ action: 'fix', dir: root, dryRun: true });
+      expect(result.gaps_found).toBe(1);
+      expect(result.fixed).toBe(0);
+      expect(result.managed_blocked).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('unmanaged dirs are unaffected (no managed_blocked key)', async () => {
+    const { root, lockRoot, cleanup } = makeFixture();
+    try {
+      writeFileSync(join(root, 'people/alice.md'), '# Alice\n');
+      const outcome = await fixBacklinkGaps(root, [gapFor('people/alice.md')], false, { lockRoot });
+      expect(outcome.fixed).toBe(1);
+      expect(outcome.managed_blocked).toBe(0);
+    } finally {
+      cleanup();
+    }
   });
 });

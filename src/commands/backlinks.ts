@@ -11,12 +11,14 @@
  */
 
 import { readFileSync, readdirSync, statSync, lstatSync, existsSync } from 'fs';
-import { join, relative, basename } from 'path';
+import { join, relative, basename, resolve } from 'path';
 import { extractEntityRefs as canonicalExtractEntityRefs } from '../core/link-extraction.ts';
 import { createProgress, startHeartbeat } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { parseMarkdown, frontmatterBodyOffset, findTimelineSplitIndex } from '../core/markdown.ts';
 import { atomicWriteFileSync } from '../core/atomic-write.ts';
+import { assertManagedFilesystemWrite } from '../core/persistence/filesystem-guard.ts';
+import { OperationError } from '../core/ops/contract.ts';
 import { withPageLock } from '../core/page-lock.ts';
 
 export interface BacklinkGap {
@@ -174,6 +176,9 @@ export function findBacklinkGaps(brainDir: string): BacklinkGap[] {
 export interface BacklinkFixOutcome {
   fixed: number;
   skipped: Array<{ page: string; reason: string }>;
+  /** Targets inside a managed canonical worktree — direct writes are refused
+   *  wholesale, so they are counted once instead of per-page (#5341). */
+  managed_blocked: number;
 }
 
 /**
@@ -256,7 +261,7 @@ export async function fixBacklinkGaps(
   dryRun: boolean = false,
   opts?: { lockRoot?: string },
 ): Promise<BacklinkFixOutcome> {
-  const outcome: BacklinkFixOutcome = { fixed: 0, skipped: [] };
+  const outcome: BacklinkFixOutcome = { fixed: 0, skipped: [], managed_blocked: 0 };
 
   // Group gaps by target page to batch writes
   const byTarget = new Map<string, BacklinkGap[]>();
@@ -271,6 +276,15 @@ export async function fixBacklinkGaps(
     if (!existsSync(targetPath)) continue;
 
     const lockKey = targetPage.replace(/\.md$/, '');
+    // A managed canonical worktree only accepts writes through the
+    // persistence coordinator. Detect it up front per target — a per-page
+    // write attempt would emit one identical refusal for every file.
+    try {
+      assertManagedFilesystemWrite(targetPath);
+    } catch {
+      outcome.managed_blocked++;
+      continue;
+    }
     try {
       await withPageLock(lockKey, async () => {
         let content = readFileSync(targetPath, 'utf-8');
@@ -343,6 +357,8 @@ export interface BacklinksResult {
   /** Pages the fixer refused to touch (invalid frontmatter, lock/write errors). */
   skipped_invalid?: number;
   skipped_pages?: Array<{ page: string; reason: string }>;
+  /** Pages whose target file sits inside a managed canonical worktree (#5341). */
+  managed_blocked?: number;
 }
 
 export interface ParsedBacklinksArgs {
@@ -392,6 +408,22 @@ export async function runBacklinksCore(opts: BacklinksOpts): Promise<BacklinksRe
     throw new Error(`Directory not found: ${opts.dir}`);
   }
 
+  if (opts.action === 'fix' && !opts.dryRun) {
+    // Refuse once, before the scan: on a managed worktree every per-file
+    // write is fenced off, so the batch can only produce N identical
+    // refusals (#5341).
+    try {
+      assertManagedFilesystemWrite(resolve(opts.dir));
+    } catch (e) {
+      if (e instanceof OperationError && e.code === 'writer_coordinator_required') {
+        throw new OperationError('writer_coordinator_required',
+          `check-backlinks fix cannot run under managed activation (${opts.dir} is a managed canonical worktree).`,
+          'Submit the change through the persistence coordinator.');
+      }
+      throw e;
+    }
+  }
+
   // findBacklinkGaps is a sync double-walk of the brain dir. On 50K-page
   // brains that can take seconds — heartbeat so agents see we're working.
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
@@ -427,6 +459,7 @@ export async function runBacklinksCore(opts: BacklinksOpts): Promise<BacklinksRe
       dryRun: !!opts.dryRun,
       skipped_invalid: fixOutcome.skipped.length,
       skipped_pages: fixOutcome.skipped,
+      managed_blocked: fixOutcome.managed_blocked,
     };
   }
   return { action: opts.action, gaps_found: gaps.length, fixed: 0, pages_affected: pagesAffected, dryRun: !!opts.dryRun };
@@ -478,6 +511,10 @@ export async function runBacklinks(args: string[]) {
       for (const s of result.skipped_pages) {
         console.log(`  ${s.page}: ${s.reason}`);
       }
+    }
+    if (result.managed_blocked && result.managed_blocked > 0) {
+      // One mode-level line, not one identical skip per page (#5341).
+      console.log(`\n${result.managed_blocked} page(s) sit inside a managed canonical worktree — ${result.dryRun ? 'fixes cannot be applied' : 'refused'}: direct filesystem writes are fenced off, submit the change through the persistence coordinator.`);
     }
     if (result.dryRun) {
       console.log('\nRe-run without --dry-run to apply.');
