@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+**The session-end hook no longer captures gbrain's own claude-cli calls.**
+
+Every `claude --print` subprocess gbrain spawns (extraction sweeps, dream
+synthesis) runs from a per-PID scratch cwd — the fingerprint the transcript
+ingest filter has used since #4472 — but the `hook session-end` corpus writer
+never applied it. Each internal call landed in the dream corpus as a fake
+"conversation", the idle sweep re-ingested it, and dream could synthesize
+hundreds of duplicate idea/reflection pages that paraphrase (and sometimes
+invert) real facts. Hook session-end now skips sessions whose transcript path
+or cwd carries the self-transcript fingerprint, recording
+`self_transcript_skipped` in the heartbeat instead of writing a corpus file.
 ## [0.54.1.1] - 2026-09-24
 
 **Your agent can now open administration and guide another agent through a working connection.**
