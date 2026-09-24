@@ -2,6 +2,11 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.56.1.1] - 2026-09-24
+
+**Email HTML stripping now drops downlevel-revealed conditional blocks.** `<![if mso]>...<![endif]>` markup — Outlook's "only render this in Word" wrapper — has no `<!-- -->` shell, so the comment pass only ate the markers and the conditional text (boilerplate, fallbacks, junk tables) leaked into stripped bodies. The markers plus their contents are now removed together; plain and entity-encoded forms both resolve.
+
+
 ## [0.56.1.0] - 2026-09-24
 
 **Meeting imports tell you what they could read, and crowded timelines no longer stall extraction.**
