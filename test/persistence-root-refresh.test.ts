@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -61,4 +61,31 @@ test('unbound and moved source paths remain fenced alongside the original bound 
   }
   const records = readdirSync(join(home, '.gbrain', 'persistence', 'managed-roots'));
   expect(records.filter(file => file.endsWith('.json'))).toHaveLength(3);
+}));
+
+test('unchanged refresh issues no chmod and no directory fsync (#5297)', async () => withEnv({ GBRAIN_HOME: home }, async () => {
+  const { __registryFsStats } = await import('../src/core/persistence/root-registry.ts');
+  await fixtures(engine, config);
+  await refreshManagedFilesystemRoots(engine);
+  __registryFsStats.chmods = 0;
+  __registryFsStats.dirSyncs = 0;
+  await refreshManagedFilesystemRoots(engine);
+  expect(__registryFsStats.chmods).toBe(0);
+  expect(__registryFsStats.dirSyncs).toBe(0);
+}));
+
+test('permission drift on a record is still repaired (#5297)', async () => withEnv({ GBRAIN_HOME: home }, async () => {
+  const { __registryFsStats } = await import('../src/core/persistence/root-registry.ts');
+  await fixtures(engine, config);
+  await refreshManagedFilesystemRoots(engine);
+  const directory = join(home, '.gbrain', 'persistence', 'managed-roots');
+  const recordFile = readdirSync(directory).find(file => file.endsWith('.json'))!;
+  const recordPath = join(directory, recordFile);
+  chmodSync(recordPath, 0o644);
+  __registryFsStats.chmods = 0;
+  __registryFsStats.dirSyncs = 0;
+  await refreshManagedFilesystemRoots(engine);
+  expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+  expect(__registryFsStats.chmods).toBeGreaterThanOrEqual(1);
+  expect(__registryFsStats.dirSyncs).toBe(0);
 }));

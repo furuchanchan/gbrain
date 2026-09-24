@@ -29,20 +29,32 @@ function enclosingGitMetadata(root: string): string | null {
     current = parent;
   }
 }
+/** Test seam (#5297): syscall counts an idle refresh must keep at zero. */
+export const __registryFsStats = { chmods: 0, dirSyncs: 0 };
 function syncDirectory(directory: string): void {
   let fd: number | undefined;
-  try { fd = openSync(directory, 'r'); fsyncSync(fd); }
+  try { fd = openSync(directory, 'r'); fsyncSync(fd); __registryFsStats.dirSyncs += 1; }
   catch (error) {
     if (!(process.platform === 'win32' && ['EISDIR', 'EPERM', 'EINVAL', 'ENOTSUP'].includes((error as NodeJS.ErrnoException).code ?? ''))) throw error;
   } finally { if (fd !== undefined) closeSync(fd); }
 }
-function writePrivateRecord(file: string, value: string): void {
-  if (existsSync(file) && readFileSync(file, 'utf8') === value) { chmodSync(file, 0o600); return; }
+// #5297: mode enforcement is drift repair, not a per-refresh duty — only
+// chmod when the current mode actually differs. An idle refresh previously
+// issued a chmod per record plus a directory fsync on every tick (~4 Hz).
+function ensureMode(path: string, mode: number): void {
+  if ((statSync(path).mode & 0o777) === mode) return;
+  chmodSync(path, mode);
+  __registryFsStats.chmods += 1;
+}
+/** Returns true only when the record's content was (re)written. */
+function writePrivateRecord(file: string, value: string): boolean {
+  if (existsSync(file) && readFileSync(file, 'utf8') === value) { ensureMode(file, 0o600); return false; }
   const temporary = `${file}.${randomUUID()}.tmp`;
   const fd = openSync(temporary, 'wx', 0o600);
   try { writeFileSync(fd, value); fsyncSync(fd); } finally { closeSync(fd); }
   try { renameSync(temporary, file); syncDirectory(dirname(file)); }
   finally { try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
+  return true;
 }
 function markerExists(path: string): boolean {
   try { lstatSync(path); return true; }
@@ -91,21 +103,24 @@ export function canonicalFilesystemPath(path: string): string {
 export function recordManagedRoots(brainId: string, records: ManagedRootRecord[]): void {
   if (!/^[a-f0-9-]{36}$/i.test(brainId)) throw new OperationError('storage_error', 'Invalid managed-root brain identity.');
   if (!records.length) return;
-  const directory = registryDirectory(); mkdirSync(directory, { recursive: true, mode: 0o700 }); chmodSync(directory, 0o700);
+  const directory = registryDirectory(); mkdirSync(directory, { recursive: true, mode: 0o700 }); ensureMode(directory, 0o700);
+  let recordsChanged = false;
   for (const record of records) {
     const root = canonicalFilesystemPath(record.local_path);
     const key = createHash('sha256').update(root).digest('hex');
     const file = join(directory, `${brainId}.${key}.json`);
     const value = JSON.stringify({ version: 1, brain_id: brainId, root, ...record, local_path: root,
       ...(record.topology_generation != null ? { topology_generation: String(record.topology_generation) } : {}) });
-    writePrivateRecord(file, value);
+    if (writePrivateRecord(file, value)) recordsChanged = true;
     if (existsSync(root) && statSync(root).isDirectory()) {
       const metadata = enclosingGitMetadata(root);
       const marker = metadata ? join(metadata, 'gbrain-managed.json') : join(root, '.gbrain-managed');
+      // Markers live under the source root, not the registry — their own
+      // write fsyncs that directory; they do not gate the registry fsync.
       if (!existsSync(marker)) writePrivateRecord(marker, JSON.stringify({ version: 1, managed: true, brain_id: brainId }));
     }
   }
-  syncDirectory(directory);
+  if (recordsChanged) syncDirectory(directory);
 }
 /** Available before connect, including while another process owns local PGLite. */
 export function registeredManagedRoots(): string[] {
