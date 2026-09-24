@@ -138,6 +138,10 @@ export async function preparePageMutation(engine: BrainEngine, row: WriteRequest
   // A replacement/restore publishes a live page. Only a recorded version may
   // explicitly restore a tombstone; legacy versions leave this state unchanged.
   let targetDeleted = false;
+  // Restores keep the snapshot's recorded content date when the restored
+  // body carries none of its own — otherwise a dateless page's revert lands
+  // on the bad write's updated_at instead of the original date.
+  let preservedFallbackDate: { date: Date | null; source: string | null } | undefined;
   if (row.operation === 'restore_page' || row.operation === 'revert_version') {
     if (!snapshot) throw new OperationError('page_not_found', 'Page not found.');
     let page = snapshot.page;
@@ -147,6 +151,9 @@ export async function preparePageMutation(engine: BrainEngine, row: WriteRequest
         'SELECT * FROM page_versions WHERE id=$1 AND page_id=$2', [p.version_id, page.id]);
       if (!version) throw new OperationError('not_found', 'Version not found for this page.');
       targetDeleted = version.is_deleted ?? (snapshot.page.deleted_at != null);
+      if (version.effective_date != null) {
+        preservedFallbackDate = { date: version.effective_date, source: version.effective_date_source ?? null };
+      }
       page = { ...page, compiled_truth: version.compiled_truth, frontmatter: version.frontmatter,
         ...(version.timeline !== null && version.timeline !== undefined ? { timeline: version.timeline } : {}),
         ...(version.title !== null && version.title !== undefined ? { title: version.title } : {}),
@@ -155,6 +162,10 @@ export async function preparePageMutation(engine: BrainEngine, row: WriteRequest
       versionTags = tags;
     }
     content = serializePageToMarkdown(page, tags);
+  }
+  if ((row.operation === 'restore_page' || row.operation === 'revert_version')
+    && preservedFallbackDate === undefined && snapshot?.page.effective_date != null) {
+    preservedFallbackDate = { date: snapshot.page.effective_date, source: snapshot.page.effective_date_source ?? null };
   }
   if (row.authority.remote && row.operation !== 'remember' && !row.operation.startsWith('takes_') && typeof content==='string') {
     const parsed=parseMarkdown(content,row.slug);
@@ -185,6 +196,7 @@ export async function preparePageMutation(engine: BrainEngine, row: WriteRequest
     ingested_via: typeof p.ingested_via === 'string' ? p.ingested_via : null,
     prepareFrontmatter: page => { provenance = putProvenance(row, snapshot, page); },
     prepare: async value => { prepared = value; return value.result; },
+    fallbackEffectiveDate: preservedFallbackDate,
   });
   signal?.throwIfAborted();
   if (!prepared) {

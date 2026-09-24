@@ -181,3 +181,43 @@ test('failed tombstone revert rolls back canonical fields, versions, deletion an
     expect(readFileSync(file, 'utf8')).toBe(bytes);
   }
 });
+
+test('revert_version restores the snapshot effective_date instead of the bad write timestamp', async () => {
+  for (const { engine, ctx } of fixtures) {
+    const slug = 'version-effective-date';
+    const first = await submit(ctx, 'put_page', { slug, content: content('Original body') });
+    const pageId = (await engine.readPageSnapshot(slug, { sourceId }))!.page.id;
+    await engine.executeRaw('UPDATE pages SET effective_date=$1::timestamptz, effective_date_source=$2 WHERE id=$3',
+      ['2019-04-05T00:00:00Z', 'fallback', pageId]);
+    const changed = await submit(ctx, 'put_page', { slug, content: content('Bad write body'), expected_revision: first.revision });
+    const version = await versionAt(engine, pageId, String(first.revision));
+    expect(version.effective_date_source).toBe('fallback');
+    expect(version.effective_date!.toISOString()).toBe('2019-04-05T00:00:00.000Z');
+    // The bad dateless write lands on 'fallback' = the previous row's updated_at.
+    const bad = (await engine.executeRaw<{ effective_date: Date }>('SELECT effective_date FROM pages WHERE id=$1', [pageId]))[0];
+    expect(bad.effective_date.toISOString()).not.toBe('2019-04-05T00:00:00.000Z');
+    const reverted = await submit(ctx, 'revert_version', { slug, version_id: version.id, expected_revision: changed.revision });
+    expect(reverted.status).toBe('reverted');
+    const after = (await engine.executeRaw<{ effective_date: Date; effective_date_source: string }>(
+      'SELECT effective_date, effective_date_source FROM pages WHERE id=$1', [pageId]))[0];
+    expect(after.effective_date.toISOString()).toBe('2019-04-05T00:00:00.000Z');
+    expect(after.effective_date_source).toBe('fallback');
+  }
+});
+
+test('restore_page keeps the tombstone effective_date instead of the delete timestamp', async () => {
+  for (const { engine, ctx } of fixtures) {
+    const slug = 'restore-effective-date';
+    const created = await submit(ctx, 'put_page', { slug, content: content('Dated body') });
+    const pageId = (await engine.readPageSnapshot(slug, { sourceId }))!.page.id;
+    await engine.executeRaw('UPDATE pages SET effective_date=$1::timestamptz, effective_date_source=$2 WHERE id=$3',
+      ['2019-04-05T00:00:00Z', 'fallback', pageId]);
+    const deleted = await submit(ctx, 'delete_page', { slug, expected_revision: created.revision });
+    const restored = await submit(ctx, 'restore_page', { slug, expected_revision: deleted.revision });
+    expect(restored.status).toBe('restored');
+    const after = (await engine.executeRaw<{ effective_date: Date; effective_date_source: string }>(
+      'SELECT effective_date, effective_date_source FROM pages WHERE id=$1', [pageId]))[0];
+    expect(after.effective_date.toISOString()).toBe('2019-04-05T00:00:00.000Z');
+    expect(after.effective_date_source).toBe('fallback');
+  }
+});

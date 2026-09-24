@@ -13,6 +13,8 @@ export const PAGE_STATE_SCHEMA_STATEMENTS = [
   `ALTER TABLE page_versions ADD COLUMN IF NOT EXISTS type TEXT`,
   `ALTER TABLE page_versions ADD COLUMN IF NOT EXISTS tags JSONB`,
   PAGE_VERSION_DELETION_SCHEMA_SQL,
+  `ALTER TABLE page_versions ADD COLUMN IF NOT EXISTS effective_date TIMESTAMPTZ`,
+  `ALTER TABLE page_versions ADD COLUMN IF NOT EXISTS effective_date_source TEXT`,
   `CREATE TABLE IF NOT EXISTS page_write_guards (
     source_incarnation UUID NOT NULL REFERENCES sources(incarnation) ON DELETE CASCADE,
     slug TEXT NOT NULL,
@@ -61,3 +63,8 @@ export const PAGE_STATE_SCHEMA_STATEMENTS = [
 ] as const;
 
 export const PAGE_STATE_SCHEMA_SQL = PAGE_STATE_SCHEMA_STATEMENTS.join(';\n') + ';\n';
+
+/** NULL marks a legacy snapshot whose content date was not recorded. */
+export const PAGE_VERSION_EFFECTIVE_DATE_SCHEMA_SQL =
+  `ALTER TABLE page_versions ADD COLUMN IF NOT EXISTS effective_date TIMESTAMPTZ;
+   ALTER TABLE page_versions ADD COLUMN IF NOT EXISTS effective_date_source TEXT;`;

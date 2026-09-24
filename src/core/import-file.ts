@@ -25,7 +25,7 @@ import { embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
 // precedent as embed-stale.ts.
 import { embedBatchWithBackoff } from './embed-retry.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath, hasMalformedPathSegment } from './sync.ts';
-import type { ChunkInput, PageInput, PageType } from './types.ts';
+import type { ChunkInput, EffectiveDateSource, PageInput, PageType } from './types.ts';
 import { computeEffectiveDate } from './effective-date.ts';
 import { MARKDOWN_CHUNKER_VERSION } from './chunkers/recursive.ts';
 import { logSlugFallback } from './audit-slug-fallback.ts';
@@ -260,6 +260,14 @@ export async function importFromContent(
     source_kind?: string | null;
     source_uri?: string | null;
     ingested_via?: string | null;
+    /**
+     * Restored snapshot's content date. Only consulted when the imported
+     * frontmatter/filename produces a `fallback` date (i.e. the body itself
+     * carries no date): revert_version/restore_page pass the version's
+     * recorded date so a dateless restore doesn't inherit the bad write's
+     * timestamp. Plain imports leave it unset.
+     */
+    fallbackEffectiveDate?: { date: Date | null; source: string | null };
     /**
      * v0.42 (#1699 trust boundary). When `true` (untrusted caller — remote MCP
      * put_page), gate-owned frontmatter markers (`quarantine`, `content_flag`,
@@ -881,13 +889,20 @@ export async function importFromContent(
     // consults it.
     const filenameForChain = opts.filename ?? slug.split('/').pop() ?? slug;
     const nowDate = new Date();
-    const { date: effectiveDate, source: effectiveDateSource } = computeEffectiveDate({
+    const computed = computeEffectiveDate({
       slug,
       frontmatter: parsed.frontmatter,
       filename: filenameForChain,
       updatedAt: existing?.updated_at ?? nowDate,
       createdAt: existing?.created_at ?? nowDate,
     });
+    // A dateless body lands on 'fallback' = the current row's updated_at.
+    // Restore paths pass the snapshot's recorded date so a revert lands on
+    // the version's own date instead of the bad write's timestamp.
+    const preserved = computed.source === 'fallback' && opts.fallbackEffectiveDate?.date != null;
+    const effectiveDate = preserved ? opts.fallbackEffectiveDate!.date : computed.date;
+    const effectiveDateSource: EffectiveDateSource | null = preserved
+      ? (opts.fallbackEffectiveDate!.source ?? null) as EffectiveDateSource | null : computed.source;
 
     await tx.putPage(slug, {
       type: parsed.type,
