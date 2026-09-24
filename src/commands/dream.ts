@@ -98,6 +98,11 @@ interface DreamArgs {
    * skillopt, drift) — a no-op for phases that always run when named directly.
    */
   once: boolean;
+  /**
+   * gbrain#5363: consolidate-phase cosine cluster threshold override
+   * (`--cluster-threshold <0..1>`). null = phase default (0.85).
+   */
+  clusterThreshold: number | null;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -292,6 +297,25 @@ function parseArgs(args: string[]): DreamArgs {
     process.exit(2);
   }
 
+  const clusterThresholdValues = collectFlagValues(args, '--cluster-threshold');
+  let clusterThreshold: number | null = null;
+  if (clusterThresholdValues !== null && clusterThresholdValues.length > 0) {
+    const raw = clusterThresholdValues[0]!;
+    if (clusterThresholdValues.length > 1 && clusterThresholdValues.some((v) => v !== raw)) {
+      console.error(`--cluster-threshold given conflicting values: ${clusterThresholdValues.join(', ')}`);
+      process.exit(2);
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > 1) {
+      console.error(`--cluster-threshold must be a number in [0, 1]; got "${raw}"`);
+      process.exit(2);
+    }
+    clusterThreshold = n;
+  } else if (clusterThresholdValues === null) {
+    console.error('--cluster-threshold <n>: missing value. Usage: gbrain dream --cluster-threshold <n>');
+    process.exit(2);
+  }
+
   return {
     json: args.includes('--json'),
     dryRun: args.includes('--dry-run'),
@@ -308,6 +332,7 @@ function parseArgs(args: string[]): DreamArgs {
     drain,
     windowSeconds,
     once,
+    clusterThreshold,
   };
 }
 
@@ -846,6 +871,7 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     synthFrom: opts.from ?? undefined,
     synthTo: opts.to ?? undefined,
     synthBypassDreamGuard: opts.bypassDreamGuard,
+    clusterThreshold: opts.clusterThreshold ?? undefined,
     // issue #2860: exactly one phase is guaranteed here when opts.once is
     // set (parseArgs enforces --once requires a single explicit --phase).
     onceForPhase: opts.once ? opts.phases[0]! : undefined,

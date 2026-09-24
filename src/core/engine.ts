@@ -528,12 +528,16 @@ export interface FactRow {
   source: string;
   source_session: string | null;
   confidence: number;
+  /**
+   * Typed-claim column (lowercase snake_case metric name, e.g. 'mrr').
+   * Populated on `SELECT * FROM facts` rows; undefined is treated as
+   * "no metric" by claim-aware consumers (consolidate clustering).
+   */
+  claim_metric?: string | null;
   embedding: Float32Array | null;
   embedded_at: Date | null;
   created_at: Date;
 }
-
-/** Input for insertFact. source_id supplied via the ctx arg. */
 export interface NewFact {
   fact: string;
   kind?: FactKind;                     // default 'fact'

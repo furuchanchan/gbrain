@@ -562,6 +562,12 @@ export interface CycleOpts {
    */
   onceForPhase?: CyclePhase;
   /**
+   * gbrain#5363: consolidate-phase cosine cluster threshold. Undefined keeps
+   * the phase default (0.85). Plumbed from `gbrain dream
+   * --cluster-threshold <n>`.
+   */
+  clusterThreshold?: number;
+  /**
    * Absolute wall-clock deadline (epoch ms) of the enclosing minion job,
    * from `MinionJobContext.deadlineAtMs` (the claim-time `timeout_at`
    * stamp). Phases that spawn bounded sub-work (patterns' subagent) clamp
@@ -2607,6 +2613,7 @@ export async function runCycle(
           // always-undefined — hook, so long phases never refreshed).
           yieldDuringPhase: buildYieldDuringPhase(lock, opts.yieldDuringPhase, onStolen),
           signal: cycleSignal,
+          clusterThreshold: opts.clusterThreshold,
         }));
         result.duration_ms = duration_ms;
         phaseResults.push(result);

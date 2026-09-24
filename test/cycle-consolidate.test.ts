@@ -129,6 +129,38 @@ describe('runPhaseConsolidate', () => {
     }
   });
 
+  test('claim-aware clustering: differing claim_metric facts never merge (#5363)', async () => {
+    await seedPage('cons-claim-guard');
+    // Same embedding, same entity — but two DIFFERENT numeric measures.
+    // Merging them would let a take assert a false number.
+    for (const [i, metric] of ['mrr', 'headcount', 'mrr'].entries()) {
+      await engine.executeRaw(
+        `INSERT INTO facts (source_id, entity_slug, fact, kind, source, valid_from, embedding, embedded_at, claim_metric)
+         VALUES ('default', 'cons-claim-guard', $1, 'fact', 'test', $2::timestamptz, $3::vector, $2::timestamptz, $4)`,
+        [`claim fact ${i}`, oldDate(), unitVec(), metric],
+      );
+    }
+    const r = await runPhaseConsolidate(engine, {});
+    // Two 'mrr' facts still merge; 'headcount' is excluded from that cluster
+    // and left as a singleton → exactly one take over the mrr pair.
+    expect(r.details.takes_written).toBe(1);
+    expect(r.details.facts_consolidated).toBe(2);
+  });
+
+  test('claim-aware clustering: same claim_metric still merges (#5363)', async () => {
+    await seedPage('cons-claim-same');
+    for (let i = 0; i < 3; i++) {
+      await engine.executeRaw(
+        `INSERT INTO facts (source_id, entity_slug, fact, kind, source, valid_from, embedding, embedded_at, claim_metric)
+         VALUES ('default', 'cons-claim-same', $1, 'fact', 'test', $2::timestamptz, $3::vector, $2::timestamptz, 'mrr')`,
+        [`claim fact ${i}`, oldDate(), unitVec()],
+      );
+    }
+    const r = await runPhaseConsolidate(engine, {});
+    expect(r.details.takes_written).toBe(1);
+    expect(r.details.facts_consolidated).toBe(3);
+  });
+
   test('dryRun honored: counters tick but no rows written', async () => {
     await seedPage('cons-dryrun');
     for (let i = 0; i < 3; i++) {

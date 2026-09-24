@@ -711,6 +711,7 @@ interface FactRowSqlShape {
   source: string;
   source_session: string | null;
   confidence: number;
+  claim_metric: string | null;
   embedding: string | number[] | Float32Array | null;
   embedded_at: Date | string | null;
   created_at: Date | string;
@@ -755,6 +756,7 @@ function rowToFact(row: FactRowSqlShape): FactRow {
     source: row.source,
     source_session: row.source_session,
     confidence: Number(row.confidence),
+    claim_metric: row.claim_metric ?? null,
     embedding,
     embedded_at: toDate(row.embedded_at),
     created_at: toDate(row.created_at)!,

@@ -337,6 +337,16 @@ function clusterFacts(facts: FactRow[], threshold: number): FactRow[][] {
     for (const c of clusters) {
       const head = c[0];
       if (!head.embedding) continue;
+      // Two numeric claims about DIFFERENT measures must never merge no
+      // matter how close the cosine — a take synthesising "revenue" over
+      // unrelated quantities asserts something false (#5363).
+      if (
+        f.claim_metric != null &&
+        head.claim_metric != null &&
+        f.claim_metric !== head.claim_metric
+      ) {
+        continue;
+      }
       if (cosineSimilarity(f.embedding, head.embedding) >= threshold) {
         c.push(f);
         placed = true;
