@@ -10,6 +10,7 @@ import type { BrainEngine } from './engine.ts';
 import { resolveSlugForPath, DEFAULT_SOURCE_ID } from './sync.ts';
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
 import { loadStorageConfig } from './storage-config.ts';
+import { probeGitReadOnly } from './git-remote.ts';
 
 /**
  * v0.32.7 CJK wave (codex post-merge F4): resolve a slug by `pages.source_path`
@@ -346,11 +347,27 @@ export function gitRawOutput(repoPath: string, args: string[]): string {
  * about the expected miss that triggered it).
  */
 export function discoverGitRoot(inputPath: string): string {
+  // probeGitReadOnly (#5318): scrubs repo-binding env (an ambient GIT_DIR /
+  // GIT_WORK_TREE would rebind this probe to a different repository) and
+  // retries once with `-c safe.directory=*` on a "dubious ownership"
+  // refusal — a cross-user-owned checkout is a valid source repo, and this
+  // is a read-only probe.
   try {
-    return git(inputPath, ['rev-parse', '--show-toplevel'], [], 30000, { silenceStderr: true });
-  } catch {
+    return probeGitReadOnly(inputPath, ['rev-parse', '--show-toplevel']);
+  } catch (e) {
+    // Routine misses ("not a git repository …") stay silent — operators grep
+    // for `fatal:` as a crash signature (see sync-discover-git-root-stderr).
+    // UNUSUAL failures still surface their cause, minus the `fatal:` prefix:
+    // "unsafe repository" ownership refusals that survived the retry, ENOENT
+    // spawn, a GIT_DIR env rebind — never a dead-end generic message (#5318).
+    const stderr = (e as { stderr?: unknown } | null)?.stderr;
+    const detail = stderr != null
+      ? String(stderr).trim().replace(/^fatal:\s*/i, '').slice(0, 200)
+      : '';
+    const routine = /^not a git repository/i.test(detail) || detail === '';
     throw new Error(
-      `Not inside a git repository: ${inputPath}. GBrain sync requires a git-initialized repo (or a subdirectory of one).`,
+      `Not inside a git repository: ${inputPath}. GBrain sync requires a git-initialized repo (or a subdirectory of one).` +
+        (routine ? '' : ` (git: ${detail})`),
     );
   }
 }

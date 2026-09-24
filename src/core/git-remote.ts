@@ -178,10 +178,21 @@ function gitErrorDetail(e: unknown): string {
  */
 export function buildGitEnv(
   platform: NodeJS.Platform = process.platform,
-): Record<string, string> {
-  const env: Record<string, string> = {
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
     GIT_TERMINAL_PROMPT: '0',
     GCM_INTERACTIVE: 'never',
+    // Repo-binding env is scrubbed: an ambient GIT_DIR / GIT_WORK_TREE /
+    // GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY / GIT_COMMON_DIR / GIT_NAMESPACE
+    // rebinds EVERY repo probe to a different repository, which is how a
+    // valid checkout gets rejected as "not a git repository" (#5318).
+    GIT_DIR: undefined,
+    GIT_WORK_TREE: undefined,
+    GIT_INDEX_FILE: undefined,
+    GIT_OBJECT_DIRECTORY: undefined,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+    GIT_COMMON_DIR: undefined,
+    GIT_NAMESPACE: undefined,
   };
   if (platform === 'win32') {
     env.SSH_ASKPASS_REQUIRE = 'never';
@@ -190,6 +201,39 @@ export function buildGitEnv(
     env.SSH_ASKPASS = '/bin/false';
   }
   return env;
+}
+
+/** True when git refused the repo on ownership grounds (#5318). */
+function isOwnershipRefusal(e: unknown): boolean {
+  const msg = gitErrorDetail(e).toLowerCase();
+  return msg.includes('dubious ownership') || msg.includes('unsafe repository');
+}
+
+/**
+ * Run a read-only repo probe (`-C <path> <args>`), tolerating a
+ * cross-user-owned checkout (#5318). git's safe.directory check makes every
+ * `git -C` call fail with "dubious ownership" when the repo owner differs
+ * from the process user — the repo itself is perfectly valid, and read
+ * probes (rev-parse/ls-tree/show) execute no repo hooks or config, so a
+ * one-shot `-c safe.directory=*` retry is safe and scoped to this call.
+ */
+export function probeGitReadOnly(path: string, args: string[]): string {
+  const run = (configs: string[]) => execFileSync(
+    'git',
+    [...configs.flatMap(c => ['-c', c]), '-C', path, ...args],
+    {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10_000,
+      env: { ...process.env, ...GIT_ENV },
+    },
+  ).trim();
+  try {
+    return run([]);
+  } catch (e) {
+    if (!isOwnershipRefusal(e)) throw e;
+    return run(['safe.directory=*']);
+  }
 }
 
 export const GIT_ENV = buildGitEnv();
@@ -387,11 +431,7 @@ export function validateRepoState(
  */
 export function isInsideGitRepo(path: string): boolean {
   try {
-    execFileSync('git', ['-C', path, 'rev-parse', '--show-toplevel'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10_000,
-      env: { ...process.env, ...GIT_ENV },
-    });
+    probeGitReadOnly(path, ['rev-parse', '--show-toplevel']);
     return true;
   } catch {
     return false;
@@ -442,12 +482,8 @@ function emptyTreeOid(path: string): string {
  */
 export function hasTrackedContent(path: string): boolean {
   try {
-    const out = execFileSync('git', ['-C', path, 'rev-parse', '--verify', 'HEAD:./'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10_000,
-      env: { ...process.env, ...GIT_ENV },
-    });
-    return out.toString().trim() !== emptyTreeOid(path);
+    const out = probeGitReadOnly(path, ['rev-parse', '--verify', 'HEAD:./']);
+    return out !== emptyTreeOid(path);
   } catch {
     return false;
   }
