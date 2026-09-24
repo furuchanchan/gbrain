@@ -380,6 +380,14 @@ describe('eval fix wave: quote/fact/grounding mandates in OUTPUT POLICY', () => 
     expect(prompt).toContain('Attribute speculation as speculation');
     expect(prompt).toContain('never state a completion state or outcome the transcript does not show');
   });
+
+  test('rule 7 separates user decisions from assistant proposals; later corrections win (#5425)', () => {
+    const prompt = buildSynthesisPrompt(transcript, 'chunk', 0, 1);
+    expect(prompt).toContain('Keep the speaker and source timing explicit');
+    expect(prompt).toContain('distinguish what the user requested, decided, or accepted from what the assistant proposed, reported, inferred, or planned');
+    expect(prompt).toContain('A later correction, withdrawal, or scope narrowing overrides earlier text');
+    expect(prompt).toContain('Do not merge assistant-added evidence fields, recovery notes, deadlines, or next steps into user agreement');
+  });
 });
 
 // ── #4117: per-lane dream namespaces ────────────────────────────────────
