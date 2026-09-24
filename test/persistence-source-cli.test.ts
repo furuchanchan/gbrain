@@ -43,7 +43,7 @@ describe('source lifecycle CLI', () => {
 
   test('actual CLI source writes use the resident owner, replay after deletion, and share page request identity', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gbrain-source-cli-'));
-    await withEnv({ GBRAIN_HOME: dir, GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: undefined, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
+    await withEnv({ GBRAIN_HOME: dir, GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: undefined, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined, GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1' }, async () => {
       const config = { engine: 'pglite' as const, database_path: join(dir, 'db') };
       const engine = diskEngine;
       let binding: Awaited<ReturnType<typeof startPersistenceIpcServer>>;

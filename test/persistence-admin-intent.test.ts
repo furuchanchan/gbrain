@@ -7,6 +7,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { runPersistenceAdministration } from '../src/core/persistence/administration.ts';
 import { writerAdminState } from '../src/core/persistence/admin-intent.ts';
+import { getWorktreeBinding } from '../src/core/persistence/ownership.ts';
 import { PHYSICAL_ROOT_MARKER, physicalRootReservationPath } from '../src/core/persistence/physical-root-record.ts';
 import { parsePersistenceAdminArgs } from '../src/commands/persistence-admin.ts';
 import { localHostId, persistenceHome, registerLocalWriter, withVerifiedLocalRegistration } from '../src/core/persistence/identity.ts';
@@ -32,7 +33,7 @@ afterAll(async () => { await disposePersistenceConsumer(engine); await engine.di
 async function fixture(run: (root: string) => Promise<void>) {
   const home = mkdtempSync(join(tmpdir(), 'gbrain-admin-intent-'));
   try {
-    await withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
+    await withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined, GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1' }, async () => {
       const root = join(home, 'canonical'); mkdirSync(root);
       await engine.executeRaw('UPDATE sources SET local_path=$1 WHERE id=$2', [root, 'default']);
       try { await run(root); } finally { await disposePersistenceConsumer(engine); }
@@ -101,6 +102,42 @@ test('status, probe, dry runs and routine flags never create ownership or host i
   expect(await writerAdminState(engine)).toBe(initial);
   expect(existsSync(join(persistenceHome(), 'host.json'))).toBe(false);
   expect((await engine.executeRaw('SELECT id FROM persistence_worktrees')).length).toBe(0);
+}));
+
+test('topology changes refuse unattended callers unless the explicit opt-in is set (#5285)', () => fixture(async root => {
+  const stdin = process.stdin as { isTTY?: boolean };
+  const original = stdin.isTTY;
+  stdin.isTTY = false;
+  try {
+    await withEnv({ GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: undefined }, async () => {
+      for (const [operation, params] of [
+        ['writer_claim', { source_id: 'default', path: root }],
+        ['writer_activate', { confirm_quiesced: true }],
+        ['writer_transfer_prepare', { source_id: 'default' }],
+        ['writer_transfer_accept', { source_id: 'default', path: root, expected_epoch: '1', manifest: 'a'.repeat(64) }],
+      ] as const) {
+        await expect(runPersistenceAdministration(engine, operation,
+          { ...params, ...await reviewedWriterIntent(engine, operation) })).rejects.toMatchObject({ code: 'writer_admin_operator_required' });
+      }
+      expect(await getWorktreeBinding(engine, 'default', localHostId())).toBeNull();
+      expect(await runPersistenceAdministration(engine, 'writer_claim', { source_id: 'default', path: root, dry_run: true })).toMatchObject({ dry_run: true });
+    });
+    // The fixture's opt-in is what reviewed provisioning automation relies on.
+    expect(await runPersistenceAdministration(engine, 'writer_claim',
+      { source_id: 'default', path: root, ...await reviewedWriterIntent(engine, 'writer_claim') })).toMatchObject({ claimed: true });
+  } finally { stdin.isTTY = original; }
+}));
+
+test('an interactive terminal authorizes topology changes without the unattended opt-in (#5285)', () => fixture(async root => {
+  const stdin = process.stdin as { isTTY?: boolean };
+  const original = stdin.isTTY;
+  stdin.isTTY = true;
+  try {
+    await withEnv({ GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: undefined }, async () => {
+      expect(await runPersistenceAdministration(engine, 'writer_claim',
+        { source_id: 'default', path: root, ...await reviewedWriterIntent(engine, 'writer_claim') })).toMatchObject({ claimed: true });
+    });
+  } finally { stdin.isTTY = original; }
 }));
 
 test('deliberate claim, activate and transfer require fresh state while preserving existing identity', () => fixture(async root => {

@@ -35,7 +35,7 @@ function childEnv(): Record<string, string> {
   return keylessBrainEnv(process.env, tmpParent, {
     DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined, GBRAIN_DIRECT_DATABASE_URL: undefined,
     GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: 'workspace', GBRAIN_SWEEP: '0',
-    GBRAIN_SKIP_STARTUP_HOOKS: '1', GBRAIN_SERVE_BOOT_TIMEOUT_SECONDS: '300',
+    GBRAIN_SKIP_STARTUP_HOOKS: '1', GBRAIN_SERVE_BOOT_TIMEOUT_SECONDS: '300', GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1',
   });
 }
 async function read(stream: ReadableStream<Uint8Array>, append: (value: string) => void): Promise<void> {

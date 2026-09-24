@@ -39,7 +39,7 @@ async function cli(args: string[]) {
   const child = Bun.spawn([process.execPath, join(import.meta.dir, '../../src/cli.ts'), ...args], {
     cwd: home, env: { ...process.env, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined,
       GBRAIN_HOME: home, GBRAIN_BRAIN_ID: 'host', GBRAIN_NO_BANNER: '1', GBRAIN_BACKUP_CHECK: '0',
-      GBRAIN_SKILLS_DIR: join(home, 'skills') }, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
+      GBRAIN_SKILLS_DIR: join(home, 'skills'), GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1' }, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
   });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, code };

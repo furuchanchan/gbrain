@@ -13,7 +13,7 @@ import { withEnv } from './helpers/with-env.ts';
 test('same-engine disk reconnect resumes managed writes and retained request replay', async () => {
   const root = mkdtempSync(join(tmpdir(), 'gbrain-persistence-reconnect-'));
   try { await withEnv({ GBRAIN_HOME: root, GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: undefined,
-    DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
+    DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined, GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1' }, async () => {
     const engine = new PGLiteEngine();
     const config = { engine: 'pglite' as const, database_path: join(root, 'database') };
     const ctx = { engine, config, sourceId: 'default', remote: false, dryRun: false,

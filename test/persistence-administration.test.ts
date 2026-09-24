@@ -28,7 +28,7 @@ afterAll(async () => { await disposePersistenceConsumer(engine); await engine.di
 async function isolated<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), 'gbrain-admin-test-'));
   try {
-    return await withEnv({ GBRAIN_HOME: dir, GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: undefined, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, () => run(dir));
+    return await withEnv({ GBRAIN_HOME: dir, GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: undefined, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined, GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1' }, () => run(dir));
   } finally { await disposePersistenceConsumer(engine); rmSync(dir, { force: true, recursive: true }); }
 }
 

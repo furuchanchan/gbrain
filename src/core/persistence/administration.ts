@@ -16,6 +16,9 @@ import { assertWriterAdminState, requireWriterAdminIntent, writerAdminState, WRI
 import { writerOnboardingPreflight } from './onboarding.ts';
 
 const invalid = (message: string) => new OperationError('invalid_params', message);
+const WRITER_TOPOLOGY_OPERATIONS: ReadonlySet<string> = new Set([
+  'writer_claim', 'writer_activate', 'writer_transfer_prepare', 'writer_transfer_accept',
+]);
 function source(value: unknown): string {
   if (typeof value !== 'string' || !isValidSourceId(value)) throw invalid('An explicit active source ID is required.');
   return value;
@@ -143,6 +146,14 @@ export async function runPersistenceAdministration(engine: BrainEngine, operatio
     await assertWriterAdminState(engine, adminState, false);
     return { ...diagnostics, host_id: existingLocalHostId(), bindings, admin_state: adminState, onboarding, shared_skills: sharedSkills, ...(native ? { native_lock: native } : {}) };
   }
+  // An unattended caller can satisfy --admin-intent/--expected-state; only an
+  // interactive terminal proves an operator is present. Provisioning automation
+  // opts in explicitly; dry runs stay scriptable. (#5285)
+  if (WRITER_TOPOLOGY_OPERATIONS.has(operation) && params.dry_run !== true
+      && process.stdin.isTTY !== true && process.env.GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN !== '1')
+    throw new OperationError('writer_admin_operator_required',
+      'Writer topology changes require an interactive operator terminal.',
+      'Run the command at an interactive terminal (TTY). Reviewed provisioning automation may set GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN=1. ' + WRITER_INSPECTION_HINT);
   if (operation === 'writer_claim') {
     keys(params, ['source_id', 'path', 'dry_run', 'admin_intent', 'expected_state']);
     const sourceId = source(params.source_id), root = path(params.path);

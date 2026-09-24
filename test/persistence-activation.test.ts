@@ -42,7 +42,7 @@ async function fixture(run: (engine: PGLiteEngine, root: string, home: string, s
   const root = join(home, 'canonical'); mkdirSync(root);
   const engine = disk ? diskEngine : memoryEngine;
   try {
-    await withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
+    await withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined, GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN: '1' }, async () => {
       await disposePersistenceConsumer(engine); await resetPgliteState(engine); await engine.setConfig('version', schemaVersion);
       const sourceId = `activate-${randomUUID().slice(0, 12)}`;
       await engine.executeRaw('INSERT INTO sources(id,name,local_path) VALUES($1,$1,$2)', [sourceId, root]);

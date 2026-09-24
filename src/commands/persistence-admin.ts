@@ -25,9 +25,13 @@ Inspect status first. Routine diagnosis, doctor --fix, startup, and maintenance
 must not change ownership or activate managed persistence. Read the operator
 procedure in docs/architecture/topologies.md before deliberate administration.
 Non-dry-run changes require --admin-intent <writer_claim|writer_activate|writer_transfer_prepare|writer_transfer_accept>
-matching the action and --expected-state <admin_state from reviewed status>.
+matching the action and --expected-state <admin_state from reviewed status>, and run
+from an interactive terminal (TTY). Reviewed provisioning automation may set
+GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN=1 to administer unattended; intent and state
+gates still apply.
 These checks also apply to interactive terminals; --yes is not a substitute.
-Explicit noninteractive administration is supported. Stale state is rejected.
+Explicit noninteractive administration requires GBRAIN_ALLOW_UNATTENDED_WRITER_ADMIN=1.
+Stale state is rejected.
 Use --brain <id> to select a database. Prepare drains the current owner and records
 an exact manifest; accept requires that epoch and matching bytes on the successor.
 Before activation, upgrade and stop older writers on every host, claim every
