@@ -162,6 +162,21 @@ function invalidRequiredValueFlag(args: string[], flag: string): boolean {
   });
 }
 
+/**
+ * #5284: pages pushed through one PGLite connection before the sweep
+ * re-opens it. Default matches the reporter's verified workaround
+ * (`--limit 500` per process). `GBRAIN_REINDEX_PGLITE_REOPEN_EVERY=0`
+ * opts out — useful for A/B-ing the wedge against a debug PGLite build.
+ * Non-numeric/negative values fall back to the default.
+ */
+function parseReopenEvery(): number {
+  const raw = process.env.GBRAIN_REINDEX_PGLITE_REOPEN_EVERY;
+  if (raw === undefined || raw === '') return 500;
+  const v = parseInt(raw, 10);
+  if (!Number.isFinite(v) || v < 0) return 500;
+  return v;
+}
+
 function parseArgs(args: string[]): ReindexOpts {
   const out: ReindexOpts = {};
   for (let i = 0; i < args.length; i++) {
@@ -365,7 +380,27 @@ export async function runReindex(engine: BrainEngine, args: string[]): Promise<R
   const BATCH = 100;
   const repoPath = opts.repoPath ? resolve(opts.repoPath) : null;
 
+  // #5284: a single long-lived PGLite connection wedges inside its own
+  // COMMIT after ~2,600–3,300 page writes (100% CPU spin in WASM; SIGTERM
+  // can't reach it). The verified workaround bounds the work per
+  // connection, so reopen the engine at batch boundaries once the page
+  // count crosses the same threshold. `engine.reconnect()` re-opens the
+  // data dir on file-backed stores (a fresh WASM runtime) and is a
+  // documented no-op on in-memory engines, so test/in-memory runs are
+  // unaffected. Postgres is untouched — the wedge is PGLite-specific.
+  const REOPEN_EVERY = parseReopenEvery();
+  const reopenable = engine.kind === 'pglite' && REOPEN_EVERY > 0;
+  let processedSinceOpen = 0;
+
   while (reindexed + skipped + failed < target) {
+    if (reopenable && processedSinceOpen >= REOPEN_EVERY) {
+      // Batch boundary: no in-flight transactions. Idempotent sweep, so a
+      // failed reopen still leaves a resumable store — surface the error
+      // loudly rather than wedging silently inside a later COMMIT.
+      await engine.reconnect();
+      processedSinceOpen = 0;
+      process.stderr.write(`[reindex] reopened the PGLite connection after ${REOPEN_EVERY} pages (bounds work per connection, #5284)\n`);
+    }
     const remaining = target - (reindexed + skipped + failed);
     const batchSize = Math.min(BATCH, remaining);
     const batch = await readBatch(engine, batchSize, type, !!opts.noEmbed, afterId);
@@ -453,6 +488,7 @@ export async function runReindex(engine: BrainEngine, args: string[]): Promise<R
         }
       },
     });
+    processedSinceOpen += batch.length;
   }
 
   reporter.finish();
