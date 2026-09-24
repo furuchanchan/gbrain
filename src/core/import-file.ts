@@ -9,6 +9,7 @@ import type { BrainEngine, FileSpec } from './engine.ts';
 import { parseMarkdown } from './markdown.ts';
 import { classifyStoredType } from './schema-pack/type-usage.ts';
 import { prepareMarkdownChunks } from './markdown-chunks.ts';
+import { renderSearchableFrontmatter } from './searchable-frontmatter.ts';
 import { prepareCodeChunks, installCodeChunkEdges } from './code-chunks.ts';
 import { detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
 import { sanitizeRemoteBody } from './remote-body.ts';
@@ -246,7 +247,7 @@ export async function importFromContent(
      * Callers thread this from `loadActivePack(ctx)` once per command —
      * NEVER per file inside sync (codex perf finding #7).
      */
-    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
+    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string>; searchable_fields?: Record<string, string> }> };
     /**
      * v0.39.3.0 provenance write-through (WARN-8). When set, threaded to
      * `tx.putPage` so the page's `source_kind`, `source_uri`,
@@ -760,7 +761,8 @@ export async function importFromContent(
 
   // Preserve the importer projection (including fenced code and zero-chunk
   // dispositions) in the provider-free path used by background rebuilds too.
-  const chunks = await prepareMarkdownChunks(parsed);
+  const chunks = await prepareMarkdownChunks({ ...parsed,
+    frontmatter_search_text: renderSearchableFrontmatter(parsed.type, parsed.frontmatter, opts.activePack) });
 
   // Embedding failures propagate unless onPostCommitEmbedding lets the caller
   // report enrichment separately from the already-persisted content.
@@ -1159,7 +1161,7 @@ export async function importFromFile(
      * `parseMarkdown` uses pack-driven type inference. Load ONCE per command;
      * never per file (codex perf finding #7).
      */
-    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
+    activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string>; searchable_fields?: Record<string, string> }> };
   } = {},
 ): Promise<ImportResult> {
   // Defense-in-depth: reject symlinks before reading content.

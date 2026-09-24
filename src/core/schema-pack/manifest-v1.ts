@@ -142,6 +142,15 @@ const PageTypeSchema = z.object({
    * declare it stay valid. Consumers MUST handle undefined via `?? []`.
    */
   subtypes: z.array(SubtypeMatchSchema).optional(),
+  /**
+   * #5335: scalar frontmatter fields to render into searchable content at
+   * import time. `{ key: label }` — at chunking, each present scalar field
+   * emits a `- <label>: <value>` line at the head of the first
+   * compiled_truth chunk, so the value enters the tsvector, the embedding,
+   * and the first-chunk entity summary. Non-scalar values (arrays,
+   * objects, null) are skipped; body-derived text always wins.
+   */
+  searchable_fields: z.record(z.string(), z.string()).optional(),
 }).strict();
 
 const FrontmatterLinkSchema = z.object({

@@ -111,11 +111,20 @@ export async function prepareMarkdownChunks(page: {
   compiled_truth: string;
   timeline?: string;
   frontmatter?: Record<string, unknown> | null;
+  /**
+   * #5335: pre-rendered searchable frontmatter lines (schema-pack
+   * `searchable_fields`). Prepended to the first compiled_truth chunk — or
+   * emitted as a sole chunk when the body is empty — so declared scalar
+   * fields enter the tsvector, the embedding, and the first-chunk entity
+   * summary without touching the canonical compiled_truth.
+   */
+  frontmatter_search_text?: string;
 }, maxChunkTokens?: number): Promise<ChunkInput[]> {
   // Both dispositions intentionally have no live chunks, including code.
   if (isEmbedSkipped(page.frontmatter) || isQuarantined(page.frontmatter)) return [];
   const chunks: ChunkInput[] = [];
   const chunkOpts = { maxTokens: maxChunkTokens ?? resolveMaxChunkTokens() };
+  const searchText = page.frontmatter_search_text?.trim();
   if (page.compiled_truth.trim()) {
     for (const c of chunkText(page.compiled_truth, chunkOpts)) {
       chunks.push({ chunk_index: chunks.length, chunk_text: c.text, chunk_source: 'compiled_truth' });
@@ -128,6 +137,15 @@ export async function prepareMarkdownChunks(page: {
   }
   if (page.compiled_truth.trim()) {
     chunks.push(...await extractFencedChunks(page.compiled_truth, chunks.length));
+  }
+  if (searchText) {
+    const head = chunks[0];
+    if (head && head.chunk_source === 'compiled_truth') {
+      chunks[0] = { ...head, chunk_text: `${searchText}\n\n${head.chunk_text}` };
+    } else {
+      chunks.unshift({ chunk_index: 0, chunk_text: searchText, chunk_source: 'compiled_truth' });
+      for (let i = 0; i < chunks.length; i++) chunks[i].chunk_index = i;
+    }
   }
   return chunks;
 }
