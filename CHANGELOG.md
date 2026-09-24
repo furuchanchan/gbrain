@@ -2,6 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
+
 ## [0.54.1.1] - 2026-09-24
 
 **Your agent can now open administration and guide another agent through a working connection.**
