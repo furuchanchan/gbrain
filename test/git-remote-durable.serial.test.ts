@@ -128,6 +128,66 @@ describe('divergenceSafePull', () => {
     // Working tree is usable (HEAD is the local commit, not a conflicted state).
     expect(gitIn(work, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('main');
   });
+
+  test('#5429 — pullStrategy=merge merges tip-equivalent divergence rebase cannot replay', () => {
+    const { bare, work } = makePair();
+    const other = secondClone(bare);
+    // origin moves to "current".
+    writeFileSync(join(other, 'page.md'), 'current\n');
+    git(other, 'add', 'page.md'); git(other, 'commit', '-qm', 'origin current'); git(other, 'push', '-q', 'origin', 'main');
+    // local: an intermediate snapshot, then a tip matching origin's content —
+    // rebase conflicts on the intermediate replay; merge is clean.
+    writeFileSync(join(work, 'page.md'), 'intermediate\n');
+    git(work, 'add', 'page.md'); git(work, 'commit', '-qm', 'intermediate');
+    writeFileSync(join(work, 'page.md'), 'current\n');
+    git(work, 'add', 'page.md'); git(work, 'commit', '-qm', 'current');
+
+    git(work, 'config', '--local', 'gbrain.pullStrategy', 'merge');
+    const out = divergenceSafePull(work, 'main');
+    expect(out.status).toBe('advanced');
+    // Merge commit keeps both histories: parents = local tip + origin tip.
+    const parents = gitIn(work, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ').slice(1);
+    expect(parents.length).toBe(2);
+    expect(gitIn(work, 'rev-parse', 'origin/main')).toBe(parents[1]);
+    expect(existsSync(join(work, '.git', 'MERGE_HEAD'))).toBe(false);
+    // A follow-up pull is a no-op.
+    expect(divergenceSafePull(work, 'main').status).toBe('up_to_date');
+  });
+
+  test('#5429 — merge strategy fails closed on a real content conflict', () => {
+    const { bare, work } = makePair();
+    const other = secondClone(bare);
+    writeFileSync(join(other, 'README.md'), 'remote version\n');
+    git(other, 'add', 'README.md'); git(other, 'commit', '-qm', 'remote'); git(other, 'push', '-q', 'origin', 'main');
+    writeFileSync(join(work, 'README.md'), 'local version\n');
+    git(work, 'add', 'README.md'); git(work, 'commit', '-qm', 'local');
+    const headBefore = gitIn(work, 'rev-parse', 'HEAD');
+    git(work, 'config', '--local', 'gbrain.pullStrategy', 'merge');
+    const out = divergenceSafePull(work, 'main');
+    expect(out.status).toBe('conflict_aborted');
+    if (out.status === 'conflict_aborted') expect(out.detail).toContain('--no-rebase');
+    expect(existsSync(join(work, '.git', 'MERGE_HEAD'))).toBe(false);
+    expect(gitIn(work, 'rev-parse', 'HEAD')).toBe(headBefore);
+    expect(git(work, 'status', '--porcelain')).toBe('');
+  });
+
+  test('#5429 — unset pullStrategy keeps rebase + never autostashes', () => {
+    const { bare, work } = makePair();
+    const other = secondClone(bare);
+    writeFileSync(join(other, 'page.md'), 'current\n');
+    git(other, 'add', 'page.md'); git(other, 'commit', '-qm', 'origin current'); git(other, 'push', '-q', 'origin', 'main');
+    writeFileSync(join(work, 'page.md'), 'intermediate\n');
+    git(work, 'add', 'page.md'); git(work, 'commit', '-qm', 'intermediate');
+    writeFileSync(join(work, 'page.md'), 'current\n');
+    git(work, 'add', 'page.md'); git(work, 'commit', '-qm', 'current');
+    git(work, 'config', '--local', 'rebase.autoStash', 'true');
+    // No gbrain.pullStrategy → rebase replays "intermediate" and conflicts.
+    const out = divergenceSafePull(work, 'main');
+    expect(out.status).toBe('conflict_aborted');
+    expect(existsSync(join(work, '.git', 'rebase-merge'))).toBe(false);
+    expect(existsSync(join(work, '.git', 'rebase-apply'))).toBe(false);
+    expect(gitIn(work, 'stash', 'list')).toBe('');
+  });
 });
 
 describe('pushProbe', () => {
