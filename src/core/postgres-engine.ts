@@ -1,4 +1,6 @@
 import { tryAcquirePoolLongHold, PoolCapacityError } from './pool-budget.ts';
+import { managedPersistenceEnabled } from './persistence/ownership.ts';
+import { purgeDeletedPagesManaged } from './persistence/purge-deleted.ts';
 import { replaceDerivedLinks, type DerivedLinkOrigin, type DerivedLinkReplacementOptions } from './derived-links.ts';
 import { mutatePageTag } from './page-state/tags.ts';
 import type { PageKey, PageSnapshot, PageSnapshotOptions, PageWriteOptions } from './page-state/types.ts';
@@ -930,6 +932,9 @@ export class PostgresEngine implements BrainEngine {
         deleted_at: r.deleted_at instanceof Date ? (r.deleted_at as Date) : new Date(r.deleted_at as string),
       }));
       return { slugs: pages.map((p) => p.slug), count: pages.length, pages };
+    }
+    if (await managedPersistenceEnabled(this)) {
+      return purgeDeletedPagesManaged(this, hours);
     }
     const rows = await sql`
       DELETE FROM pages

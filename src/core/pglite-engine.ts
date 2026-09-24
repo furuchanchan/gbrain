@@ -1,4 +1,6 @@
 import { registerManagedFilesystemEngine } from './persistence/filesystem-guard.ts';
+import { managedPersistenceEnabled } from './persistence/ownership.ts';
+import { purgeDeletedPagesManaged } from './persistence/purge-deleted.ts';
 import { replaceDerivedLinks, type DerivedLinkOrigin, type DerivedLinkReplacementOptions } from './derived-links.ts';
 import { trackPgliteDatabase, PgliteClosingError, notifyPgliteOpened } from './pglite-lifecycle.ts';
 import { mutatePageTag } from './page-state/tags.ts';
@@ -1991,6 +1993,9 @@ export class PGLiteEngine implements BrainEngine {
         deleted_at: r.deleted_at instanceof Date ? r.deleted_at : new Date(r.deleted_at),
       }));
       return { slugs: pages.map((p) => p.slug), count: pages.length, pages };
+    }
+    if (await managedPersistenceEnabled(this)) {
+      return purgeDeletedPagesManaged(this, hours);
     }
     const { rows } = await this.db.query(
       `DELETE FROM pages
