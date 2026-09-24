@@ -37,7 +37,7 @@ import { SYNC_SKIP_FILES } from '../sync.ts';
  * classification — applied to a stored `source_path`. Windows-recorded
  * paths carry backslashes, so split on both separators.
  */
-function isMetafileSourcePath(sourcePath: string | null): boolean {
+function isMetafileSourcePath(sourcePath: string | null | undefined): boolean {
   if (sourcePath == null) return false;
   const basename = sourcePath.split(/[\\/]/).pop() ?? '';
   return (SYNC_SKIP_FILES as readonly string[]).includes(basename);
