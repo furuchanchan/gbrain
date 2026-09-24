@@ -22,6 +22,7 @@ import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, recoveryStagingFil
 import { assertMutationProtocol, assertSharedSkillPersistence, declarePersistenceProtocol, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
 import { assertBundleRecoveryBinding, bundleFileHash, prepareBundleRecovery, publishStagedBundleFile, stageBundleFile, type MutationFile } from './bundle-files.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
+import { PageRevisionConflictError } from '../page-state/types.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -74,10 +75,24 @@ function publishFile(file: NonNullable<PreparedMutation['file']>, stagingPath?: 
 // Effect recovery uses the same confined durable publication primitive, under
 // its own recovery record and native root capability.
 export { fileHash as persistenceFileHash, publishFile as publishPersistenceFile };
-function requestError(error: unknown): { code: string; message: string } {
+function requestError(error: unknown): { code: string; message: string; outcome?: Record<string, unknown> } {
   if (error instanceof OperationError) return { code: error.code, message: error.message };
   const code = (error as { code?: string })?.code;
-  if (code === 'revision_conflict') return { code, message: 'The page changed after the supplied revision was read.' };
+  if (code === 'revision_conflict') {
+    // #5293: the typed error distinguishes a missing expected_revision (a
+    // usage error) from a real read-then-change race — collapsing all three
+    // arms into "the page changed" sends callers chasing a data race that
+    // never happened. Carry its own message and the two revisions, so both
+    // the CLI surface and the durable receipt show which precondition failed.
+    if (error instanceof PageRevisionConflictError) {
+      return {
+        code,
+        message: error.message,
+        outcome: { expected_revision: error.expectedRevision, current_revision: error.currentRevision },
+      };
+    }
+    return { code, message: 'The page changed after the supplied revision was read.' };
+  }
   return { code: 'storage_error', message: `Publication failed${code ? ` (${code})` : ''}. Inspect owner diagnostics.` };
 }
 function conflictCode(code: string): boolean { return ['revision_required','revision_conflict','source_changed','page_identity_changed'].includes(code); }
@@ -91,7 +106,7 @@ export async function finishUnpublishedFailure(engine: BrainEngine, row: WriteRe
     await releaseUnpublishedClaim(engine, row, transientDatabaseFailure(error) ? 'database_contention' : 'revision_changed_repreparing');
     return (await getWriteRequestById(engine, row.id))!;
   }
-  return engine.transaction(tx => completeWrite(tx, row, conflictCode(failure.code) ? 'conflict' : 'failed', {}, failure));
+  return engine.transaction(tx => completeWrite(tx, row, conflictCode(failure.code) ? 'conflict' : 'failed', failure.outcome ?? {}, failure));
 }
 
 /**

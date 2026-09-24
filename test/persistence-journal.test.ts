@@ -11,7 +11,8 @@ import { registerLocalWriter, revokeLocalWriter } from '../src/core/persistence/
 import { submissionAuthority } from '../src/core/persistence/authority.ts';
 import { admitWrite, claimNextWrite, compactWriteReceipts, getWriteRequest, getWriteRequestById, receiptFor, type WriteAdmission } from '../src/core/persistence/journal.ts';
 import { cancelWriteRequest } from '../src/core/persistence/control.ts';
-import { publishMutation, recoverPublication } from '../src/core/persistence/coordinator.ts';
+import { publishMutation, recoverPublication, finishUnpublishedFailure } from '../src/core/persistence/coordinator.ts';
+import { PageRevisionConflictError } from '../src/core/page-state/types.ts';
 import { claimWorktree } from '../src/core/persistence/ownership.ts';
 import { preparePageMutation } from '../src/core/persistence/page-prepare.ts';
 import { assertSafeE2eDatabaseUrl } from './helpers/db-guard.ts';
@@ -264,6 +265,38 @@ describe('durable mutation journal', () => {
       expect(Number(compact.terminal_reservation)).toBeGreaterThan(1024);
       expect(compact.authority).toEqual(accepted.authority);
       expect((await admitWrite(engine, a)).id).toBe(accepted.id);
+    }
+  });
+});
+
+describe('revision_conflict reason preserved (#5293)', () => {
+  test('missing expected_revision surfaces the usage-error message, not a data-race message', async () => {
+    for (const engine of engines) {
+      const a = await admission(engine, `conflict-reason-${engine.kind}`);
+      const row = await admitWrite(engine, a);
+      const finished = await finishUnpublishedFailure(engine, row, new PageRevisionConflictError(null, '00000000-0000-4000-8000-000000000001'));
+      expect(finished.state).toBe('conflict');
+      expect(finished.error_message).toContain('expected revision is required');
+      expect(finished.error_message).not.toContain('changed after');
+      expect(finished.outcome).toMatchObject({
+        expected_revision: null,
+        current_revision: '00000000-0000-4000-8000-000000000001',
+      });
+    }
+  });
+
+  test('a real read-then-change race still reports the changed-page arm with both revisions', async () => {
+    for (const engine of engines) {
+      const a = await admission(engine, `conflict-race-${engine.kind}`);
+      const row = await admitWrite(engine, a);
+      const done = await finishUnpublishedFailure(engine, row,
+        new PageRevisionConflictError('00000000-0000-4000-8000-0000000000aa', '00000000-0000-4000-8000-0000000000bb'));
+      expect(done.state).toBe('conflict');
+      expect(done.error_message).toContain('page changed');
+      expect(done.outcome).toMatchObject({
+        expected_revision: '00000000-0000-4000-8000-0000000000aa',
+        current_revision: '00000000-0000-4000-8000-0000000000bb',
+      });
     }
   });
 });
