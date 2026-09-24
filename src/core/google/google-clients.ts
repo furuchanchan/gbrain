@@ -164,15 +164,35 @@ export class GoogleApiClient {
     build: (pageToken: string | null) => string,
     pick: (body: Record<string, unknown>) => { items: T[]; nextPageToken: string | null },
     apiHint: ApiHint,
-    opts: { signal?: AbortSignal; maxPages?: number; partialOk?: boolean } = {},
+    opts: {
+      signal?: AbortSignal;
+      maxPages?: number;
+      partialOk?: boolean;
+      /**
+       * Resume point for an interrupted listing (#5349): fetch pages starting
+       * at this token instead of the first page. The token continues the
+       * ORIGINAL listing — callers re-send the same query params and persist
+       * it only for the listing it was minted under.
+       */
+      startPageToken?: string | null;
+      /**
+       * Called once per fetched page, AFTER the page's items are appended to
+       * the result and BEFORE the next page is fetched. Lets a caller process
+       * items incrementally and commit its own resume cursor per fully-
+       * handled page, so a killed sweep resumes at the cursor instead of
+       * restarting the listing (the gmail backfill's floor-cursor discipline).
+       */
+      onBatch?: (items: T[], nextPageToken: string | null) => void | Promise<void>;
+    } = {},
   ): Promise<T[]> {
     const out: T[] = [];
-    let pageToken: string | null = null;
+    let pageToken: string | null = opts.startPageToken ?? null;
     const cap = opts.maxPages ?? PAGINATION_CAP;
     for (let page = 0; page < cap; page++) {
       const body = await this.fetchJSON<Record<string, unknown>>(build(pageToken), apiHint, opts);
       const { items, nextPageToken } = pick(body);
       out.push(...items);
+      await opts.onBatch?.(items, nextPageToken);
       if (!nextPageToken) return out;
       pageToken = nextPageToken;
     }
@@ -423,6 +443,29 @@ interface RawCalendarEvent {
   htmlLink?: string;
 }
 
+function mapCalendarEvent(account: string, e: RawCalendarEvent): CalendarEventData {
+  return {
+    id: e.id,
+    summary: e.summary ?? '(no title)',
+    description: e.description ?? '',
+    startIso: e.start?.dateTime ?? (e.start?.date ? `${e.start.date}T00:00:00Z` : ''),
+    endIso: e.end?.dateTime ?? (e.end?.date ? `${e.end.date}T00:00:00Z` : ''),
+    allDay: Boolean(e.start?.date),
+    organizer: e.organizer?.email?.toLowerCase() ?? null,
+    attendees: (e.attendees ?? []).map((a) => ({
+      email: (a.email ?? '').toLowerCase(),
+      displayName: a.displayName ?? null,
+      self: a.self ?? false,
+      responseStatus: a.responseStatus ?? null,
+    })),
+    location: e.location ?? null,
+    hangoutLink: e.hangoutLink ?? null,
+    htmlLink: e.htmlLink ?? null,
+    status: e.status ?? 'confirmed',
+    account,
+  };
+}
+
 export class CalendarClient extends GoogleApiClient {
   /**
    * Incremental when syncToken is set; windowed otherwise. Throws
@@ -440,6 +483,13 @@ export class CalendarClient extends GoogleApiClient {
        *  an address like `...@group.calendar.google.com`; each calendar gets
        *  its OWN gbrain source so their sync tokens never collide. */
       calendarId?: string;
+      /** Resume token for an interrupted listing (#5349) — continues the
+       *  SAME query (same window/syncToken params) at the stored page. */
+      pageToken?: string | null;
+      /** Per-page hook: mapped events + the token to fetch the NEXT page
+       *  (null on the last page). Callers process the page then persist the
+       *  token so a killed sweep resumes instead of restarting. */
+      onPage?: (events: CalendarEventData[], nextPageToken: string | null) => void | Promise<void>;
     },
   ): Promise<{ events: CalendarEventData[]; nextSyncToken: string | null }> {
     let nextSyncToken: string | null = null;
@@ -465,28 +515,15 @@ export class CalendarClient extends GoogleApiClient {
         };
       },
       'calendar-json',
-      opts,
+      {
+        ...opts,
+        startPageToken: opts.pageToken,
+        ...(opts.onPage
+          ? { onBatch: (items: RawCalendarEvent[], nextPageToken: string | null) => opts.onPage!(items.map((e) => mapCalendarEvent(account, e)), nextPageToken) }
+          : {}),
+      },
     );
-    const events = raw.map((e): CalendarEventData => ({
-      id: e.id,
-      summary: e.summary ?? '(no title)',
-      description: e.description ?? '',
-      startIso: e.start?.dateTime ?? (e.start?.date ? `${e.start.date}T00:00:00Z` : ''),
-      endIso: e.end?.dateTime ?? (e.end?.date ? `${e.end.date}T00:00:00Z` : ''),
-      allDay: Boolean(e.start?.date),
-      organizer: e.organizer?.email?.toLowerCase() ?? null,
-      attendees: (e.attendees ?? []).map((a) => ({
-        email: (a.email ?? '').toLowerCase(),
-        displayName: a.displayName ?? null,
-        self: a.self ?? false,
-        responseStatus: a.responseStatus ?? null,
-      })),
-      location: e.location ?? null,
-      hangoutLink: e.hangoutLink ?? null,
-      htmlLink: e.htmlLink ?? null,
-      status: e.status ?? 'confirmed',
-      account,
-    }));
+    const events = raw.map((e) => mapCalendarEvent(account, e));
     return { events, nextSyncToken };
   }
 
@@ -534,11 +571,33 @@ interface RawPerson {
   metadata?: { deleted?: boolean };
 }
 
+function mapContact(p: RawPerson): ContactData {
+  const primaryName = p.names?.find((n) => n.metadata?.primary) ?? p.names?.[0];
+  const primaryOrg = p.organizations?.find((o) => o.metadata?.primary) ?? p.organizations?.[0];
+  return {
+    resourceName: p.resourceName,
+    displayName: primaryName?.displayName ?? null,
+    emails: (p.emailAddresses ?? [])
+      .map((e) => (e.value ?? '').trim().toLowerCase())
+      .filter((e) => e.includes('@')),
+    organization: primaryOrg?.name ?? null,
+    title: primaryOrg?.title ?? null,
+    deleted: p.metadata?.deleted ?? false,
+  };
+}
+
 export class PeopleClient extends GoogleApiClient {
   /** Incremental with syncToken; full otherwise. 410 → GoogleCursorExpiredError. */
   async listConnections(opts: {
     syncToken?: string | null;
     signal?: AbortSignal;
+    /** Resume token for an interrupted listing (#5349) — continues the SAME
+     *  query at the stored page. */
+    pageToken?: string | null;
+    /** Per-page hook: mapped contacts + the token to fetch the NEXT page
+     *  (null on the last page). Callers process the page then persist the
+     *  token so a killed sweep resumes instead of restarting. */
+    onPage?: (contacts: ContactData[], nextPageToken: string | null) => void | Promise<void>;
   }): Promise<{ contacts: ContactData[]; nextSyncToken: string | null }> {
     let nextSyncToken: string | null = null;
     const raw = await this.drainPages<RawPerson>(
@@ -560,22 +619,15 @@ export class PeopleClient extends GoogleApiClient {
         };
       },
       'people',
-      opts,
+      {
+        ...opts,
+        startPageToken: opts.pageToken,
+        ...(opts.onPage
+          ? { onBatch: (items: RawPerson[], nextPageToken: string | null) => opts.onPage!(items.map(mapContact), nextPageToken) }
+          : {}),
+      },
     );
-    const contacts = raw.map((p): ContactData => {
-      const primaryName = p.names?.find((n) => n.metadata?.primary) ?? p.names?.[0];
-      const primaryOrg = p.organizations?.find((o) => o.metadata?.primary) ?? p.organizations?.[0];
-      return {
-        resourceName: p.resourceName,
-        displayName: primaryName?.displayName ?? null,
-        emails: (p.emailAddresses ?? [])
-          .map((e) => (e.value ?? '').trim().toLowerCase())
-          .filter((e) => e.includes('@')),
-        organization: primaryOrg?.name ?? null,
-        title: primaryOrg?.title ?? null,
-        deleted: p.metadata?.deleted ?? false,
-      };
-    });
+    const contacts = raw.map(mapContact);
     return { contacts, nextSyncToken };
   }
 }

@@ -13,6 +13,12 @@ import { withConnectorSync, rethrowConnectorWriteError, type ManagedConnectorSyn
  * Cursor discipline (per service, independent):
  *  - contacts / calendar: syncToken committed only after that service's
  *    fully-successful sweep; 410 GONE drops the token and re-runs windowed.
+ *    The windowed listing itself is resumable (#5349): the pageToken of the
+ *    next page is persisted per fully-processed page, so a killed first
+ *    sweep resumes at the cursor instead of restarting — the same per-batch
+ *    floor discipline gmail's initial backfill applies. A rejected resume
+ *    token falls back to a fresh windowed re-list; --full always starts one.
+ *    The syncToken-delta lane stays atomic (small listings).
  *  - gmail delta: history.list from gmail_history_id; 404 (expired, ~1 week)
  *    falls back to a bookmark-windowed messages.list, then re-anchors.
  *  - gmail INITIAL BACKFILL is explicitly resumable (outside-voice F7a): the
@@ -55,6 +61,8 @@ import {
 import {
   ALL_GOOGLE_SERVICES,
   DEFAULT_CALENDAR_ID,
+  type CalendarEventData,
+  type ContactData,
   type GmailThreadData,
   type GoogleService,
   type GoogleSourceConfig,
@@ -129,7 +137,11 @@ function emptyState(): GoogleSourceState {
     gmail_newest_ms: null,
     calendar_sync_token: null,
     calendar_id: null,
+    calendar_resume_page_token: null,
+    calendar_resume_time_min_iso: null,
+    calendar_resume_time_max_iso: null,
     contacts_sync_token: null,
+    contacts_resume_page_token: null,
     last_full_at: null,
   };
 }
@@ -305,21 +317,14 @@ async function sweepContacts(
   summary: GoogleSyncSummary,
   countedSlugs: Set<string>,
 ): Promise<void> {
-  let result;
-  try {
-    result = await people.listConnections({
-      syncToken: deps.opts.full ? null : state.contacts_sync_token,
-      ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
-    });
-  } catch (e) {
-    if (e instanceof GoogleCursorExpiredError) {
-      deps.log('[google] contacts syncToken expired; full re-list');
-      state.contacts_sync_token = null;
-      result = await people.listConnections({ syncToken: null, ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
-    } else {
-      throw e;
-    }
-  }
+  // Resumable initial/full listing (#5349): the pageToken of the NEXT page is
+  // persisted per fully-processed page, so a sweep killed mid-listing resumes
+  // at the cursor instead of restarting. The syncToken-delta lane stays atomic
+  // (small listings); --full reconciles need every page, so they always start
+  // a fresh listing — which is itself resumable.
+  const windowed = deps.opts.full || !state.contacts_sync_token;
+  if (deps.opts.full) state.contacts_resume_page_token = null;
+  let resumeToken = windowed ? (state.contacts_resume_page_token ?? null) : null;
   // Ownership is keyed on google_contact_id, not path alone: a page owned by
   // a DIFFERENT contact (name collision — two "John Smith"s) must neither be
   // rewritten nor deleted; the colliding contact gets a disambiguated slug.
@@ -334,45 +339,88 @@ async function sweepContacts(
     const m = readFileSync(filePath, 'utf-8').match(/^google_contact_id:\s*"([^"]+)"/m);
     return m ? m[1] : 'hand-authored';
   };
-  for (const c of result.contacts) {
-    if (deps.opts.signal?.aborted) return;
-    // DB lookup by contact id FIRST: deletion tombstones typically carry only
-    // resourceName + deleted (no names/emails — slug derivation yields null),
-    // and a renamed contact's current name derives a DIFFERENT slug than the
-    // page it owns. Both cases need the id-keyed path (mirror of the calendar
-    // sweep's event_id keying).
-    const existingPath = await contactPageRelPathByContactId(deps, c.resourceName);
-    if (c.deleted) {
-      if (existingPath && await ownerOf(existingPath) === c.resourceName) {
-        await deletePageByRelPath(deps, existingPath, summary);
-      } else {
-        // Page not (yet) in the DB — fall back to slug candidates, guarded
-        // by file ownership. Delete only the page THIS contact owns.
-        for (const slug of [personSlugFromContact(c, false), personSlugFromContact(c, true)]) {
-          if (slug && await ownerOf(`${slug}.md`) === c.resourceName) {
-            await deletePageByRelPath(deps, `${slug}.md`, summary);
+  const onPage = async (contacts: ContactData[], nextPageToken: string | null) => {
+    for (const c of contacts) {
+      // Abort mid-page → cursor NOT advanced: the page is redone next run
+      // (at most one page of redundant work — the same cost model gmail's
+      // per-batch floor accepts).
+      if (deps.opts.signal?.aborted) return;
+      // DB lookup by contact id FIRST: deletion tombstones typically carry only
+      // resourceName + deleted (no names/emails — slug derivation yields null),
+      // and a renamed contact's current name derives a DIFFERENT slug than the
+      // page it owns. Both cases need the id-keyed path (mirror of the calendar
+      // sweep's event_id keying).
+      const existingPath = await contactPageRelPathByContactId(deps, c.resourceName);
+      if (c.deleted) {
+        if (existingPath && await ownerOf(existingPath) === c.resourceName) {
+          await deletePageByRelPath(deps, existingPath, summary);
+        } else {
+          // Page not (yet) in the DB — fall back to slug candidates, guarded
+          // by file ownership. Delete only the page THIS contact owns.
+          for (const slug of [personSlugFromContact(c, false), personSlugFromContact(c, true)]) {
+            if (slug && await ownerOf(`${slug}.md`) === c.resourceName) {
+              await deletePageByRelPath(deps, `${slug}.md`, summary);
+            }
           }
         }
+        continue;
       }
-      continue;
+      const baseSlug = personSlugFromContact(c);
+      if (!baseSlug) continue;
+      const baseOwner = await ownerOf(`${baseSlug}.md`);
+      const collides = baseOwner !== null && baseOwner !== 'hand-authored' && baseOwner !== c.resourceName;
+      const rendered = renderPersonPage(c, collides);
+      if (!rendered) continue;
+      const owner = await ownerOf(rendered.relPath);
+      if (owner === 'hand-authored') {
+        deps.log(`[google] skipping hand-authored ${rendered.relPath}`);
+        continue;
+      }
+      // Rename: this contact previously rendered elsewhere — remove the page it
+      // owned there, or the old slug lives on as a stale orphan.
+      if (existingPath && existingPath !== rendered.relPath && await ownerOf(existingPath) === c.resourceName) {
+        await deletePageByRelPath(deps, existingPath, summary);
+      }
+      await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
     }
-    const baseSlug = personSlugFromContact(c);
-    if (!baseSlug) continue;
-    const baseOwner = await ownerOf(`${baseSlug}.md`);
-    const collides = baseOwner !== null && baseOwner !== 'hand-authored' && baseOwner !== c.resourceName;
-    const rendered = renderPersonPage(c, collides);
-    if (!rendered) continue;
-    const owner = await ownerOf(rendered.relPath);
-    if (owner === 'hand-authored') {
-      deps.log(`[google] skipping hand-authored ${rendered.relPath}`);
-      continue;
+    if (windowed) {
+      state.contacts_resume_page_token = nextPageToken;
+      writeGoogleState(deps.cfg.dir, state);
     }
-    // Rename: this contact previously rendered elsewhere — remove the page it
-    // owned there, or the old slug lives on as a stale orphan.
-    if (existingPath && existingPath !== rendered.relPath && await ownerOf(existingPath) === c.resourceName) {
-      await deletePageByRelPath(deps, existingPath, summary);
+  };
+  let result;
+  try {
+    result = await people.listConnections({
+      syncToken: windowed ? null : state.contacts_sync_token,
+      pageToken: resumeToken,
+      ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
+      onPage,
+    });
+  } catch (e) {
+    // 410 (expired syncToken) always re-lists fresh. A rejected resume token
+    // (opaque Google token gone stale — typically a 400-class upstream error)
+    // costs the stored listing only: the fallback re-lists from page 1.
+    // rate_limited is transient — propagate with the cursor intact so the
+    // next run resumes instead of re-burning quota on pages already done.
+    const staleResume = resumeToken !== null && isCredentialError(e) && e.code !== 'rate_limited';
+    if (e instanceof GoogleCursorExpiredError || staleResume) {
+      deps.log(
+        e instanceof GoogleCursorExpiredError
+          ? '[google] contacts syncToken expired; full re-list'
+          : '[google] contacts resume cursor rejected; full re-list',
+      );
+      state.contacts_sync_token = null;
+      state.contacts_resume_page_token = null;
+      resumeToken = null;
+      result = await people.listConnections({
+        syncToken: null,
+        pageToken: null,
+        ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
+        onPage,
+      });
+    } else {
+      throw e;
     }
-    await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
   }
   // Cursor commits only after the whole sweep succeeded.
   if (result.nextSyncToken) state.contacts_sync_token = result.nextSyncToken;
@@ -445,48 +493,94 @@ async function sweepCalendar(
       `[google] calendar changed (${tokenCalendarId} → ${deps.cfg.calendarId}); discarding its sync token, windowed re-list`,
     );
     state.calendar_sync_token = null;
+    state.calendar_resume_page_token = null;
   }
+  // Resumable windowed listing (#5349): the pageToken of the NEXT page is
+  // persisted per fully-processed page, so a sweep killed mid-listing resumes
+  // at the cursor instead of restarting — the same discipline gmail's initial
+  // backfill applies with its floor cursor. The syncToken-delta lane stays
+  // atomic; --full reconciles need every page, so they always start a fresh
+  // listing — which is itself resumable.
+  const windowed = deps.opts.full || !state.calendar_sync_token;
+  if (deps.opts.full) state.calendar_resume_page_token = null;
+  let resumeToken = windowed ? (state.calendar_resume_page_token ?? null) : null;
+  // A resume continues the ORIGINAL listing: re-issue it with the identical
+  // window the token was minted under (the window's far edge drifts each run,
+  // so a fresh windowOpts would not be the same query).
+  let listWindow = resumeToken
+    ? {
+        timeMinIso: state.calendar_resume_time_min_iso ?? windowOpts.timeMinIso,
+        timeMaxIso: state.calendar_resume_time_max_iso ?? windowOpts.timeMaxIso,
+      }
+    : windowOpts;
+  const onPage = async (events: CalendarEventData[], nextPageToken: string | null) => {
+    for (const ev of events) {
+      // Abort mid-page → cursor NOT advanced: the page is redone next run.
+      if (deps.opts.signal?.aborted) return;
+      // The page path derives from MUTABLE fields (start date, summary) while
+      // identity is the immutable event id — look up the existing page by
+      // frontmatter event_id so reschedules move (old page deleted) and
+      // cancelled skeletons (id + status only, per the Calendar API) still
+      // find their page instead of computing a 1970 ghost path.
+      const existingPath = await calendarPageRelPathByEventId(deps, ev.id);
+      const rendered = renderCalendarEventPage(ev);
+      if (!rendered) {
+        await deletePageByRelPath(deps, existingPath ?? calendarRelPath(ev), summary);
+        continue;
+      }
+      if (existingPath && existingPath !== rendered.relPath) {
+        await deletePageByRelPath(deps, existingPath, summary); // rescheduled → moved
+      }
+      await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
+    }
+    if (windowed) {
+      state.calendar_resume_page_token = nextPageToken;
+      state.calendar_resume_time_min_iso = nextPageToken ? listWindow.timeMinIso : null;
+      state.calendar_resume_time_max_iso = nextPageToken ? listWindow.timeMaxIso : null;
+      writeGoogleState(deps.cfg.dir, state);
+    }
+  };
   let result;
   try {
     result = await calendar.listEvents(deps.cfg.account, {
       calendarId: deps.cfg.calendarId,
-      ...(deps.opts.full || !state.calendar_sync_token ? windowOpts : { syncToken: state.calendar_sync_token }),
+      ...(windowed ? listWindow : { syncToken: state.calendar_sync_token }),
+      pageToken: resumeToken,
       ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
+      onPage,
     });
   } catch (e) {
-    if (e instanceof GoogleCursorExpiredError) {
-      deps.log('[google] calendar syncToken expired; windowed re-list');
+    // 410 (expired syncToken) always re-lists windowed. A rejected resume
+    // token (opaque Google token gone stale — typically a 400-class upstream
+    // error) costs the stored listing only: the fallback re-lists the fresh
+    // window from page 1. rate_limited is transient — propagate with the
+    // cursor intact so the next run resumes instead of re-burning quota.
+    const staleResume = resumeToken !== null && isCredentialError(e) && e.code !== 'rate_limited';
+    if (e instanceof GoogleCursorExpiredError || staleResume) {
+      deps.log(
+        e instanceof GoogleCursorExpiredError
+          ? '[google] calendar syncToken expired; windowed re-list'
+          : '[google] calendar resume cursor rejected; windowed re-list',
+      );
       state.calendar_sync_token = null;
+      state.calendar_resume_page_token = null;
+      resumeToken = null;
+      listWindow = windowOpts;
       result = await calendar.listEvents(deps.cfg.account, {
         calendarId: deps.cfg.calendarId,
-        ...windowOpts,
+        ...listWindow,
+        pageToken: null,
         ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
+        onPage,
       });
     } else {
       throw e;
     }
   }
-  for (const ev of result.events) {
-    if (deps.opts.signal?.aborted) return;
-    // The page path derives from MUTABLE fields (start date, summary) while
-    // identity is the immutable event id — look up the existing page by
-    // frontmatter event_id so reschedules move (old page deleted) and
-    // cancelled skeletons (id + status only, per the Calendar API) still
-    // find their page instead of computing a 1970 ghost path.
-    const existingPath = await calendarPageRelPathByEventId(deps, ev.id);
-    const rendered = renderCalendarEventPage(ev);
-    if (!rendered) {
-      await deletePageByRelPath(deps, existingPath ?? calendarRelPath(ev), summary);
-      continue;
-    }
-    if (existingPath && existingPath !== rendered.relPath) {
-      await deletePageByRelPath(deps, existingPath, summary); // rescheduled → moved
-    }
-    await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
-  }
   if (result.nextSyncToken) {
     state.calendar_sync_token = result.nextSyncToken;
     state.calendar_id = deps.cfg.calendarId;
+    state.calendar_resume_page_token = null;
   }
 }
 

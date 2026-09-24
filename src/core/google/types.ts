@@ -68,7 +68,22 @@ export interface GoogleSourceState {
    * calendars and was therefore always primary's.
    */
   calendar_id?: string | null;
+  /**
+   * Windowed-listing resume cursor (#5349): the pageToken of the NEXT page in
+   * an in-flight windowed listing, persisted per fully-processed page so a
+   * killed first sweep resumes where it stopped instead of restarting.
+   * Null once the listing completes (syncToken committed). Windowed lane
+   * only — the syncToken-delta lane is small enough to be atomic.
+   */
+  calendar_resume_page_token?: string | null;
+  /** Window bounds `calendar_resume_page_token` was minted under — a resume
+   *  re-lists with the identical query params. */
+  calendar_resume_time_min_iso?: string | null;
+  calendar_resume_time_max_iso?: string | null;
   contacts_sync_token: string | null;
+  /** Same discipline as `calendar_resume_page_token`, for the contacts
+   *  initial/full connections listing (#5349). */
+  contacts_resume_page_token?: string | null;
   last_full_at: string | null;
 }
 
