@@ -24,6 +24,14 @@ export interface GoogleSourceConfig {
    *  source so each keeps its own sync token — point a second source at a
    *  secondary calendar id to ingest it too. */
   calendarId: string;
+  /**
+   * Worker-pool size for the gmail backfill batch loop (default 1 = the
+   * historical serial walk). The batch stays the checkpoint unit — the floor
+   * cursor still advances only once every thread in the batch has settled —
+   * the pool just overlaps the per-thread API round-trips. Values >1 trade
+   * Gmail quota headroom and DB-pool pressure for backfill wall-clock time.
+   */
+  backfillConcurrency: number;
   /** Managed dir where pages are materialized. */
   dir: string;
   /**

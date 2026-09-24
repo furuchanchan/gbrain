@@ -95,6 +95,12 @@ export function parseGoogleSourceConfig(
     typeof config.g_calendar_id === 'string' && config.g_calendar_id.trim().length > 0
       ? config.g_calendar_id.trim()
       : DEFAULT_CALENDAR_ID;
+  const backfillConcurrency =
+    typeof config.g_backfill_concurrency === 'number' &&
+    Number.isFinite(config.g_backfill_concurrency) &&
+    config.g_backfill_concurrency >= 1
+      ? Math.min(32, Math.floor(config.g_backfill_concurrency))
+      : 1;
   const dir =
     typeof config.g_dir === 'string' && config.g_dir.length > 0 ? config.g_dir : fallbackDir;
   const access =
@@ -104,6 +110,7 @@ export function parseGoogleSourceConfig(
     services: services.length > 0 ? services : [...ALL_GOOGLE_SERVICES],
     historyDays,
     calendarId,
+    backfillConcurrency,
     dir,
     access,
     ...(typeof config.g_token_command === 'string' && config.g_token_command.trim()
@@ -729,44 +736,61 @@ async function sweepGmail(
       for (let i = 0; i < threadIds.length; i += BACKFILL_BATCH_THREADS) {
         if (deps.opts.signal?.aborted) break;
         const batch = threadIds.slice(i, i + BACKFILL_BATCH_THREADS);
-        for (const tid of batch) {
-          if (deps.opts.signal?.aborted) break;
-          if (poisoned(tid)) continue;
-          try {
-            const thread = await processThread(deps, gmail, tid, activePack, summary, countedSlugs);
-            processedAny = true;
-            if (failCounts[tid]) delete failCounts[tid];
-            const newest = thread?.messages[thread.messages.length - 1]?.internalDateMs ?? 0;
-            if (newest > 0 && newest < batchOldest) batchOldest = newest;
-            if (newest > (state.gmail_newest_ms ?? 0)) state.gmail_newest_ms = newest;
-            progressTick(`thread ${tid}`);
-          } catch (e) {
-            if (deps.managed) rethrowConnectorWriteError(e);
-            if (e instanceof GoogleCursorExpiredError && e.status === 404) {
-              // Thread deleted between listing and fetch — gone is gone.
-              // Skipping (not failing) keeps the cursor moving; --full
-              // reconcile removes any page it left behind.
-              deps.log(`[google] thread ${tid} vanished (404); skipping`);
-              progressTick(`thread ${tid} gone`);
-              continue;
+        // Bounded worker pool over the batch: backfillConcurrency (default 1
+        // = the historical serial walk) overlaps per-thread API round-trips.
+        // The batch stays the checkpoint unit — workers pull ids until the
+        // queue drains and the floor commits only after EVERY worker settles,
+        // so the whole-batch-settled rule below is unchanged. A rate limit is
+        // per-user: one worker hitting it stops the others launching new
+        // ids (in-flight work still finishes before the floor verdict).
+        let rateLimitedStop = false;
+        const queue = [...batch];
+        const lanes = Math.max(1, Math.min(deps.cfg.backfillConcurrency, queue.length));
+        await Promise.all(
+          Array.from({ length: lanes }, async () => {
+            for (;;) {
+              if (deps.opts.signal?.aborted || rateLimitedStop) return;
+              const tid = queue.shift();
+              if (tid === undefined) return;
+              if (poisoned(tid)) continue;
+              try {
+                const thread = await processThread(deps, gmail, tid, activePack, summary, countedSlugs);
+                processedAny = true;
+                if (failCounts[tid]) delete failCounts[tid];
+                const newest = thread?.messages[thread.messages.length - 1]?.internalDateMs ?? 0;
+                if (newest > 0 && newest < batchOldest) batchOldest = newest;
+                if (newest > (state.gmail_newest_ms ?? 0)) state.gmail_newest_ms = newest;
+                progressTick(`thread ${tid}`);
+              } catch (e) {
+                if (deps.managed) rethrowConnectorWriteError(e);
+                if (e instanceof GoogleCursorExpiredError && e.status === 404) {
+                  // Thread deleted between listing and fetch — gone is gone.
+                  // Skipping (not failing) keeps the cursor moving; --full
+                  // reconcile removes any page it left behind.
+                  deps.log(`[google] thread ${tid} vanished (404); skipping`);
+                  progressTick(`thread ${tid} gone`);
+                  continue;
+                }
+                // Rate-limited failures don't count toward the poison threshold
+                // (transient, self-clearing) — but they still fail the batch so
+                // the floor doesn't skip past a thread nothing has actually
+                // imported yet.
+                const rateLimited = isRateLimitFailure(e);
+                if (!rateLimited) failCounts[tid] = (failCounts[tid] ?? 0) + 1;
+                batchFailed = true;
+                summary.failedFiles++;
+                summary.status = 'partial';
+                deps.log(threadFailureMessage(tid, rateLimited, e));
+                // A rate limit is per-user, not per-thread: the rest of this
+                // batch would hit the same exhausted quota, and its work is
+                // never banked anyway (batchFailed already holds the floor),
+                // so defer it to the next run instead of burning the retry
+                // budget once per thread.
+                if (rateLimited) return;
+              }
             }
-            // Rate-limited failures don't count toward the poison threshold
-            // (transient, self-clearing) — but they still fail the batch so
-            // the floor doesn't skip past a thread nothing has actually
-            // imported yet.
-            const rateLimited = isRateLimitFailure(e);
-            if (!rateLimited) failCounts[tid] = (failCounts[tid] ?? 0) + 1;
-            batchFailed = true;
-            summary.failedFiles++;
-            summary.status = 'partial';
-            deps.log(threadFailureMessage(tid, rateLimited, e));
-            // A rate limit is per-user, not per-thread: the rest of this batch
-            // would hit the same exhausted quota, and its work is never banked
-            // anyway (batchFailed already holds the floor), so defer it to the
-            // next run instead of burning the retry budget once per thread.
-            if (rateLimited) break;
-          }
-        }
+          }),
+        );
         // Monotone forward progress: the floor commits per FULLY-SUCCESSFUL
         // batch. A batch with any failure must NOT advance the floor — a
         // failed thread NEWER than a committed floor would fall outside the
