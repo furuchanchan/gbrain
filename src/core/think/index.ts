@@ -32,6 +32,7 @@ import { normalizeModelId } from '../model-id.ts';
 import { hasAnthropicKey } from '../ai/anthropic-key.ts';
 import { parseTemporalWindow } from './temporal-window.ts';
 import { resolveExcludePrivatePages } from '../search/private-visibility.ts';
+import { writePageThrough, type WriteThroughResult } from '../write-through.ts';
 
 /** Anthropic Messages client interface — same shape used by subagent.ts so test stubs can be shared. */
 export interface ThinkLLMClient {
@@ -193,6 +194,14 @@ export interface ThinkResult {
    * so existing consumers keep the raw failure shape; callers opt in.
    */
   extractive?: ExtractiveFallback;
+  /**
+   * Provenance for `persistCitations`: page_slug → page_id for every page the
+   * gather actually returned (pages + take parents). `null` marks a slug that
+   * gathered in MORE THAN ONE source — ambiguous, never safe to bind. Absent on
+   * hand-built ThinkResult literals → persistCitations falls back to the
+   * legacy bare-slug lookup.
+   */
+  evidencePageIds?: Map<string, number | null>;
   /**
    * MEMORY_VERBS v1 [E2] — gateway token usage for the synthesis call(s),
    * summed across rounds. Best-effort: null when no LLM ran (graceful stub),
@@ -439,13 +448,30 @@ async function persistCitations(
   engine: BrainEngine,
   synthesisPageId: number,
   citations: ParsedCitation[],
+  evidencePageIds?: Map<string, number | null>,
 ): Promise<{ inserted: number; warnings: string[] }> {
   const warnings: string[] = [];
-  // Resolve unique slugs to page_ids
+  // Resolve unique slugs to page_ids. `evidencePageIds` (gathered provenance
+  // from runThink) is authoritative when present: a citation that was not
+  // among the gathered inputs — or that gathered ambiguously across sources —
+  // can never be bound by bare slug, which would point the evidence row at an
+  // arbitrary page outside the caller's scope (#5426).
   const slugToPageId = new Map<string, number>();
   for (const c of citations) {
     if (c.row_num === null) continue;  // page-level, skip
     if (slugToPageId.has(c.page_slug)) continue;
+    if (evidencePageIds !== undefined) {
+      const gathered = evidencePageIds.get(c.page_slug);
+      if (gathered != null) slugToPageId.set(c.page_slug, gathered);
+      else if (gathered === null) {
+        warnings.push(`CITATION_AMBIGUOUS_ACROSS_SOURCES: ${c.page_slug}`);
+        slugToPageId.set(c.page_slug, 0);  // sentinel: resolved-but-unusable
+      } else {
+        warnings.push(`CITATION_PAGE_NOT_GATHERED: ${c.page_slug}#${c.row_num}`);
+        slugToPageId.set(c.page_slug, 0);
+      }
+      continue;
+    }
     const rows = await engine.executeRaw<{ id: number }>(
       `SELECT id FROM pages WHERE slug = $1 LIMIT 1`,
       [c.page_slug],
@@ -456,6 +482,7 @@ async function persistCitations(
   for (const c of citations) {
     if (c.row_num === null) continue;
     const pageId = slugToPageId.get(c.page_slug);
+    if (pageId === 0) continue;  // already warned (not-gathered / ambiguous)
     if (!pageId) {
       warnings.push(`CITATION_PAGE_NOT_IN_BRAIN: ${c.page_slug}#${c.row_num}`);
       continue;
@@ -880,6 +907,22 @@ export async function runThink(
     if (!gatheredSlugs.has(slug)) warnings.push(`CITATION_NOT_IN_GATHER:${slug}`);
   }
 
+  // #5426: citation→page binding is only safe against the gathered set —
+  // a bare-slug lookup across the brain can land on a same-slug page in a
+  // different source. Slugs gathered under 2+ distinct page_ids are marked
+  // null (ambiguous) so persistence warns instead of picking one silently.
+  const evidencePageIds = new Map<string, number | null>();
+  for (const p of gather.pages) {
+    const prev = evidencePageIds.get(p.slug);
+    if (prev === undefined) evidencePageIds.set(p.slug, p.page_id);
+    else if (prev !== p.page_id) evidencePageIds.set(p.slug, null);
+  }
+  for (const t of gather.takes) {
+    const prev = evidencePageIds.get(t.page_slug);
+    if (prev === undefined) evidencePageIds.set(t.page_slug, t.page_id);
+    else if (prev !== t.page_id) evidencePageIds.set(t.page_slug, null);
+  }
+
   // Round-loop scaffolding (rounds > 1 currently re-runs without gap-driven retrieval).
   // The loop is in place so the v0.29 gap-fill heuristic doesn't change the call site.
   for (let r = 1; r < rounds; r++) {
@@ -910,6 +953,7 @@ export async function runThink(
     modelUsed,
     rounds: 1,
     warnings,
+    evidencePageIds,
     // #1698: persistable only when a real synthesis produced a non-empty answer.
     // ANDs the not-JSON/sentinel flag with a content check (catches valid-but-empty JSON).
     synthesisOk: synthesisOk && response.answer.trim().length > 0,
@@ -966,7 +1010,8 @@ export function stripGapsSection(answer: string): string {
 export async function persistSynthesis(
   engine: BrainEngine,
   result: ThinkResult,
-): Promise<{ slug: string; evidenceInserted: number; warnings: string[] }> {
+  opts: { sourceId?: string } = {},
+): Promise<{ slug: string; evidenceInserted: number; warnings: string[]; writeThrough?: WriteThroughResult }> {
   // #1698: never persist an empty synthesis. Returned signal (NOT a throw, F3) so
   // the MCP `think` op can return the gather result + warning instead of a bare error
   // envelope; the CLI keys off this warning to exit non-zero. Guard on `=== false` so
@@ -974,6 +1019,7 @@ export async function persistSynthesis(
   if (result.synthesisOk === false) {
     return { slug: '', evidenceInserted: 0, warnings: ['SYNTHESIS_EMPTY_NOT_PERSISTED'] };
   }
+  const sourceId = opts.sourceId ?? 'default';
 
   const today = new Date().toISOString().slice(0, 10);
   const slugSafe = result.question
@@ -1005,10 +1051,20 @@ export async function persistSynthesis(
       pages_gathered: result.pagesGathered,
       takes_gathered: result.takesGathered,
     },
-  });
+  }, { sourceId });
 
-  const persisted = await persistCitations(engine, page.id, result.citations);
-  return { slug, evidenceInserted: persisted.inserted, warnings: persisted.warnings };
+  const persisted = await persistCitations(engine, page.id, result.citations, result.evidencePageIds);
+  // Materialize the row to the source's markdown repo the same way
+  // `brainstorm --save` does — a DB-only save is invisible to the synced repo
+  // (#5426). Skips are non-fatal (the row is durable; `gbrain sync`
+  // reconciles), but they surface as a warning so `--save` never reads as a
+  // file write that silently didn't happen.
+  const writeThrough = await writePageThrough(engine, slug, { sourceId });
+  const warnings = [...persisted.warnings];
+  if (!writeThrough.written) {
+    warnings.push(`SYNTHESIS_FILE_NOT_WRITTEN:${writeThrough.skipped ?? writeThrough.error ?? 'unknown'}`);
+  }
+  return { slug, evidenceInserted: persisted.inserted, warnings, writeThrough };
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -173,6 +173,16 @@ prints what would have been the input (exit 0).
         // __all__ spans the brain; runThink has no sentinel handling of its
         // own, so a literal '__all__' sourceId would gather nothing.
         sourceId = resolved.source_id === ALL_SOURCES ? undefined : resolved.source_id;
+        // #5426: --save needs ONE write target — __all__ (explicit or an
+        // ambient tier that resolved to the whole brain) has none. Refuse
+        // rather than persisting into an arbitrary source.
+        if (save && sourceId === undefined) {
+          console.error(
+            'think: --save requires a single source scope — the resolved target is __all__. ' +
+            'Pass --source <id> to choose the synthesis page\'s home source.',
+          );
+          process.exit(1);
+        }
         allowedSources = await localFederatedSourceIds(engine, resolved.source_id, resolved.tier);
       } catch (err) {
         // Only the structural pre-init failure (no sources table) keeps the
@@ -203,7 +213,7 @@ prints what would have been the input (exit 0).
 
       // Persist if --save (the runThink path doesn't auto-persist; CLI does it explicitly)
       if (save) {
-        const persisted = await persistSynthesis(engine, result);
+        const persisted = await persistSynthesis(engine, result, { sourceId });
         savedSlug = persisted.slug || undefined;  // '' = persist-skip signal (#10)
         evidenceInserted = persisted.evidenceInserted;
         for (const w of persisted.warnings) result.warnings.push(w);

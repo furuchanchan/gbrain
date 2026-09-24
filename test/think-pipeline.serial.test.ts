@@ -464,7 +464,13 @@ describe('runThink (with stub client)', () => {
       }),
     };
 
-    const result = await runThink(engine, { question: 'persist test', client: stubClient });
+    const result = await runThink(engine, {
+      question: 'persist test',
+      // #5426: citations now only bind pages the gather actually saw — pull
+      // alice in via anchor so the stub's [alice#2] citation is gathered.
+      anchor: 'people/alice-example',
+      client: stubClient,
+    });
     const saved = await persistSynthesis(engine, result);
     expect(saved.slug).toContain('synthesis/persist-test');
     expect(saved.evidenceInserted).toBe(1);
@@ -480,6 +486,84 @@ describe('runThink (with stub client)', () => {
       [page!.id],
     );
     expect(Number(ev[0]?.count)).toBe(1);
+  });
+
+  // #5426 — persistence is source-aware and evidence binds to gathered pages.
+  test('persistSynthesis writes into the resolved source, not default', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config) VALUES ('beta', 'beta', '{}'::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    try {
+      const result = await runThink(engine, { question: 'beta-scope test', client: {
+        create: async () => ({
+          id: 'msg_beta', type: 'message', role: 'assistant', model: 'stub',
+          stop_reason: 'end_turn', stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null, service_tier: null },
+          content: [{ type: 'text', text: JSON.stringify({ answer: 'beta answer.', citations: [], gaps: [] }) }],
+        }),
+      }});
+      const saved = await persistSynthesis(engine, result, { sourceId: 'beta' });
+      const row = await engine.executeRaw<{ source_id: string }>(
+        `SELECT source_id FROM pages WHERE id = $1`,
+        [(await engine.getPage(saved.slug, { sourceId: 'beta' }))!.id],
+      );
+      expect(row[0]?.source_id).toBe('beta');
+      // And NOT also under 'default'.
+      expect(await engine.getPage(saved.slug, { sourceId: 'default' })).toBeNull();
+    } finally {
+      await engine.executeRaw(`DELETE FROM pages WHERE source_id = 'beta'`);
+      await engine.executeRaw(`DELETE FROM sources WHERE id = 'beta'`);
+    }
+  });
+
+  test('persistCitations refuses a citation that was not gathered (#5426)', async () => {
+    // 'beta' holds a same-slug-ish page that the gather (default-scoped) never saw.
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config) VALUES ('beta', 'beta', '{}'::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    try {
+      const foreign = await engine.putPage('notes/foreign-example', {
+        title: 'Foreign', type: 'note', compiled_truth: 'Only in beta.',
+      }, { sourceId: 'beta' });
+      const result = await runThink(engine, {
+        question: 'technical founder',  // pg_trgm match → alice take gathered
+        sourceId: 'default',
+        remote: false,
+        client: {
+          create: async () => ({
+            id: 'msg_for', type: 'message', role: 'assistant', model: 'stub',
+            stop_reason: 'end_turn', stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null, service_tier: null },
+            content: [{ type: 'text', text: JSON.stringify({
+              answer: 'A [people/alice-example#2] and B [notes/foreign-example#1].',
+              citations: [
+                { page_slug: 'people/alice-example', row_num: 2, citation_index: 1 },
+                { page_slug: 'notes/foreign-example', row_num: 1, citation_index: 2 },
+              ],
+              gaps: [],
+            }) }],
+          }),
+        },
+      });
+      const saved = await persistSynthesis(engine, result);
+      expect(saved.warnings.join(' ')).toContain('CITATION_PAGE_NOT_GATHERED');
+      // The gathered citation still bound — to the default-source alice page,
+      // never to the foreign row.
+      const rows = await engine.executeRaw<{ take_page_id: number }>(
+        `SELECT se.take_page_id FROM synthesis_evidence se
+         JOIN pages p ON p.id = se.synthesis_page_id WHERE p.slug = $1`,
+        [saved.slug],
+      );
+      expect(rows.map(r => r.take_page_id)).toEqual([alicePageId]);
+      expect(foreign.id).not.toBe(alicePageId);
+      await engine.executeRaw(`DELETE FROM pages WHERE source_id = 'default' AND slug = $1`, [saved.slug]);
+    } finally {
+      await engine.executeRaw(`DELETE FROM synthesis_evidence WHERE take_page_id IN (SELECT id FROM pages WHERE source_id = 'beta')`);
+      await engine.executeRaw(`DELETE FROM pages WHERE source_id = 'beta'`);
+      await engine.executeRaw(`DELETE FROM sources WHERE id = 'beta'`);
+    }
   });
 });
 
