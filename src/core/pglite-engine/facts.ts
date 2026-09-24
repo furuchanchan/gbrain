@@ -127,9 +127,11 @@ export async function insertFacts(
   deps: PgliteFactsDeps,
     rows: Array<NewFact & { row_num: number; source_markdown_slug: string; superseded_by_row?: number }>,
     ctx: { source_id: string },
-    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean } },
+    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean; onlyIds?: number[] } },
   ): Promise<{ inserted: number; ids: number[]; warnings: string[]; deleted: number }> {
-    if (rows.length === 0) return { inserted: 0, ids: [], warnings: [], deleted: 0 };
+    // #5430 — a delete-only reconcile (every fence row removed / all rows
+    // departed coordinates) still runs: the wipe shares this transaction.
+    if (rows.length === 0 && !opts?.deleteForPageFirst) return { inserted: 0, ids: [], warnings: [], deleted: 0 };
 
     const warnings: string[] = [];
     // v0.46 (#3014): captured inside the transaction below when
@@ -156,19 +158,25 @@ export async function insertFacts(
           ? ` AND NOT (row_num IS NULL AND expired_at IS NOT NULL)`
           : '';
         const prefixes = del.excludeSourcePrefixes;
+        // #5430 — onlyIds narrows the wipe to changed/removed rows;
+        // undefined keeps the page-wide fence-owned delete.
+        const params: Array<unknown> = [ctx.source_id, del.slug];
+        const onlyFilter = del.onlyIds && del.onlyIds.length > 0
+          ? (pos: number) => ` AND id = ANY($${pos}::bigint[])` : () => '';
         if (prefixes && prefixes.length > 0) {
           const patterns = prefixes.map(p => `${p}%`);
+          params.push(patterns);
           const r = await tx.query(
             `DELETE FROM facts
                WHERE source_id = $1 AND source_markdown_slug = $2
-                 AND NOT (COALESCE(source, '') LIKE ANY($3::text[]))${expiredLegacyFilter}`,
-            [ctx.source_id, del.slug, patterns],
+                 AND NOT (COALESCE(source, '') LIKE ANY($3::text[]))${expiredLegacyFilter}${onlyFilter(4)}`,
+            [...params, ...(del.onlyIds && del.onlyIds.length > 0 ? [del.onlyIds] : [])],
           );
           deleted = r.affectedRows ?? 0;
         } else {
           const r = await tx.query(
-            `DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug = $2${expiredLegacyFilter}`,
-            [ctx.source_id, del.slug],
+            `DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug = $2${expiredLegacyFilter}${onlyFilter(3)}`,
+            [...params, ...(del.onlyIds && del.onlyIds.length > 0 ? [del.onlyIds] : [])],
           );
           deleted = r.affectedRows ?? 0;
         }

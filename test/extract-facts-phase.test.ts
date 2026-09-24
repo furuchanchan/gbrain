@@ -136,31 +136,108 @@ describe('runExtractFacts — happy path', () => {
     expect(after2.rows).toHaveLength(2);
   });
 
-  test('dedupes duplicate fence rows by claim and source without rewriting the fence', async () => {
+  test('same claim and source with different validity windows indexes as distinct rows (#5430)', async () => {
     const body = FACT_FENCE(
-      `| 1 | A | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
-| 2 | A | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+      `| 1 | A | fact | 1.0 | world | medium | 2026-01-01 | 2026-03-01 | s |  |
+| 2 | A | fact | 1.0 | world | medium | 2026-03-02 |  | s |  |`,
     );
     await putPage('people/alice', body);
 
     const r1 = await runExtractFacts(engine, { slugs: ['people/alice'] });
     const r2 = await runExtractFacts(engine, { slugs: ['people/alice'] });
 
-    expect(r1.factsInserted).toBe(1);
+    expect(r1.factsInserted).toBe(2);
     expect(r2.factsInserted).toBe(0);
     expect(r2.factsDeleted).toBe(0);
 
-    // The cycle dedups the derived DB index; it does not destructively
-    // rewrite user-authored markdown fence rows.
+    // The cycle dedups nothing in the user-authored fence.
     const page = await engine.getPage('people/alice', { sourceId: 'default' });
     expect(parseFactsFence(page?.compiled_truth ?? '').facts).toHaveLength(2);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rows = await (engine as any).db.query(
-      `SELECT fact, source FROM facts WHERE source_markdown_slug = 'people/alice'`,
+      `SELECT fact, source, row_num FROM facts WHERE source_markdown_slug = 'people/alice' ORDER BY row_num`,
     );
-    expect(rows.rows).toHaveLength(1);
-    expect(rows.rows[0]).toMatchObject({ fact: 'A', source: 's' });
+    expect(rows.rows).toEqual([
+      expect.objectContaining({ fact: 'A', source: 's', row_num: 1 }),
+      expect.objectContaining({ fact: 'A', source: 's', row_num: 2 }),
+    ]);
+  });
+
+  test('editing one fence row preserves the unchanged rows\' fact ids (#5430)', async () => {
+    await putPage('people/alice', FACT_FENCE(
+      `| 1 | First | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
+| 2 | Second | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
+| 3 | Third | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+    ));
+    await runExtractFacts(engine, { slugs: ['people/alice'] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const before = await (engine as any).db.query(
+      `SELECT id, row_num FROM facts WHERE source_markdown_slug = 'people/alice' ORDER BY row_num`,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const idsBefore = new Map<number, number>(before.rows.map((r: any) => [Number(r.row_num), Number(r.id)]));
+
+    await putPage('people/alice', FACT_FENCE(
+      `| 1 | First | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
+| 2 | Second edited | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
+| 3 | Third | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+    ));
+    const r = await runExtractFacts(engine, { slugs: ['people/alice'] });
+    expect(r.factsInserted).toBe(1);
+    expect(r.factsDeleted).toBe(1);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const after = await (engine as any).db.query(
+      `SELECT id, row_num, fact FROM facts WHERE source_markdown_slug = 'people/alice' ORDER BY row_num`,
+    );
+    expect(after.rows).toHaveLength(3);
+    expect(Number(after.rows[0].id)).toBe(idsBefore.get(1));
+    expect(Number(after.rows[2].id)).toBe(idsBefore.get(3));
+    expect(Number(after.rows[1].id)).not.toBe(idsBefore.get(2));
+    expect(after.rows[1].fact).toBe('Second edited');
+  });
+
+  test('a striker row re-resolves superseded_by when its target is replaced (#5430)', async () => {
+    await putPage('people/deal', FACT_FENCE(
+      `| 1 | ~~Old estimate~~ | commitment | 0.6 | world | medium | 2026-01-01 |  | call | superseded by #2 |
+| 2 | New estimate | commitment | 0.6 | world | medium | 2026-01-01 |  | call |  |
+| 3 | Unrelated fact | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+    ));
+    await runExtractFacts(engine, { slugs: ['people/deal'] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const before = await (engine as any).db.query(
+      `SELECT id, row_num, superseded_by FROM facts WHERE source_markdown_slug = 'people/deal' ORDER BY row_num`,
+    );
+    const strikerBefore = before.rows[0];
+    const targetBefore = before.rows[1];
+    const unrelatedBefore = before.rows[2];
+    expect(Number(strikerBefore.superseded_by)).toBe(Number(targetBefore.id));
+
+    // Edit the target row's claim — the target is replaced with a new id.
+    await putPage('people/deal', FACT_FENCE(
+      `| 1 | ~~Old estimate~~ | commitment | 0.6 | world | medium | 2026-01-01 |  | call | superseded by #2 |
+| 2 | Revised estimate | commitment | 0.6 | world | medium | 2026-01-01 |  | call |  |
+| 3 | Unrelated fact | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+    ));
+    const r = await runExtractFacts(engine, { slugs: ['people/deal'] });
+    expect(r.factsInserted).toBe(2);
+    expect(r.factsDeleted).toBe(2);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const after = await (engine as any).db.query(
+      `SELECT id, row_num, superseded_by, fact FROM facts WHERE source_markdown_slug = 'people/deal' ORDER BY row_num`,
+    );
+    const strikerAfter = after.rows[0];
+    const targetAfter = after.rows[1];
+    const unrelatedAfter = after.rows[2];
+    // The striker was re-inserted and re-resolved onto the fresh target id —
+    // superseded_by never dangles onto a deleted row. The untouched third
+    // row keeps its id.
+    expect(targetAfter.fact).toBe('Revised estimate');
+    expect(Number(targetAfter.id)).not.toBe(Number(targetBefore.id));
+    expect(Number(strikerAfter.superseded_by)).toBe(Number(targetAfter.id));
+    expect(Number(unrelatedAfter.id)).toBe(Number(unrelatedBefore.id));
   });
 
   test('same claim with a different source is not treated as duplicate', async () => {

@@ -2095,7 +2095,7 @@ export interface BrainEngine {
   insertFacts(
     rows: Array<NewFact & { row_num: number; source_markdown_slug: string; superseded_by_row?: number }>,
     ctx: { source_id: string },
-    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean } },
+    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean; onlyIds?: number[] } },
   ): Promise<{ inserted: number; ids: number[]; warnings: string[]; deleted: number }>;
 
   /**

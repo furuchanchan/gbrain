@@ -132,9 +132,11 @@ export async function insertFacts(
   deps: PgFactsDeps,
     rows: Array<NewFact & { row_num: number; source_markdown_slug: string; superseded_by_row?: number }>,
     ctx: { source_id: string },
-    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean } },
+    opts?: { deleteForPageFirst?: { slug: string; excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean; onlyIds?: number[] } },
   ): Promise<{ inserted: number; ids: number[]; warnings: string[]; deleted: number }> {
-    if (rows.length === 0) return { inserted: 0, ids: [], warnings: [], deleted: 0 };
+    // #5430 — a delete-only reconcile (every fence row removed / all rows
+    // departed coordinates) still runs: the wipe shares this transaction.
+    if (rows.length === 0 && !opts?.deleteForPageFirst) return { inserted: 0, ids: [], warnings: [], deleted: 0 };
 
     const sql = deps.sql;
     // v0.41.15.0 (T6, codex #20): resolve the embedding-cast suffix
@@ -166,6 +168,10 @@ export async function insertFacts(
           ? tx`AND NOT (row_num IS NULL AND expired_at IS NOT NULL)`
           : tx``;
         const prefixes = del.excludeSourcePrefixes;
+        // #5430 — onlyIds narrows the wipe to changed/removed rows;
+        // undefined keeps the page-wide fence-owned delete.
+        const onlyFilter = del.onlyIds && del.onlyIds.length > 0
+          ? tx`AND id = ANY(${del.onlyIds})` : tx``;
         if (prefixes && prefixes.length > 0) {
           const patterns = prefixes.map(p => `${p}%`);
           const r = await tx`
@@ -174,12 +180,13 @@ export async function insertFacts(
               AND source_markdown_slug = ${del.slug}
               AND NOT (COALESCE(source, '') LIKE ANY(${patterns}))
               ${expiredLegacyFilter}
+              ${onlyFilter}
           `;
           deleted = r.count ?? 0;
         } else {
           const r = await tx`
             DELETE FROM facts
-            WHERE source_id = ${ctx.source_id} AND source_markdown_slug = ${del.slug} ${expiredLegacyFilter}
+            WHERE source_id = ${ctx.source_id} AND source_markdown_slug = ${del.slug} ${expiredLegacyFilter} ${onlyFilter}
           `;
           deleted = r.count ?? 0;
         }

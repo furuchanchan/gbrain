@@ -102,17 +102,6 @@ function factContentKey(fact: string, source: string | null | undefined): string
   return `${fact}\u0000${source ?? FENCE_SOURCE_DEFAULT}`;
 }
 
-function dedupeFactsByContentKey(facts: FenceExtractedFact[]): FenceExtractedFact[] {
-  const seen = new Set<string>();
-  const deduped: FenceExtractedFact[] = [];
-  for (const fact of facts) {
-    const key = factContentKey(fact.fact, fact.source);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(fact);
-  }
-  return deduped;
-}
 
 /**
  * Destructive reconciliation may only trust the pages-table body when it
@@ -604,9 +593,7 @@ export async function runExtractFacts(
     // trajectory query against the page returns import dates instead of
     // claim dates.
     const pageEffectiveDate = page.effective_date ? new Date(page.effective_date) : null;
-    const extracted = dedupeFactsByContentKey(
-      extractFactsFromFenceText(parsed.facts, slug, sourceId, { pageEffectiveDate }),
-    );
+    const extracted = extractFactsFromFenceText(parsed.facts, slug, sourceId, { pageEffectiveDate });
 
     if (opts.dryRun) continue;
 
@@ -615,7 +602,6 @@ export async function runExtractFacts(
     // fence-owned DB rows: no-op when already in sync, insert only missing
     // keys when possible, wipe/reinsert only when stale rows need cleanup.
     const existing = await listExistingFactsForPage(engine, slug, sourceId);
-    const existingKeys = new Set(existing.map(f => factContentKey(f.fact, f.source)));
     const desiredByKey = new Map(extracted.map(f => [factContentKey(f.fact, f.source), f]));
 
     const restrictions = existing.filter(fact => {
@@ -681,103 +667,115 @@ export async function runExtractFacts(
       continue;
     }
 
-    const hasStaleExisting = existing.some(f => !desiredByKey.has(factContentKey(f.fact, f.source)));
-    const hasDuplicateExisting = existing.length !== existingKeys.size;
-    const hasRowNumDrift = existing.some(f => {
-      const desired = desiredByKey.get(factContentKey(f.fact, f.source));
-      return desired !== undefined && Number(f.row_num) !== desired.row_num;
-    });
-    // v0.46 (#3014) — a struck row whose fence says "superseded" (or
-    // otherwise inactive) but whose DB columns are still NULL has an
-    // identical content key + row_num, so the checks above miss it. Treat
-    // a mismatch between the fence-desired supersession/expiry state and
-    // the DB columns as drift so the wipe+reinsert fallback re-heals the
-    // row (transports superseded_by + expired_at that a pre-fix cycle
-    // dropped).
-    //
-    // The supersession term keys off the RESOLVED reference, not merely
-    // "the fence carries a reference": we re-resolve the fence's
-    // `superseded by #N` against the current DB rows with the SAME resolver
-    // insertFacts uses, then compare the resolved target id to the id the
-    // DB stored. A permanently-unresolvable reference (self / dangling /
-    // chain) resolves to NULL every cycle and matches the DB's NULL, so it
-    // never churns; a pre-fix NULL, or a CHANGED reference (even between two
-    // resolvable targets), still differs and re-heals. Resolution stays
-    // page-local — `superseded by #N` only ever points within this page —
-    // so a row_num → id lookup over `existing` is a faithful mirror of the
-    // insert-time SELECT.
-    const existingByRowNum = new Map<number, ExistingPageFact>();
+    // #5430 — reconcile by fence coordinate (row_num), not by content key.
+    // The old (claim, source)-keyed diff collapsed distinct rows sharing a
+    // claim/source (different validity windows lost) and escalated ANY drift
+    // to a full wipe+reinsert, churning every fact id on the page — breaking
+    // supersession targets, receipts and external references. Match each
+    // existing row to the fence row at its row_num, keep equal rows
+    // untouched, and delete only the changed/removed ids inside insertFacts'
+    // transaction (deleteForPageFirst.onlyIds). Mirrors the row_num-identity
+    // reconcile the managed projection (canonical-projections.ts) performs.
+    const existingByRowNum = new Map<number, ExistingPageFact[]>();
+    const uncoordinated: ExistingPageFact[] = [];
     for (const f of existing) {
       const rn = f.row_num == null ? NaN : Number(f.row_num);
-      if (Number.isFinite(rn)) existingByRowNum.set(rn, f);
-    }
-    const hasSupersessionDrift = existing.some(f => {
-      const desired = desiredByKey.get(factContentKey(f.fact, f.source));
-      if (desired === undefined) return false;
-
-      // Expiry dimension: a struck row must carry expired_at; a pre-fix row
-      // (both columns NULL) drifts here and re-heals. Compare NULL-ness, NOT
-      // the timestamp value: the mapper stamps `expired_at = valid_until ??
-      // today`, so a value comparison would see the stored timestamp differ
-      // from a freshly-recomputed `today` every day and churn the page each
-      // cycle. NULL-ness is the stable "is this row struck?" signal.
-      const desiredExpired = desired.expired_at != null;
-      const dbExpired = f.expired_at != null;
-      if (desiredExpired !== dbExpired) return true;
-
-      // Supersession dimension: resolve the fence reference against the
-      // current DB rows and compare the resolved target id to what the DB
-      // stored.
-      const desiredRow = desired.superseded_by_row;
-      let resolvedTargetId: number | null = null;
-      if (desiredRow !== undefined) {
-        const targetExisting = existingByRowNum.get(desiredRow);
-        const target: SupersedeTarget | undefined = targetExisting
-          ? { id: Number(targetExisting.id), struck: targetExisting.expired_at != null }
-          : undefined;
-        resolvedTargetId = resolveSupersededByRow(Number(f.row_num), desiredRow, target, slug).superseded_by;
+      if (Number.isFinite(rn)) {
+        const bucket = existingByRowNum.get(rn);
+        if (bucket) bucket.push(f); else existingByRowNum.set(rn, [f]);
+      } else {
+        uncoordinated.push(f);
       }
-      const dbTargetId = f.superseded_by == null ? null : Number(f.superseded_by);
-      return resolvedTargetId !== dbTargetId;
-    });
-    // #4870 — a visibility / notability edit on an existing row leaves the
-    // content key, row_num and struck-state untouched, so none of the terms
-    // above fire and the edit was a silent no-op. Compare the two fence
-    // cells the parser already validates; the wipe+reinsert transports them.
-    // ponytail: confidence is skipped — it is a REAL column, so an equality
-    // compare would need the fence formatter to avoid float-noise churn;
-    // route it through formatConfidence if a confidence-edit report lands.
-    const hasAttributeDrift = existing.some(f => {
-      const desired = desiredByKey.get(factContentKey(f.fact, f.source));
-      return desired !== undefined
-        && (desired.visibility !== f.visibility || desired.notability !== f.notability);
-    });
+    }
 
-    if (
-      existing.length === extracted.length &&
-      !hasStaleExisting &&
-      !hasDuplicateExisting &&
-      !hasRowNumDrift &&
-      !hasSupersessionDrift &&
-      !hasAttributeDrift
-    ) {
+    // Same resolver + resolution domain as insertFacts' second pass: a
+    // permanently-unresolvable `superseded by #N` (self / dangling / struck
+    // chain) resolves NULL and matches a stored NULL, so it never churns.
+    const resolveFenceTarget = (selfRowNum: number, desiredRow: number): number | null => {
+      const candidate = existingByRowNum.get(desiredRow)?.[0];
+      const target: SupersedeTarget | undefined = candidate
+        ? { id: Number(candidate.id), struck: candidate.expired_at != null }
+        : undefined;
+      return resolveSupersededByRow(selfRowNum, desiredRow, target, slug).superseded_by;
+    };
+    const rowMatchesFence = (e: ExistingPageFact, f: FenceExtractedFact): boolean => {
+      if (factContentKey(e.fact, e.source) !== factContentKey(f.fact, f.source)) return false;
+      // Struck-state: compare NULL-ness, not the timestamp — the stored
+      // `expired_at` differs from a recomputed `today` every cycle.
+      if ((e.expired_at != null) !== (f.expired_at != null)) return false;
+      // #4870 — the two validated fence enum cells.
+      if (e.visibility !== f.visibility || e.notability !== f.notability) return false;
+      const desiredRow = f.superseded_by_row;
+      const desiredTarget = desiredRow === undefined
+        ? null
+        : resolveFenceTarget(Number(e.row_num), desiredRow);
+      return (e.superseded_by == null ? null : Number(e.superseded_by)) === desiredTarget;
+    };
+
+    const extractedByRowNum = new Map<number, FenceExtractedFact>();
+    const deleteIds = new Set<number>();
+    const toInsert: FenceExtractedFact[] = [];
+    const plannedInsertRowNums = new Set<number>();
+    for (const f of extracted) {
+      const rn = f.row_num;
+      extractedByRowNum.set(rn, f);
+      const candidates = existingByRowNum.get(rn) ?? [];
+      const match = candidates.find(e => rowMatchesFence(e, f));
+      if (match) {
+        // Keep the matching row (stable id); extra rows at the same
+        // coordinate are duplicates that go.
+        for (const e of candidates) {
+          if (Number(e.id) !== Number(match.id)) deleteIds.add(Number(e.id));
+        }
+      } else {
+        for (const e of candidates) deleteIds.add(Number(e.id));
+        toInsert.push(f);
+        plannedInsertRowNums.add(rn);
+      }
+    }
+    for (const e of uncoordinated) deleteIds.add(Number(e.id));
+    for (const [rn, candidates] of existingByRowNum) {
+      if (!extractedByRowNum.has(rn)) {
+        for (const e of candidates) deleteIds.add(Number(e.id));
+      }
+    }
+    // A kept row whose superseded_by target is being deleted would dangle;
+    // re-insert the striker too so insertFacts' second pass re-resolves the
+    // reference against the target's fresh row (fixpoint for chains).
+    let propagated = true;
+    while (propagated) {
+      propagated = false;
+      for (const e of existing) {
+        const eid = Number(e.id);
+        if (deleteIds.has(eid) || e.superseded_by == null || !deleteIds.has(Number(e.superseded_by))) continue;
+        deleteIds.add(eid);
+        const f = extractedByRowNum.get(Number(e.row_num));
+        if (f && !plannedInsertRowNums.has(Number(e.row_num))) {
+          toInsert.push(f);
+          plannedInsertRowNums.add(Number(e.row_num));
+        }
+        propagated = true;
+      }
+    }
+    if (deleteIds.size === 0 && toInsert.length === 0) {
       continue;
     }
 
-    let toInsert = extracted.filter(f => !existingKeys.has(factContentKey(f.fact, f.source)));
-    // v0.46 (#3014) — when old DB rows must be removed, defer the wipe into
-    // insertFacts' own transaction (deleteForPageFirst) rather than calling
-    // deleteFactsForPage here. A standalone delete self-commits, so a
-    // failing insert afterward left the page permanently emptied; running
-    // the delete as the first statement of the insert transaction makes the
-    // reconcile atomic — a failed insert rolls the delete back. Same delete
-    // scoping as before: legacy NULL-source_markdown_slug rows, `cli:`-origin
-    // conversation facts (#1928), and soft-expired legacy rows (#2646)
-    // survive.
-    let deleteForPageFirst: { slug: string; excludeSourcePrefixes: string[]; preserveExpiredLegacy: boolean } | undefined;
-    if (hasStaleExisting || hasDuplicateExisting || hasRowNumDrift || hasSupersessionDrift || hasAttributeDrift) {
-      deleteForPageFirst = { slug, excludeSourcePrefixes: ['cli:'], preserveExpiredLegacy: true };
-      toInsert = extracted;
+    // v0.46 (#3014) — removals run inside insertFacts' transaction as the
+    // FIRST statement so a failing insert rolls the delete back. #5430
+    // narrows the wipe to the actually-changed/removed ids (onlyIds) — kept
+    // rows and their embeddings are preserved. Same delete scoping as
+    // before: `cli:`-origin conversation facts (#1928) and soft-expired
+    // legacy rows (#2646) survive; uncoordinated (row_num NULL) rows and
+    // departed coordinates are deleted by id.
+    let deleteForPageFirst: { slug: string; excludeSourcePrefixes: string[]; preserveExpiredLegacy: boolean; onlyIds?: number[] } | undefined;
+    if (deleteIds.size > 0) {
+      deleteForPageFirst = {
+        slug,
+        excludeSourcePrefixes: ['cli:'],
+        preserveExpiredLegacy: true,
+        onlyIds: [...deleteIds],
+      };
     }
 
     // v0.35.4 (D-CDX-3) — batch-embed before insert. Without this,
@@ -826,13 +824,13 @@ export async function runExtractFacts(
       result.warnings.push(`${slug}: fact reconciliation deferred after cancellation; existing rows preserved`);
       break;
     }
-    if (deleteForPageFirst && existing.some(fact => fact.has_embedding)
+    if (deleteForPageFirst && existing.some(fact => fact.has_embedding && deleteIds.has(Number(fact.id)))
       && toInsert.some(fact => !fact.embedding)) {
       result.warnings.push(`${slug}: destructive fact reconciliation deferred; existing vectors preserved until embedding succeeds`);
       continue;
     }
 
-    if (toInsert.length === 0) continue;
+    if (!deleteForPageFirst && toInsert.length === 0) continue;
 
     const insert = async () => {
       try {
