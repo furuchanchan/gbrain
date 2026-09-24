@@ -14,13 +14,14 @@
  * engine-shaped check gets a stub with just `getConfig`).
  */
 import { describe, test, expect, afterAll, spyOn } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 import { bootstrapDoctorChecks, type Check } from '../src/commands/doctor.ts';
 import { writeHarnessReceipt } from '../src/core/bootstrap/format.ts';
+import { workspaceRootHash } from '../src/core/workspace-push.ts';
 import { LATEST_VERSION } from '../src/core/migrate.ts';
 import { VERSION } from '../src/version.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -407,19 +408,50 @@ describe('bootstrap_push_health', () => {
     expect(c?.message).toContain('unverified');
   }, T);
 
-  test('>48h stale across TWO tracked workspaces, receipt ws verified clean → warn, NOT ok (can\'t attribute the stale entry to a single tree)', async () => {
+  test('>48h stale receipt FOR ws + verified clean tree + another root fresh → ok (per-root attribution [D13])', async () => {
     const { parent, home } = makeHome();
-    // The receipt workspace is genuinely clean — but there are two tracked
-    // push targets, so a clean `ws` says nothing about the OTHER (possibly
-    // dirty) root that might be the actually-stale one. Per-root files
-    // [D13]: the WORST entry decides — ambiguous must never resolve to ok.
+    // The stale entry names ws itself, so the probe pairs with ws's OWN
+    // receipt age: stale + verified clean = nothing to push. The other
+    // root's fresh receipt stays out of the verdict entirely.
     const ws = makeWorkspace({ clean: true });
     writeReceipt(home, ws);
-    writePushStatusRoot(home, 'aaaaaaaaaaaa', JSON.stringify({ ts: STALE_TS, ok: true, repoRoot: ws }));
+    const wsReal = realpathSync(ws);
+    writePushStatusRoot(home, workspaceRootHash(wsReal), JSON.stringify({ ts: STALE_TS, ok: true, repoRoot: wsReal }));
+    writePushStatusRoot(home, 'bbbbbbbbbbbb', JSON.stringify({ ts: new Date().toISOString(), ok: true, repoRoot: makeWorkspace() }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('ok');
+    expect(c?.message).toContain('confirmed clean');
+  }, T);
+
+  test('fresh receipt for ws + DIRTY ws tree + STALE other root → warn, NOT fail (no cross-root pairing)', async () => {
+    const { parent, home } = makeHome();
+    // The regression in #5432: the oldest receipt across ALL roots used to
+    // pair with the ws probe, so another root's stale entry produced a fail
+    // on ws with the wrong timestamp. ws's own receipt is fresh — its dirty
+    // tree is ordinary in-window churn, not a >48h unpushed state — while
+    // the stale OTHER root still earns an aggregate warn.
+    const ws = makeWorkspace({ dirty: true });
+    writeReceipt(home, ws);
+    const wsReal = realpathSync(ws);
+    writePushStatusRoot(home, workspaceRootHash(wsReal), JSON.stringify({ ts: new Date().toISOString(), ok: true, repoRoot: wsReal }));
+    writePushStatusRoot(home, 'bbbbbbbbbbbb', JSON.stringify({ ts: STALE_TS, ok: true, repoRoot: makeWorkspace() }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toContain('1 other tracked workspace');
+    expect(c?.message).not.toContain('DIRTY');
+  }, T);
+
+  test('receipt ws with NO push receipt but another root fresh → warn "no push receipt", never ok', async () => {
+    const { parent, home } = makeHome();
+    // Another root's fresh receipt must not read as ws being pushed —
+    // absence of a receipt for THIS root is unverified, not ok.
+    const ws = makeWorkspace({ clean: true });
+    writeReceipt(home, ws);
     writePushStatusRoot(home, 'bbbbbbbbbbbb', JSON.stringify({ ts: new Date().toISOString(), ok: true, repoRoot: makeWorkspace() }));
     const c = byName(await run(parent), 'bootstrap_push_health');
     expect(c?.status).toBe('warn');
-    expect(c?.message).toContain('2 tracked workspace');
+    expect(c?.message).toContain('no push receipt');
+    expect(c?.message).toContain(ws);
   }, T);
 
   test('>48h stale + DIRTY workspace tree (uncommitted changes) → fail [B4]', async () => {
@@ -482,8 +514,11 @@ describe('bootstrap_push_health', () => {
     writeReceipt(home, ws);
     writePushStatusRoot(home, 'cccccccccccc', JSON.stringify({ ts: STALE_TS, ok: true, repoRoot: makeWorkspace() }));
     const c = byName(await run(parent), 'bootstrap_push_health');
+    // ws itself has no receipt — the stale other root can't be attributed
+    // to it, and ws's missing receipt is itself unverified.
     expect(c?.status).toBe('warn');
-    expect(c?.message).toContain('1 tracked workspace');
+    expect(c?.message).toContain('no push receipt');
+    expect(c?.message).toContain('1 other tracked workspace');
   }, T);
 });
 

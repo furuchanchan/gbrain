@@ -4,7 +4,7 @@
  * precedent, extended per ENG-2 for the bootstrap family).
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +26,7 @@ import {
 import { initState, setAnswer, confirm, readBackHash } from '../src/core/bootstrap/interview.ts';
 import { writeManifest } from '../src/core/bootstrap/format.ts';
 import { loadQuestionBank } from '../src/core/bootstrap/assets.ts';
+import { workspaceRootHash } from '../src/core/workspace-push.ts';
 
 let tmpParent: string; // GBRAIN_HOME parent (configDir appends .gbrain)
 let home: string;
@@ -205,6 +206,38 @@ describe('statusReport detection + support blob [B5]', () => {
     writeFileSync(join(ws, 'BOOTSTRAP_FOR_AGENTS.md'), `<!-- gbrain-runbook-stamp: ${VERSION} -->\n`);
     const clean = await statusReport(ws, { gbrainHomeDir: home });
     expect(clean.runbookSkew).toBeUndefined();
+  });
+});
+
+describe('support.last_push is scoped to this workspace root [D13]', () => {
+  const pushDir = () => join(home, 'bootstrap');
+
+  test('a failing receipt for ANOTHER root does not surface as ws\'s last_push', async () => {
+    const wsReal = realpathSync(ws);
+    const other = mkdtempSync(join(tmpParent, 'other-ws-'));
+    writeFileSync(
+      join(pushDir(), `push-status-${workspaceRootHash(other)}.json`),
+      JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'push_failed', repoRoot: other }),
+    );
+    writeFileSync(
+      join(pushDir(), `push-status-${workspaceRootHash(wsReal)}.json`),
+      JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', ok: true, repoRoot: wsReal }),
+    );
+    const report = await statusReport(ws, { gbrainHomeDir: home });
+    // The aggregate pick used to surface the OTHER root's failure here.
+    expect(report.support.last_push).toEqual({ ts: '2026-01-01T00:00:00.000Z', ok: true });
+  });
+
+  test('no receipt for ws → last_push null even while other roots have receipts', async () => {
+    const wsReal = realpathSync(ws);
+    rmSync(join(pushDir(), `push-status-${workspaceRootHash(wsReal)}.json`), { force: true });
+    const other = mkdtempSync(join(tmpParent, 'other-ws2-'));
+    writeFileSync(
+      join(pushDir(), `push-status-${workspaceRootHash(other)}.json`),
+      JSON.stringify({ ts: new Date().toISOString(), ok: true, repoRoot: other }),
+    );
+    const report = await statusReport(ws, { gbrainHomeDir: home });
+    expect(report.support.last_push).toBeNull();
   });
 });
 

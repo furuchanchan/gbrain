@@ -4,7 +4,7 @@
  * and buildChecks consumes it.
  */
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
 import type { BrainEngine } from '../../core/engine.ts';
 import { LATEST_VERSION } from '../../core/migrate.ts';
@@ -241,20 +241,44 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
           message: `last workspace push FAILED${target ? ` for ${target}` : ''} (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest} — run \`gbrain sources push${target ? ` --path ${target}` : ''}\``,
         });
       } else {
-        const stamps = pushStatuses.map((s) => Date.parse(s.ts ?? '')).filter((t) => Number.isFinite(t));
-        const stalest = stamps.length > 0 ? Math.min(...stamps) : NaN;
-        const staleIso = Number.isFinite(stalest) ? new Date(stalest).toISOString() : 'unknown';
-        const stale = Number.isFinite(stalest) && Date.now() - stalest > PUSH_STALE_MS;
-        // Can the staleness verdict be safely attributed to `ws` — the only
-        // workspace this check actually probes? Only when there's exactly
-        // ONE tracked push-status target, and it's either legacy-shaped (no
-        // repoRoot field) or explicitly `ws` itself. With multiple targets,
-        // "clean" on `ws` says nothing about whichever OTHER root is
-        // actually the stale one — per-root files [D13]: the WORST entry
-        // decides, so an ambiguous multi-root stale must never be
-        // downgraded to ok on the strength of a different root's clean tree.
-        const targetMatchesWs =
-          pushStatuses.length === 1 && (pushStatuses[0]!.repoRoot === undefined || pushStatuses[0]!.repoRoot === ws);
+        // Per-root receipts [D13]: pair the git probe with THIS workspace's
+        // receipt only. Another root's stale entry must not fail `ws`, and a
+        // fresh `ws` receipt cannot clear another root's stale state — that
+        // stays an aggregate warn below. With no receipt workspace to
+        // attribute to (ws null), the aggregate stalest keeps the verdict.
+        const { readPushStatusForRoot } = await import('../../core/workspace-push.ts');
+        const wsNorm = ws
+          ? (() => {
+              try {
+                return realpathSync(ws);
+              } catch {
+                return ws;
+              }
+            })()
+          : null;
+        // The single-legacy-receipt attribution survives: one legacy-shaped
+        // record (no repoRoot) is the only unkeyed evidence and still pairs
+        // with `ws` exactly as before per-root files existed.
+        const singleLegacy =
+          pushStatuses.length === 1 && pushStatuses[0]!.repoRoot === undefined ? pushStatuses[0]! : null;
+        const own = wsNorm ? (readPushStatusForRoot(wsNorm) ?? singleLegacy) : null;
+        const ownTs = own ? Date.parse(own.ts ?? '') : NaN;
+        const otherStale = pushStatuses
+          // `own` arrives from a keyed read and is a fresh object — identity
+          // by file path (the per-root key), not `===`.
+          .filter((s) => own === null || s.file !== own.file)
+          .filter((s) => {
+            const t = Date.parse(s.ts ?? '');
+            return Number.isFinite(t) && Date.now() - t > PUSH_STALE_MS;
+          });
+        const aggStamps = pushStatuses.map((s) => Date.parse(s.ts ?? '')).filter((t) => Number.isFinite(t));
+        const aggStalest = aggStamps.length > 0 ? Math.min(...aggStamps) : NaN;
+        const stale = wsNorm
+          ? Number.isFinite(ownTs) && Date.now() - ownTs > PUSH_STALE_MS
+          : Number.isFinite(aggStalest) && Date.now() - aggStalest > PUSH_STALE_MS;
+        const staleIso = wsNorm
+          ? (Number.isFinite(ownTs) ? new Date(ownTs).toISOString() : 'unknown')
+          : (Number.isFinite(aggStalest) ? new Date(aggStalest).toISOString() : 'unknown');
         // `dirty` also covers commits ahead of origin (a clean working tree
         // with committed-but-unpushed commits is still unpushed work) — the
         // same two-dimensional definition `treeNeedsPush` uses for the
@@ -326,23 +350,20 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
             status: 'fail',
             message: `last successful push ${staleIso} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]. Run \`gbrain sources push --path ${ws}\`.`,
           });
-        } else if (stale && !targetMatchesWs) {
-          // Multiple tracked push targets (or the one target names a
-          // different repoRoot than `ws`) — the stale entry can't be
-          // attributed to the workspace just probed, so a clean `ws` proves
-          // nothing about the actually-stale root. Stay warn, same as the
-          // pre-this-fix behavior for every stale case.
-          checks.push({
-            name: 'bootstrap_push_health',
-            status: 'warn',
-            message: `last successful push ${staleIso} (>48h ago) across ${pushStatuses.length} tracked workspace(s) — can't attribute the stale entry to a single tree; check each with \`gbrain sources status\``,
-          });
-        } else if (stale && known) {
+        } else if (stale && known && otherStale.length === 0) {
           // Stale push + VERIFIED clean tree (no local changes, not ahead of
           // origin) is benign: nothing to push, no action needed. The dirty
           // case above (fail) and the unverified/ambiguous cases (warn) are
           // the states that name a real fix.
           checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `no push activity since ${staleIso}; tree confirmed clean, nothing to push` });
+        } else if (stale && known) {
+          // `ws` is stale-but-clean (nothing to push here), yet OTHER tracked
+          // roots are stale — `ws`'s clean tree can't clear them.
+          checks.push({
+            name: 'bootstrap_push_health',
+            status: 'warn',
+            message: `no push activity for ${ws} since ${staleIso} and the tree is confirmed clean, but ${otherStale.length} other tracked workspace(s) are stale (>48h) — check each with \`gbrain sources status\``,
+          });
         } else if (stale) {
           checks.push({
             name: 'bootstrap_push_health',
@@ -350,6 +371,24 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
             message: ws
               ? `last successful push ${staleIso} (>48h ago); workspace tree state unverified (the git probe failed) — check ${ws} manually, or run \`gbrain sources push --path ${ws}\` to be safe`
               : `last successful push ${staleIso} (>48h ago); workspace tree state unverified (no bootstrap receipt on this machine names a workspace to check) — check the workspace manually`,
+          });
+        } else if (otherStale.length > 0) {
+          // `ws`'s own receipt is fresh — or absent entirely — so the stale
+          // OTHER root can't be attributed to or cleared by `ws`.
+          checks.push({
+            name: 'bootstrap_push_health',
+            status: 'warn',
+            message: own
+              ? `last push for ${ws} ok (${staleIso}), but ${otherStale.length} other tracked workspace(s) are stale (>48h) — check each with \`gbrain sources status\``
+              : `no push receipt for ${ws}, and ${otherStale.length} other tracked workspace(s) are stale (>48h) — check each with \`gbrain sources status\``,
+          });
+        } else if (wsNorm && own === null) {
+          // This root has no receipt at all — another root's fresh state
+          // must not read as `ws` being pushed. Unverified, not ok.
+          checks.push({
+            name: 'bootstrap_push_health',
+            status: 'warn',
+            message: `no push receipt recorded for this workspace (${ws}) — its push state is unverified; run \`gbrain sources push --path ${ws}\``,
           });
         } else {
           checks.push({ name: 'bootstrap_push_health', status: 'ok', message: `last push ok (${staleIso})` });

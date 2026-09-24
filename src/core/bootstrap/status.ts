@@ -25,7 +25,7 @@
  * failure rate (trailing heartbeat window).
  */
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -537,14 +537,20 @@ export async function statusReport(ws: string, opts: StatusReportOpts = {}): Pro
     }
   }
 
-  // Support blob [B5]. Push status via the shared per-root reader [D8/D13]:
-  // a failing workspace wins over another's success; else the newest record.
+  // Support blob [B5]. Push status for THIS workspace root only [D13]:
+  // per-root receipts key on the resolved repo root, so an aggregate pick
+  // would attribute another root's failure to `ws` — or let another root's
+  // success hide `ws` having no receipt at all.
   let lastPush: StatusSupport['last_push'] = null;
   try {
-    const { readPushStatuses, summarizePushStatuses } = await import('../workspace-push.ts');
-    const entries = readPushStatuses();
-    const { failing } = summarizePushStatuses(entries);
-    const pick = failing[0] ?? entries.sort((a, b) => Date.parse(b.ts ?? '') - Date.parse(a.ts ?? ''))[0];
+    const { readPushStatusForRoot } = await import('../workspace-push.ts');
+    let wsRoot = ws;
+    try {
+      wsRoot = realpathSync(ws);
+    } catch {
+      /* unresolvable dir — the keyed read + repoRoot scan still apply to ws */
+    }
+    const pick = readPushStatusForRoot(wsRoot);
     if (pick) {
       lastPush = {
         ...(pick.ts !== undefined ? { ts: pick.ts } : {}),
