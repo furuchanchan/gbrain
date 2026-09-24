@@ -30,6 +30,18 @@ import type { EffectRecovery, PersistenceEffect } from './effect-model.ts';
 import { recoveryStagingFile } from './staging.ts';
 import { selectEffectRecoveries } from './effect-recovery-scan.ts';
 import { nativeFileTarget } from './native-file-target.ts';
+import { SYNC_SKIP_FILES } from '../sync.ts';
+
+/**
+ * Basename membership in SYNC_SKIP_FILES — the managed-sync metafile
+ * classification — applied to a stored `source_path`. Windows-recorded
+ * paths carry backslashes, so split on both separators.
+ */
+function isMetafileSourcePath(sourcePath: string | null): boolean {
+  if (sourcePath == null) return false;
+  const basename = sourcePath.split(/[\\/]/).pop() ?? '';
+  return (SYNC_SKIP_FILES as readonly string[]).includes(basename);
+}
 
 export interface EffectWorkerOptions {
   hostId: string;
@@ -73,6 +85,16 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
   const snapshot = await selectedEffectPage(engine, effect);
   if (!snapshot) { await completeEffect(engine, effect); return; }
   if (snapshot.sourceIncarnation !== effect.source_incarnation) throw new OperationError('source_changed', 'The mirror source was replaced.');
+  // A metafile-backed page (RESOLVER.md, schema.md, ...) is outside sync's
+  // write set by design: the file legitimately diverges from the DB page —
+  // e.g. the managed durability block the patcher maintains there — so the
+  // mirror must neither require canonical equality nor write the DB copy
+  // over it. Materialize and advance; a hard compare would wedge this
+  // cursor (and every dependent git/embedding effect of the request).
+  if (isMetafileSourcePath(snapshot.page.source_path)) {
+    await materializeAndAdvance(engine, effect, snapshot, opts.hostId);
+    return;
+  }
   const content = serializePageToMarkdown(snapshot.page, snapshot.tags);
   const file = binding?.local_path ? await prepareFileTarget(engine, { ...effect, slug: snapshot.page.slug }, snapshot, content, opts.hostId, { allowMissing: true }) : undefined;
   if (!file || snapshot.page.deleted_at || !existsSync(file.path)) {
