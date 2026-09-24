@@ -74,6 +74,19 @@ export interface FanoutOpts {
   pathExists?: (path: string) => boolean;
 }
 
+/** #5280: on a writer-activated (managed) brain the legacy autopilot lanes
+ *  dispatch jobs whose phases write through the unmanaged path and die on the
+ *  db-level writer guard — dead-lettering every interval. The persistence
+ *  coordinator owns managed maintenance, so those lanes skip instead.
+ *  Tolerates stub engines (no executeRaw) and pre-persistence brains. */
+export async function brainManaged(engine: BrainEngine): Promise<boolean> {
+  try {
+    const [row] = await (engine.executeRaw?.<{ enabled: boolean }>(
+      'SELECT enabled FROM persistence_brain WHERE singleton=1') ?? Promise.resolve([]));
+    return row?.enabled === true;
+  } catch { return false; }
+}
+
 export interface FanoutResult {
   /** Source ids whose submission INSERTED a fresh job this tick. */
   dispatched: string[];
@@ -409,6 +422,19 @@ export async function dispatchPerSource(
   const emit = opts.emit ?? ((line) => process.stderr.write(line + '\n'));
   const log = opts.log ?? ((line) => console.log(line));
 
+  if (await brainManaged(engine)) {
+    if (opts.jsonMode) {
+      emit(JSON.stringify({ event: 'dispatch_skipped', reason: 'managed_brain', mode: 'per_source_cycle' }));
+    } else {
+      log('[dispatch] skipped per-source cycle fanout: brain is managed (the writer coordinator owns maintenance)');
+    }
+    return {
+      dispatched: [], coalesced: [], skipped_fresh: [], skipped_cap: [],
+      skipped_cooldown: [], skipped_unavailable_path: [],
+      legacy_fallback: false, all_sources_fresh: false, all_sources_handled: true,
+    };
+  }
+
   let sources: SourceRow[];
   try {
     sources = await engine.listAllSources({ localPathOnly: true });
@@ -637,9 +663,18 @@ export async function dispatchGlobalMaintenance(
   engine: BrainEngine,
   queue: MinionQueue,
   opts: { repoPath: string; slot: string; timeoutMs: number; jsonMode: boolean; emit?: (l: string) => void; log?: (l: string) => void },
-): Promise<{ dispatched: boolean; coalesced?: boolean; reason: 'stale' | 'fresh' }> {
+): Promise<{ dispatched: boolean; coalesced?: boolean; reason: 'stale' | 'fresh' | 'managed_brain' }> {
   const emit = opts.emit ?? ((line) => process.stderr.write(line + '\n'));
   const log = opts.log ?? ((line) => console.log(line));
+
+  if (await brainManaged(engine)) {
+    if (opts.jsonMode) {
+      emit(JSON.stringify({ event: 'dispatch_skipped', reason: 'managed_brain', mode: 'global_maintenance' }));
+    } else {
+      log('[dispatch] skipped global maintenance: brain is managed (the writer coordinator owns maintenance)');
+    }
+    return { dispatched: false, reason: 'managed_brain' };
+  }
 
   let floorMin = GLOBAL_FLOOR_MIN;
   const floorCfg = await engine.getConfig('autopilot.global_floor_min');

@@ -365,4 +365,40 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
     expect(stamped).not.toBeNull();
     expect(Number.isFinite(new Date(stamped!).getTime())).toBe(true);
   });
+
+  test('managed brain: legacy autopilot lanes skip instead of dead-lettering (#5280)', async () => {
+    await engine.executeRaw(`UPDATE persistence_brain SET enabled=true WHERE singleton=1`);
+
+    // Global maintenance fan-out refuses to enqueue a job that would die.
+    const events: string[] = [];
+    const stubQueue = { add: async () => ({ id: 1 }) } as any;
+    const gm = await dispatchGlobalMaintenance(engine, stubQueue, {
+      repoPath: '/tmp', slot: 's', timeoutMs: 1, jsonMode: true, emit: (l: string) => events.push(l),
+    });
+    expect(gm).toMatchObject({ dispatched: false, reason: 'managed_brain' });
+    expect(events.map(e => JSON.parse(e).event)).toContain('dispatch_skipped');
+
+    // Per-source fan-out reports every source handled without inserting.
+    const perSource = await dispatchPerSource(engine, stubQueue, {
+      repoPath: '/tmp', slot: 's', timeoutMs: 1, fanoutMax: 4, jsonMode: true,
+      emit: (l: string) => events.push(l), log: () => {},
+    });
+    expect(perSource.dispatched).toEqual([]);
+    expect(perSource.all_sources_handled).toBe(true);
+    expect(perSource.legacy_fallback).toBe(false);
+
+    // Queued legacy jobs resolve as skipped, not dead-lettered.
+    const handlers = await captureHandlers();
+    const extract = handlers.get('extract')!;
+    const r = await extract({ data: { stale: true, sourceId: 'default' }, signal: undefined });
+    expect(r).toMatchObject({ skipped: 'writer_coordinator_required', stale: true });
+
+    const cycle = handlers.get('autopilot-cycle')!;
+    expect(await cycle({ data: { source_id: 'default', phases: ['sync', 'extract'], pull: false }, signal: undefined }))
+      .toMatchObject({ status: 'skipped', report: { reason: 'writer_coordinator_required' } });
+
+    const drain = handlers.get('extract-atoms-drain')!;
+    expect(await drain({ data: { sourceId: 'default' }, signal: undefined }))
+      .toMatchObject({ skipped: 'writer_coordinator_required' });
+  });
 });

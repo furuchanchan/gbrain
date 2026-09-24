@@ -1069,7 +1069,12 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
       try {
         const { MinionQueue } = await import('../core/minions/queue.ts');
         const { computeRecommendations, embeddingProviderConfigured, HOSTED_EMBED_KEY_CONFIG, chatApiKeyConfigured } = await import('../core/brain-score-recommendations.ts');
+        const { brainManaged } = await import('./autopilot-fanout.ts');
         const queue = new MinionQueue(engine);
+        // #5280: legacy lanes whose handlers write through the unmanaged path
+        // die on the db writer guard once the brain is activated — the
+        // coordinator owns managed maintenance, so those dispatches skip.
+        const managedBrain = await brainManaged(engine);
         const slotMs = Math.floor(Date.now() / (baseInterval * 1000)) * baseInterval * 1000;
         const slot = new Date(slotMs).toISOString();
         const timeoutMs = resolveAutopilotDispatchTimeoutMs(baseInterval, false);
@@ -1153,7 +1158,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
         if (engine.kind === 'postgres') {
           try {
             const enabled = (await engine.getConfig('autopilot.auto_drain.enabled')) !== 'false';
-            if (enabled) {
+            if (enabled && !managedBrain) {
               const { packDeclaresPhase } = await import('../core/cycle.ts');
               // packDeclaresPhase reads the active pack (brain-wide, not
               // per-source). If the pack declares extract_atoms the routine

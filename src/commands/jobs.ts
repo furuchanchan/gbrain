@@ -2465,6 +2465,13 @@ export async function registerBuiltinHandlers(
 
   worker.register('extract', async (job) => {
     const { runExtractCore, extractStaleFromDB, STALE_TIME_BUDGET_MS } = await import('./extract.ts');
+    // #5280: on a managed brain the legacy extract writer's inserts hit the
+    // db writer guard and dead-letter on every retry. The coordinator owns
+    // managed extraction — report the queue item as skipped instead.
+    const [managed] = await engine.executeRaw<{ enabled: boolean }>('SELECT enabled FROM persistence_brain WHERE singleton=1');
+    if (managed?.enabled) {
+      return { skipped: 'writer_coordinator_required', stale: job.data.stale === true, source_id: typeof job.data.sourceId === 'string' ? job.data.sourceId : null };
+    }
     // #2849: stale mode — the durable follow-up for extraction deferred by
     // performSync's size gate (totalChanges > 100). Runs the same DB-source
     // watermark sweep as `gbrain extract --stale`, scoped to the source the
@@ -2623,6 +2630,11 @@ export async function registerBuiltinHandlers(
   // throw on partial: a flaky phase must not block every future cycle.
   registerBuiltinJob(worker, engine, 'autopilot-cycle', async (job) => {
     const { runCycle } = await import('../core/cycle.ts');
+    // #5280: a queued legacy cycle drained on a managed brain would run
+    // phases that die on the db writer guard. The coordinator owns managed
+    // maintenance — skip instead of dead-lettering.
+    const [managed] = await engine.executeRaw<{ enabled: boolean }>('SELECT enabled FROM persistence_brain WHERE singleton=1');
+    if (managed?.enabled) return { partial: false, status: 'skipped', report: { reason: 'writer_coordinator_required' } };
     // v0.41.30 (T2): fall back to null (NOT cwd '.') when no repo is configured.
     // The queued cycle is the same primitive `gbrain dream` uses; a checkout-less
     // postgres brain should skip filesystem phases (no_brain_dir) and run the
@@ -2989,6 +3001,10 @@ export async function registerBuiltinHandlers(
     }
     const { formatDrainProviderFailure, runExtractAtomsDrainForSource } =
       await import('../core/cycle/extract-atoms-drain.ts');
+    // #5280: extract_atoms refuses through assertUnmanagedCanonicalWriter on a
+    // managed brain — skip a queued drain instead of dead-lettering it.
+    const [managed] = await engine.executeRaw<{ enabled: boolean }>('SELECT enabled FROM persistence_brain WHERE singleton=1');
+    if (managed?.enabled) return { skipped: 'writer_coordinator_required', source_id: typeof job.data.sourceId === 'string' ? job.data.sourceId : null };
     const { LockUnavailableError } = await import('../core/db-lock.ts');
     const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;
     const windowSeconds =

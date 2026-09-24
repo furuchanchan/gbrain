@@ -580,6 +580,27 @@ recovery, idempotent replay and fresh readback after a clean restart. Do not
 disable persistence to bypass this, and do not confuse live fact-backfill IPC
 with live-owner dream delegation.
 
+
+### What a managed brain refuses
+
+Once activated, the canonical writer is the only writer. The db-level managed-writer
+guard (`src/core/persistence/writer-guard-schema.ts`) refuses legacy-path writes to
+`pages`, `tags`, `slug_aliases`, `page_aliases`, `facts`, `takes`,
+`timeline_entries`, and `sources` rows whose source is not in
+`gbrain.write_sources`, with `writer_coordinator_required`. The software-level
+`assertUnmanagedCanonicalWriter` refuses the same class earlier for named
+operations: `dream synthesize` / `dream patterns`, `extract_atoms`, phantom
+canonical redirect, import-file, enrich, add/remove links, rewrite-links-batch,
+destructive guards, schema-pack rewrites, engine migration, and source
+administration other than `writer status|claim|activate|transfer`.
+
+Scheduled lanes follow the same boundary instead of dead-lettering: on a managed
+brain the autopilot does not dispatch per-source `autopilot-cycle` or
+`autopilot-global-maintenance` fan-out, extract-atoms auto-drain, or stale
+`extract` sweeps — each reports a `managed_brain` / `writer_coordinator_required`
+skip. Per-source `sync` freshness jobs are unaffected; managed sync is the
+coordinator's write path.
+
 ## When NOT to use these topologies
 
 - **Don't use Topology 2 if your agent only ever runs on the same machine
