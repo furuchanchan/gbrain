@@ -205,6 +205,12 @@ describe('parseExtractorOutput', () => {
     }
   });
 
+  test('EXTRACT_TAKES_PROMPT excludes withdrawn claims and separates assistant authorship (#5425)', () => {
+    expect(EXTRACT_TAKES_PROMPT).toContain('Claims later withdrawn, corrected, or narrowed in the same page');
+    expect(EXTRACT_TAKES_PROMPT).toContain('Assistant-added plans or deadlines are not user\ncommitments by default');
+    expect(EXTRACT_TAKES_PROMPT).toContain("holder 'brain'");
+  });
+
   test('legacy prompt kinds (prediction/judgment) map onto the fence vocabulary (#4736)', () => {
     // Cached / old-model outputs still emit the pre-#4736 prompt vocabulary;
     // they classify deterministically instead of relying on blind coercion.

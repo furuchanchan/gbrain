@@ -57,7 +57,7 @@ import type { PhaseStatus, CyclePhase } from '../cycle.ts';
  * verdicts in `take_proposals` (composite key includes prompt_version) stay
  * valid as audit history; new runs re-spend LLM tokens on every page.
  */
-export const PROPOSE_TAKES_PROMPT_VERSION = 'v0.36.1.0-tuned-cat15-kinds4736';
+export const PROPOSE_TAKES_PROMPT_VERSION = 'v0.36.1.0-tuned-cat15-kinds4736-attribution5425';
 
 /**
  * Sentinel claim_text for the tombstone row written when a page extracts
@@ -119,6 +119,13 @@ NOT gradeable (do NOT extract these):
 - Pure facts ("X was founded in 2020")
 - Direct quotes from others without endorsement
 - Restatements of an earlier claim in the same page
+- Claims later withdrawn, corrected, or narrowed in the same page; omit them,
+  or express only the final narrowed scope if it remains gradeable
+
+Attribution: an assistant-authored gradeable judgment may use holder 'brain';
+do not attribute it to the user or another person/company unless that speaker
+explicitly endorses it. Assistant-added plans or deadlines are not user
+commitments by default.
 
 For each gradeable claim, output a JSON object with:
 - claim_text   (string, <=200 chars, paraphrase or near-verbatim from prose)

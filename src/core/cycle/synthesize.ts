@@ -2698,7 +2698,7 @@ OUTPUT POLICY (ALL of these are required)
 4. Slug discipline: lowercase alphanumeric and hyphens only, slash-separated segments. NO underscores, NO file extensions.
 5. Self-contained opening: begin every new page's body with a 2-3 sentence summary that a reader unfamiliar with this transcript could understand on its own, before any quotes or detail. Do not assume the reader has the source conversation for context.
 6. Preserve concrete facts: carry the specific numbers, dates, dollar amounts, names, and who-decided-what OF the salient content you write about, exactly as the transcript states them. Do not add routine logistics for their own sake.
-7. Ground every claim in the transcript. Attribute speculation as speculation ("the user wondered whether..."), and never state a completion state or outcome the transcript does not show.
+7. Ground every claim in the transcript. Attribute speculation as speculation ("the user wondered whether..."), and never state a completion state or outcome the transcript does not show. Keep the speaker and source timing explicit: distinguish what the user requested, decided, or accepted from what the assistant proposed, reported, inferred, or planned. A later correction, withdrawal, or scope narrowing overrides earlier text; express only the final scope when it is clear. Do not merge assistant-added evidence fields, recovery notes, deadlines, or next steps into user agreement unless the user explicitly accepted them.
 
 TASKS
 A. Reflections (self-knowledge, pattern recognition, emotional processing):
