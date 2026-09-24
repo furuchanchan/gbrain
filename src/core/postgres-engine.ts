@@ -98,6 +98,7 @@ import { ConnectionManager, DEFAULT_DIRECT_POOL_SIZE } from './connection-manage
 import { logConnectionEvent } from './connection-audit.ts';
 import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, isBlankBody, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
+import { moveSlugBindings } from './slug-rename.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
 import { privatePagesFilterFragment, privateLinkOriginFilterFragment, privateTimelineEventFilterFragment, privateProvenanceFilterFragment } from './search/private-visibility.ts';
@@ -4997,15 +4998,23 @@ export class PostgresEngine implements BrainEngine {
   // Sync
   async updateSlug(oldSlug: string, newSlug: string, opts?: { sourceId?: string }): Promise<number> {
     newSlug = validateSlug(newSlug);
-    const sql = this.sql;
     const sourceId = opts?.sourceId ?? 'default';
     // Source-qualify so a rename in source A doesn't sweep up same-slug rows
     // in sources B/C/D (which would either rename them all OR fail the
     // (source_id, slug) UNIQUE if the new slug already exists in another source).
-    const result = await sql`UPDATE pages SET slug = ${newSlug}, updated_at = now() WHERE slug = ${oldSlug} AND source_id = ${sourceId}`;
-    // #3056: rows moved — a zero-row UPDATE does not throw, so the count is
-    // the only way callers can see the no-op.
-    return result.count ?? 0;
+    return this.transaction(async tx => {
+      const moved = await tx.executeRaw<{ id: number }>(
+        'UPDATE pages SET slug = $1, updated_at = now() WHERE slug = $2 AND source_id = $3 RETURNING id',
+        [newSlug, oldSlug, sourceId]);
+      if (moved.length === 0) return 0;
+      // Slug-keyed bindings (facts coordinates, alias canonicals, named-alias
+      // targets) stay keyed on slug TEXT — they must move in the same tx or
+      // they orphan under a slug that no longer exists.
+      await moveSlugBindings(tx, sourceId, oldSlug, newSlug);
+      // #3056: rows moved — a zero-row UPDATE does not throw, so the count is
+      // the only way callers can see the no-op.
+      return moved.length;
+    });
   }
 
   async rewriteLinks(_oldSlug: string, _newSlug: string): Promise<void> {

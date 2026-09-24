@@ -106,6 +106,7 @@ import type {
   EnrichCandidatesOpts, EnrichCandidate,
 } from './types.ts';
 import { validateSlug, contentHash, isBlankBody, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
+import { moveSlugBindings } from './slug-rename.ts';
 import { executeRawJsonb, type SqlValue } from './sql-query.ts';
 import { sanitizeForJsonb, sanitizeText, buildLinkRows, buildTimelineRows } from './batch-rows.ts';
 import { PAGE_SORT_SQL, MIN_ENTITY_PAGES_FOR_COVERAGE } from './types.ts';
@@ -5752,13 +5753,19 @@ export class PGLiteEngine implements BrainEngine {
     const sourceId = opts?.sourceId ?? 'default';
     // Source-qualify so a rename in source A doesn't sweep up same-slug rows
     // in sources B/C/D (mirrors postgres-engine.ts).
-    const result = await this.db.query(
-      `UPDATE pages SET slug = $1, updated_at = now() WHERE slug = $2 AND source_id = $3`,
-      [newSlug, oldSlug, sourceId]
-    );
-    // #3056: rows moved — a zero-row UPDATE does not throw, so the count is
-    // the only way callers can see the no-op.
-    return result.affectedRows ?? 0;
+    return this.transaction(async tx => {
+      const moved = await tx.executeRaw<{ id: number }>(
+        'UPDATE pages SET slug = $1, updated_at = now() WHERE slug = $2 AND source_id = $3 RETURNING id',
+        [newSlug, oldSlug, sourceId]);
+      if (moved.length === 0) return 0;
+      // Slug-keyed bindings (facts coordinates, alias canonicals, named-alias
+      // targets) stay keyed on slug TEXT — they must move in the same tx or
+      // they orphan under a slug that no longer exists.
+      await moveSlugBindings(tx, sourceId, oldSlug, newSlug);
+      // #3056: rows moved — a zero-row UPDATE does not throw, so the count is
+      // the only way callers can see the no-op.
+      return moved.length;
+    });
   }
 
   async rewriteLinks(_oldSlug: string, _newSlug: string): Promise<void> {

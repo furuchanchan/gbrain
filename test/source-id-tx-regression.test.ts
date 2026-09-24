@@ -661,3 +661,66 @@ describe('v0.31.8 op-handler ctx.sourceId threading', () => {
     expect(defRd.length).toBe(0);
   });
 });
+
+describe('updateSlug moves slug-keyed bindings (#5431 item 3)', () => {
+  const B_FROM = 'topics/rename-bindings-from';
+  const B_TO = 'topics/rename-bindings-to';
+
+  test('facts coordinates, alias canonicals and page_alias targets follow the rename; old slug resolves', async () => {
+    await engine.putPage(B_FROM, { type: 'concept', title: 'Bindings', compiled_truth: '' }, { sourceId: 'testsrc' });
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, source, source_markdown_slug)
+       VALUES ('testsrc', $1, 'entity fact', 'test', $1),
+              ('testsrc', 'other-entity', 'markdown fact', 'test', $1)`,
+      [B_FROM]);
+    await engine.executeRaw(
+      `INSERT INTO slug_aliases (source_id, alias_slug, canonical_slug) VALUES ('testsrc', 'preexisting-alias', $1)`,
+      [B_FROM]);
+    await engine.executeRaw(
+      `INSERT INTO page_aliases (source_id, alias_norm, slug) VALUES ('testsrc', 'bindings alias', $1)`,
+      [B_FROM]);
+    // Same slug text under a different source must NOT move.
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, source) VALUES ('default', $1, 'default fact', 'test')`,
+      [B_FROM]);
+
+    const moved = await engine.updateSlug(B_FROM, B_TO, { sourceId: 'testsrc' });
+    expect(moved).toBe(1);
+
+    const movedFacts = await engine.executeRaw<{ entity_slug: string | null; source_markdown_slug: string | null }>(
+      `SELECT entity_slug, source_markdown_slug FROM facts WHERE source_id = 'testsrc' AND (entity_slug = $1 OR source_markdown_slug = $1)`,
+      [B_TO]);
+    expect(movedFacts.length).toBe(2);
+    const stranded = await engine.executeRaw<{ id: number }>(
+      `SELECT id FROM facts WHERE source_id = 'testsrc' AND (entity_slug = $1 OR source_markdown_slug = $1)`,
+      [B_FROM]);
+    expect(stranded.length).toBe(0);
+    const defFacts = await engine.executeRaw<{ id: number }>(
+      `SELECT id FROM facts WHERE source_id = 'default' AND entity_slug = $1`, [B_FROM]);
+    expect(defFacts.length).toBe(1);
+
+    const canon = await engine.executeRaw<{ canonical_slug: string }>(
+      `SELECT canonical_slug FROM slug_aliases WHERE source_id = 'testsrc' AND alias_slug = 'preexisting-alias'`);
+    expect(canon[0].canonical_slug).toBe(B_TO);
+    const pa = await engine.executeRaw<{ slug: string }>(
+      `SELECT slug FROM page_aliases WHERE source_id = 'testsrc' AND alias_norm = 'bindings alias'`);
+    expect(pa[0].slug).toBe(B_TO);
+
+    // The old slug keeps resolving to the renamed page.
+    const auto = await engine.executeRaw<{ canonical_slug: string }>(
+      `SELECT canonical_slug FROM slug_aliases WHERE source_id = 'testsrc' AND alias_slug = $1`, [B_FROM]);
+    expect(auto.length).toBe(1);
+    expect(auto[0].canonical_slug).toBe(B_TO);
+  });
+
+  test('an intentional redirect on the old slug is not hijacked by the rename', async () => {
+    await engine.putPage('topics/nh-from', { type: 'concept', title: 'N', compiled_truth: '' }, { sourceId: 'testsrc' });
+    await engine.executeRaw(
+      `INSERT INTO slug_aliases (source_id, alias_slug, canonical_slug) VALUES ('testsrc', 'topics/nh-from', 'other/target')`);
+    await engine.updateSlug('topics/nh-from', 'topics/nh-to', { sourceId: 'testsrc' });
+    const rows = await engine.executeRaw<{ canonical_slug: string }>(
+      `SELECT canonical_slug FROM slug_aliases WHERE source_id = 'testsrc' AND alias_slug = 'topics/nh-from'`);
+    expect(rows.length).toBe(1);
+    expect(rows[0].canonical_slug).toBe('other/target');
+  });
+});
