@@ -63,7 +63,25 @@ export async function readManagedSyncFailures(engine: BrainEngine, sourceIds?: s
     LEFT JOIN op_checkpoints f ON f.op='managed-sync-failure' AND f.fingerprint=c.fingerprint
     LEFT JOIN op_checkpoints m ON m.op='managed-sync-manifest' AND m.fingerprint=c.completed_keys->0->>'runId'
     WHERE c.op='managed-sync' AND COALESCE(c.completed_keys->0->>'done','false')<>'true'
-      AND ($1::text[] IS NULL OR s.id=ANY($1::text[]))`, [sourceIds ?? null]);
+      AND ($1::text[] IS NULL OR s.id=ANY($1::text[]))
+      -- #5459: resume and --retry-failed recompute the cursor key from the
+      -- current authority and options, so an unfinished cursor left under a
+      -- rotated authority's key can never be reached again. When a NEWER
+      -- cursor for the same source and incarnation completed under a
+      -- DIFFERENT authority, the stale cursor is superseded — reporting it
+      -- as an unresolved failure could never clear. A completed cursor under
+      -- the SAME authority only differs by run options (e.g. --full), and
+      -- those failures stay reachable through retry with matching options.
+      AND NOT EXISTS (
+        SELECT 1 FROM op_checkpoints d
+        WHERE d.op='managed-sync'
+          AND d.fingerprint <> c.fingerprint
+          AND d.completed_keys->0->>'sourceId' = s.id
+          AND d.completed_keys->0->>'incarnation' = s.incarnation::text
+          AND COALESCE(d.completed_keys->0->>'done','false') = 'true'
+          AND d.updated_at >= c.updated_at
+          AND d.completed_keys->0->'authority' <> c.completed_keys->0->'authority'
+      )`, [sourceIds ?? null]);
   const failures: ManagedSyncFailure[] = rows.map(row => {
     const c = row.value, r = row.receipt;
     if (row.failure && (!r || !['failed', 'conflict', 'cancelled'].includes(r.state) || row.failure.request_id === r.request_id)) return row.failure;

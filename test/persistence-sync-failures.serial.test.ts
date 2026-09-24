@@ -382,3 +382,48 @@ test('a new failed admission increments attempts but repeating retry during repa
     expect(loadSyncFailures().filter(row => row.source_id === f.id)).toHaveLength(0);
   }
 }), 120_000);
+
+test('an unfinished cursor superseded by a completed run under a different key stops reporting (#5459)', async () => withEnv(env, async () => {
+  for (const engine of engines) {
+    const f = await fixture(engine, { 'a.md': 'First committed observation.\n', 'b.md': 'Second committed observation.\n' });
+    const options = { sourceId: f.id, noPull: true };
+    const partial = await performManagedSync(engine, options, { maxPages: 1, maxMs: 1000 });
+    expect(partial.status).toBe('partial');
+    expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(1);
+    // Simulate the issue's shape: the cursor fingerprint changed (e.g. upgrade
+    // rotated an authority input) — sync resumed under a NEW key and finished,
+    // leaving the old-key unfinished row unreachable.
+    const rows = await engine.executeRaw<{ fingerprint: string; completed_keys: unknown }>(
+      `SELECT fingerprint, completed_keys FROM op_checkpoints WHERE op='managed-sync' AND completed_keys->0->>'sourceId'=$1`, [f.id]);
+    expect(rows).toHaveLength(1);
+    const stale = rows[0];
+    const newer = JSON.parse(JSON.stringify(stale.completed_keys));
+    newer[0].done = true;
+    newer[0].authority = { ...newer[0].authority, upgraded: 'after-authority-rotation' };
+    // A same-authority completed cursor under a different key (options differ,
+    // e.g. --full) does NOT supersede — retry with matching options can still
+    // reach the stale cursor.
+    const sameAuthority = JSON.parse(JSON.stringify(stale.completed_keys));
+    sameAuthority[0].done = true;
+    await engine.executeRaw(
+      `INSERT INTO op_checkpoints(op,fingerprint,completed_keys) VALUES('managed-sync',$1,$2::text::jsonb)`,
+      [`${stale.fingerprint}-full`, JSON.stringify(sameAuthority)]);
+    expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(1);
+    // Once the authority rotates too, the stale cursor's key is dead — it is
+    // superseded and stops reporting.
+    await engine.executeRaw(
+      `INSERT INTO op_checkpoints(op,fingerprint,completed_keys) VALUES('managed-sync',$1,$2::text::jsonb)`,
+      [`${stale.fingerprint}-rotated`, JSON.stringify(newer)]);
+    expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(0);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op='managed-sync' AND fingerprint=$1`, [`${stale.fingerprint}-rotated`]);
+    expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(1);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op='managed-sync' AND fingerprint=$1`, [`${stale.fingerprint}-full`]);
+    // An OLDER completed run does not supersede (the unfinished cursor is newer).
+    await engine.executeRaw(
+      `INSERT INTO op_checkpoints(op,fingerprint,completed_keys,updated_at) VALUES('managed-sync',$1,$2::text::jsonb, now() - interval '2 days')`,
+      [`${stale.fingerprint}-older`, JSON.stringify(newer)]);
+    expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(1);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op='managed-sync' AND fingerprint=$1`, [`${stale.fingerprint}-older`]);
+    expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(1);
+  }
+}), 120_000);
