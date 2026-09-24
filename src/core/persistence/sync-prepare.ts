@@ -11,6 +11,8 @@ import { sameCanonicalImport } from '../page-state/import-guard.ts';
 import { assertPageRevision } from '../page-state/types.ts';
 import { sealPageTextProjection } from '../page-state/projections.ts';
 import { prepareCanonicalProjections } from './canonical-projections.ts';
+import { prepareAutomaticLinks } from './links-preparation.ts';
+import { isAutoLinkEnabled, LINK_EXTRACTOR_VERSION_TS } from '../link-extraction.ts';
 import { digest, sha256 } from './digest.ts';
 import { preserveProtectedTakes } from './protected-takes.ts';
 import { getWorktreeBinding } from './ownership.ts';
@@ -156,15 +158,36 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
   if (overlay && p.companyApproval) throw new OperationError('source_writeback_required', 'Canonical preparation requires a source-content correction; this profile never writes repository files.');
   if (overlay && !p.lineEndingOnly && p.rawHash !== sha256(p.content)) throw new OperationError('source_changed', 'Canonical sanitization cannot overwrite newer working-tree bytes.');
   const project = prepareCanonicalProjections(ready.parsedPage, row.slug, row.source_id);
+  // Mirror page-prepare: reconcile the page's outgoing links inside the same
+  // guarded publication transaction. Managed sync previously imported pages
+  // without it, so derived link rows were never installed and the
+  // links_extracted_at watermark never advanced — doctor's
+  // links_extraction_lag reported every synced page as stale forever.
+  const links = !ready.noop && (row.authority.autoLinkTrusted ?? !row.authority.remote) && (await isAutoLinkEnabled(engine))
+    ? await prepareAutomaticLinks(engine, row.slug, ready.parsedPage, row.source_id)
+    : undefined;
   return { observedRevision: snapshot?.revision ?? null, validate,
+    additionalPageKeys: links?.pageKeys,
     ...(overlay ? { file: { root, path: join(root, p.path), content: serializePageToMarkdown(renderedPage, tags), expectedBeforeHash: p.rawHash } } : {}),
     apply: async tx => {
       await ready.apply(tx);
       // Hash no-ops still repair a missing physical origin under the same guard.
       await tx.executeRaw('UPDATE pages SET source_path=$3 WHERE source_id=$1 AND slug=$2 AND source_path IS DISTINCT FROM $3', [row.source_id, row.slug, p.sourcePath]);
       if (!ready.noop || p.companyApproval) await project(tx);
+      const autoLinks = await links?.apply(tx);
+      if (links) {
+        // links_extracted_at covers links AND timeline (extract.ts C3/D6) —
+        // both just committed in this transaction, so stamp the row's own
+        // post-write updated_at lifted to the extractor version floor (the
+        // GREATEST rule snapshotStampTimes applies everywhere).
+        await tx.executeRaw(
+          `UPDATE pages SET links_extracted_at = GREATEST(updated_at, $3::timestamptz) WHERE slug=$1 AND source_id=$2`,
+          [row.slug, row.source_id, LINK_EXTRACTOR_VERSION_TS],
+        );
+      }
       if (!ready.noop) await sealPageTextProjection(tx, row.slug, row.source_id);
       return { status: ready.noop ? 'skipped' : snapshot ? 'updated' : 'created', slug: row.slug, source_id: row.source_id,
-        chunks: result.chunks, noop: ready.noop, imported_file: true };
+        chunks: result.chunks, noop: ready.noop, imported_file: true,
+        ...(autoLinks ? { auto_links: autoLinks } : {}) };
     } };
 }

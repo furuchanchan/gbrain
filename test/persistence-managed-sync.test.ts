@@ -398,3 +398,58 @@ test('continuous foreground arrivals cannot starve a bounded sync batch', async 
     }finally{stopping=true;clearInterval(timer);await Promise.all(admitted);await disposePersistenceConsumer(engine);}
   }
 }),120_000);
+
+test('managed sync installs automatic links and stamps the extraction watermark (#5340)', async () => withEnv({ GBRAIN_HOME: home }, async () => {
+  for (const engine of engines) {
+    // Two committed pages: one wikilinks to the other. Before the fix, managed
+    // sync imported the page but never reconciled links rows nor stamped
+    // links_extracted_at — doctor's links_extraction_lag reported it stale.
+    const f = await fixture(engine, {
+      'people/target.md': '---\ntitle: Target person\n---\nA person another page links to.\n',
+      'zzz/linker.md': '---\ntitle: Linker note\n---\nThis note mentions [[people/target]] prominently.\n',
+    });
+    const result = await performManagedSync(engine, { sourceId: f.id, noPull: true });
+    expect(result).toMatchObject({ status: 'first_sync' });
+
+    // The wikilink resolved to the target page inside the same publication
+    // transaction — no `gbrain extract links` pass needed.
+    const linkerSlug = 'zzz/linker';
+    const links = await engine.getLinks(linkerSlug, { sourceId: f.id });
+    expect(links.some((l) => l.to_slug === 'people/target')).toBe(true);
+
+    // links + timeline projections both committed → the combined watermark
+    // was stamped to the row's own updated_at, clearing staleness.
+    const [page] = await engine.executeRaw<{ updated_at: Date; links_extracted_at: Date | null }>(
+      'SELECT updated_at, links_extracted_at FROM pages WHERE slug=$1 AND source_id=$2',
+      [linkerSlug, f.id],
+    );
+    expect(page.links_extracted_at).not.toBeNull();
+    expect(page.links_extracted_at!.getTime()).toBeGreaterThanOrEqual(page.updated_at.getTime());
+    const stale = await engine.countStalePagesForExtraction({ sourceId: f.id });
+    expect(stale).toBe(0);
+  }
+}), 120_000);
+
+test('managed sync skips the watermark stamp when auto_link is disabled (#5340)', async () => withEnv({ GBRAIN_HOME: home }, async () => {
+  for (const engine of engines) {
+    await engine.setConfig('auto_link', 'false');
+    try {
+      const f = await fixture(engine, {
+        'people/target.md': '---\ntitle: Target person\n---\nA person another page links to.\n',
+        'zzz/linker.md': '---\ntitle: Linker note\n---\nThis note mentions [[people/target]] prominently.\n',
+      });
+      await performManagedSync(engine, { sourceId: f.id, noPull: true });
+      // Links disabled → nothing installed, and the combined watermark stays
+      // unstamped (extract.ts C3/D6: it covers links AND timeline — stamping
+      // here would falsely read as fresh while link rows are absent).
+      expect(await engine.getLinks('zzz/linker', { sourceId: f.id })).toHaveLength(0);
+      const [page] = await engine.executeRaw<{ links_extracted_at: Date | null }>(
+        'SELECT links_extracted_at FROM pages WHERE slug=$1 AND source_id=$2',
+        ['zzz/linker', f.id],
+      );
+      expect(page.links_extracted_at).toBeNull();
+    } finally {
+      await engine.setConfig('auto_link', 'true');
+    }
+  }
+}), 120_000);
