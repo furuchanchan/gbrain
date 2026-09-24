@@ -1,4 +1,4 @@
-import { readProjectionSnapshot, installPageEmbeddings } from './page-state/projections.ts';
+import { readProjectionSnapshot, installPageEmbeddings, queuePageProjection } from './page-state/projections.ts';
 /**
  * Stale-chunk embedding loop, extracted from `src/commands/embed.ts:embedAllStale`
  * for reuse by the v0.40 `embed-backfill` Minion handler (D15.2 — codex
@@ -137,6 +137,57 @@ export interface EmbedStaleResult {
   done: boolean;
   /** True iff the loop exited because `signal.aborted` fired. */
   aborted: boolean;
+  /**
+   * #5289: stale-selected pages skipped because their snapshot read refused
+   * the unsealed projection (rebuild queued via classifyStalePageMiss).
+   * Additive — the pre-fix behavior dropped them silently, which is what let
+   * `embed --stale` report "Embedded 0" over a counted backlog.
+   */
+  skippedUnsealed?: number;
+  /** #5289: pages gone between listing and read (deleted mid-run). */
+  skippedUnreadable?: number;
+  /** #5289: stored stale rows whose chunk_text no longer matches the
+   *  projection's chunk set (superseded chunker output). */
+  skippedMismatch?: number;
+  /** #5289: pages whose guarded install lost a revision race — transient;
+   *  the next pass retries them. */
+  installConflicts?: number;
+}
+
+/** #5289: why a stale-selected page's sealed-snapshot read refused it. */
+export type StalePageSkipReason = 'unsealed_projection' | 'page_gone';
+
+/**
+ * #5289: classify a `readProjectionSnapshot` null on a stale-selected page.
+ * The stale selector only serves sealed projections — a page whose
+ * projection rebuild is pending (text_projection_revision !==
+ * knowledge_revision) or that vanished mid-run was previously skipped
+ * silently while `countStaleChunks` kept counting its NULL-embedding chunks:
+ * the dry-run/real-run divergence behind `embed --stale` reporting a backlog
+ * while embedding 0. For an unsealed page, enqueue the durable projection
+ * rebuild (`page_projection_jobs`) so the page becomes sealable — on a
+ * managed brain the coordinator drains that table; page_projection_jobs
+ * itself is not behind the managed-writer guard.
+ */
+export async function classifyStalePageMiss(
+  engine: BrainEngine,
+  sourceId: string,
+  slug: string,
+): Promise<StalePageSkipReason> {
+  const [row] = await engine.executeRaw<{
+    deleted_at: string | null;
+    knowledge_revision: string | null;
+    text_projection_revision: string | null;
+  }>(
+    `SELECT deleted_at, knowledge_revision, text_projection_revision
+       FROM pages WHERE source_id=$1 AND slug=$2`,
+    [sourceId, slug],
+  );
+  if (row && !row.deleted_at && row.text_projection_revision !== row.knowledge_revision) {
+    await queuePageProjection(engine, sourceId, slug, 'embed_stale');
+    return 'unsealed_projection';
+  }
+  return 'page_gone';
 }
 
 /** Per-drain stamp context: the signature plus the registry-active column
@@ -263,10 +314,10 @@ export async function embedStalePages(
     embedFn?: (texts: string[], o: { abortSignal?: AbortSignal }) => Promise<Float32Array[]>;
     embeddingSignature?: string;
   } = {},
-): Promise<{ embedded: number; pagesProcessed: number; aborted: boolean }> {
+): Promise<{ embedded: number; pagesProcessed: number; aborted: boolean; skippedUnsealed?: number; skippedUnreadable?: number }> {
   const embedFn = opts.embedFn ?? (async (texts: string[], fnOpts: { abortSignal?: AbortSignal }) =>
     embedBatchWithBackoff(texts, { abortSignal: fnOpts.abortSignal }));
-  const result = { embedded: 0, pagesProcessed: 0, aborted: false };
+  const result: { embedded: number; pagesProcessed: number; aborted: boolean; skippedUnsealed?: number; skippedUnreadable?: number } = { embedded: 0, pagesProcessed: 0, aborted: false };
   // S2: stale = NULL in the registry-ACTIVE column (the one upsertChunks
   // writes) — the literal legacy `embedding` stays NULL forever on a
   // registry-routed brain, which would re-embed every chunk on every phase
@@ -285,7 +336,14 @@ export async function embedStalePages(
       // pre-cap chunk cannot permanently fail the page.
       await healOversizedPageChunks(engine, slug, { sourceId });
       const prepared = await readProjectionSnapshot(engine, slug, sourceId);
-      if (!prepared) continue;
+      if (!prepared) {
+        // #5289: classify the miss so an unsealed projection gets queued for
+        // rebuild instead of silently skipped forever.
+        const miss = await classifyStalePageMiss(engine, sourceId, slug);
+        if (miss === 'unsealed_projection') result.skippedUnsealed = (result.skippedUnsealed ?? 0) + 1;
+        else result.skippedUnreadable = (result.skippedUnreadable ?? 0) + 1;
+        continue;
+      }
       const existing = prepared.chunks;
       const staleIdx = new Set(
         (await engine.executeRaw<{ chunk_index: number }>(
@@ -467,12 +525,22 @@ export async function embedStaleForSource(
         // silently stripping contextual prefixes (mirrors
         // src/commands/embed.ts:embedAllStale).
         const prepared = await observed(pacer, () => readProjectionSnapshot(engine, slug, keySourceId));
-        if (!prepared) return;
+        if (!prepared) {
+          // #5289: classify the miss so an unsealed projection gets queued for
+          // rebuild instead of silently skipped forever.
+          const miss = await classifyStalePageMiss(engine, keySourceId, slug);
+          if (miss === 'unsealed_projection') result.skippedUnsealed = (result.skippedUnsealed ?? 0) + 1;
+          else result.skippedUnreadable = (result.skippedUnreadable ?? 0) + 1;
+          return;
+        }
         const selected = new Map(stale.map(c => [c.chunk_index, c]));
         const existing = prepared.chunks;
         stale = existing.filter(c => selected.get(c.chunk_index)?.chunk_text === c.chunk_text)
           .map(c => ({ ...selected.get(c.chunk_index)!, ...c }));
-        if (!stale.length) return;
+        if (!stale.length) {
+          result.skippedMismatch = (result.skippedMismatch ?? 0) + 1;
+          return;
+        }
         const pageRow = prepared.snapshot.page;
         const embeddings = await embedFn(wrapChunkTextsForStoredMode(pageRow, stale), { abortSignal: signal });
 
@@ -489,12 +557,18 @@ export async function embedStaleForSource(
         }));
         // The keyset's last batch stamps complete DB provenance (#4825),
         // with context demotion in the same transaction as its vector writes.
-        if (!await observed(pacer, () => engine.transaction(async tx => {
+        const installed = await observed(pacer, () => engine.transaction(async tx => {
           if (!await installPageEmbeddings(tx, prepared, merged)) return false;
           if (stamp) await stampIfPageProvenanceComplete(tx, slug, keySourceId, stamp);
           if (stale.length === existing.length) await restampIfDemotedToTitleTier(tx, prepared.snapshot.page, slug, keySourceId);
           return true;
-        }))) return;
+        }));
+        if (!installed) {
+          // Guarded install lost a revision race mid-run — the next pass
+          // retries; count it so a fully-raced run isn't read as empty.
+          result.installConflicts = (result.installConflicts ?? 0) + 1;
+          return;
+        }
         result.embedded += stale.length;
         result.pagesProcessed += 1;
       } catch (e: unknown) {

@@ -1,12 +1,12 @@
 import { sanitizeRemoteBody } from '../core/remote-body.ts';
 import { embedStaleFacts, type EmbedFactsResult } from '../core/embed-facts.ts';
 import { parseFactEmbedArgs } from './embed-facts-delegate.ts';
-import { readProjectionSnapshot, installPageProjection, installPageEmbeddings } from '../core/page-state/projections.ts';
+import { readProjectionSnapshot, installPageProjection, installPageEmbeddings, rebuildPendingPageProjections } from '../core/page-state/projections.ts';
 import { PageRevisionConflictError } from '../core/page-state/types.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { currentEmbeddingSignature } from '../core/embedding.ts';
 import type { ChunkInput } from '../core/types.ts';
-import { carryChunkMetadata, probeEmbedder, resolveProvenanceStamp, stampIfPageProvenanceComplete } from '../core/embed-stale.ts';
+import { carryChunkMetadata, probeEmbedder, resolveProvenanceStamp, stampIfPageProvenanceComplete, classifyStalePageMiss } from '../core/embed-stale.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { resolveMaxChunkTokens } from '../core/embedding-input-limit.ts';
 import { healOversizedPageChunks, healedChunksToStaleRows } from '../core/embed-oversize-heal.ts';
@@ -257,6 +257,19 @@ export interface EmbedResult {
   total_chunks: number;
   /** Number of pages processed (whether or not they had stale chunks). */
   pages_processed: number;
+  /**
+   * #5289: stale-selected pages this run could not process, by cause.
+   * Additive — pre-fix these were dropped silently, which is what let
+   * `embed --stale` report "Embedded 0" over a counted backlog.
+   * `skipped_unsealed` pages are queued onto `page_projection_jobs` for a
+   * seal rebuild; `skipped_mismatch` rows diverged from the projection's
+   * chunk set; `skipped_unreadable` vanished mid-run; `install_conflicts`
+   * lost a revision race (transient — retried next pass).
+   */
+  skipped_unsealed?: number;
+  skipped_mismatch?: number;
+  skipped_unreadable?: number;
+  install_conflicts?: number;
   /**
    * #3037: chunks that FAILED to embed this run (batch failures + per-chunk
    * isolation failures). Callers must not read total silence as success:
@@ -1795,6 +1808,16 @@ async function embedAllStale(
   // start — capped at MAX_REENTRIES AND requiring forward progress (a pass that
   // embeds 0 while count>0 stops) so a writer outrunning embed can't spin
   // forever.
+  // #5289: on a managed brain only the coordinator may write pages — the
+  // seal of a queued projection rebuild happens through its consumer, so an
+  // inline rebuild here is gated off. resolveBrainManaged tolerates
+  // pre-persistence brains (no table yet).
+  let managedBrain = false;
+  try {
+    const [b] = await engine.executeRaw<{ enabled: boolean }>('SELECT enabled FROM persistence_brain WHERE singleton=1');
+    managedBrain = b?.enabled === true;
+  } catch { /* pre-persistence brain: unmanaged */ }
+
   const MAX_REENTRIES = 3;
   let reentries = 0;
   let lastReentryEmbedded = 0;
@@ -1813,6 +1836,27 @@ async function embedAllStale(
     afterChunkIndex = -1;
     afterUpdatedAt = null;
     serr(`\n  [embed] re-entry ${reentries}/${MAX_REENTRIES}: ${remaining} stale chunk(s) appeared during the run; rescanning from start.`);
+    return true;
+  };
+
+  // #5289: pages skipped for an unsealed projection got queued onto
+  // page_projection_jobs. On an unmanaged brain drain that queue inline and
+  // rescan once so the same pass embeds the freshly-sealed pages; on a
+  // managed brain the coordinator drains it and the post-loop warning names
+  // the next step. One-shot — a second seal loop is the next run's job.
+  let sealReentered = false;
+  let sealBaseline = 0;
+  const maybeSealReenter = async (): Promise<boolean> => {
+    if (sealReentered || (result.skipped_unsealed ?? 0) === 0 || effectiveSignal.aborted) return false;
+    if (managedBrain) return false;
+    const { rebuilt } = await rebuildPendingPageProjections(engine, Math.min(result.skipped_unsealed ?? 0, 100));
+    if (rebuilt === 0) return false;
+    sealReentered = true;
+    sealBaseline = result.skipped_unsealed ?? 0;
+    afterPageId = 0;
+    afterChunkIndex = -1;
+    afterUpdatedAt = null;
+    serr(`\n  [embed] sealed ${rebuilt} pending projection(s); rescanning to embed their chunks.`);
     return true;
   };
 
@@ -1845,6 +1889,7 @@ async function embedAllStale(
       );
       if (batch.length === 0) {
         if (await maybeReenter()) continue;
+        if (await maybeSealReenter()) continue;
         break;
       }
       totalChunksLoaded += batch.length;
@@ -1915,12 +1960,27 @@ async function embedAllStale(
           // NORMAL post-model-migration path, so raw-text embedding here
           // quietly converted whole corpora to the unwrapped convention.
           const prepared = await observed(pacer, () => readProjectionSnapshot(engine, slug, keySourceId));
-          if (!prepared) return;
+          if (!prepared) {
+            // #5289: the selector only serves sealed projections — an
+            // unsealed page (projection rebuild pending) was silently
+            // skipped here while countStaleChunks kept counting its NULL
+            // chunks: the dry-run/real-run divergence behind "Would embed
+            // 355" / "Embedded 0". Classify + queue the durable rebuild.
+            const miss = await classifyStalePageMiss(engine, keySourceId, slug);
+            if (miss === 'unsealed_projection') result.skipped_unsealed = (result.skipped_unsealed ?? 0) + 1;
+            else result.skipped_unreadable = (result.skipped_unreadable ?? 0) + 1;
+            return;
+          }
           const selected = new Map(stale.map(c => [c.chunk_index, c]));
           const existing = prepared.chunks;
           stale = existing.filter(c => selected.get(c.chunk_index)?.chunk_text === c.chunk_text)
             .map(c => ({ ...selected.get(c.chunk_index)!, ...c }));
-          if (!stale.length) return;
+          if (!stale.length) {
+            // Stored stale rows no longer matching the projection's chunk
+            // set — superseded chunker output; count instead of dropping.
+            result.skipped_mismatch = (result.skipped_mismatch ?? 0) + 1;
+            return;
+          }
           const pageRow = prepared.snapshot.page;
           const { embeddings, failed, firstError } = await embedPageTexts(
             wrapChunkTextsForStoredMode(pageRow, stale), { abortSignal: effectiveSignal });
@@ -1942,14 +2002,20 @@ async function embedAllStale(
           // The last batch stamps from complete DB provenance (#4825).
           // Keep both stamps with vector installation so later contextual
           // work cannot commit between installation and title-tier demotion.
-          if (!await observed(pacer, () => engine.transaction(async tx => {
+          const installed = await observed(pacer, () => engine.transaction(async tx => {
             if (!await installPageEmbeddings(tx, prepared, merged)) return false;
             if (stamp && failed === 0) await stampIfPageProvenanceComplete(tx, slug, keySourceId, stamp);
             if (failed === 0 && stale.length === existing.length) {
               await restampIfDemotedToTitleTier(tx, prepared.snapshot.page, slug, keySourceId);
             }
             return true;
-          }))) return;
+          }));
+          if (!installed) {
+            // Guarded install lost a revision race mid-run — the next pass
+            // retries; count it so a fully-raced run isn't read as empty.
+            result.install_conflicts = (result.install_conflicts ?? 0) + 1;
+            return;
+          }
           result.embedded += stale.length - failed;
           if (failed > 0) {
             recordFailure(result, failed, slug, firstError);
@@ -2003,6 +2069,7 @@ async function embedAllStale(
       // If we got fewer rows than PAGE_SIZE, we've reached the end.
       if (batch.length < PAGE_SIZE) {
         if (await maybeReenter()) continue;
+        if (await maybeSealReenter()) continue;
         break;
       }
     }
@@ -2011,6 +2078,32 @@ async function embedAllStale(
   }
 
   if (!staleOpts?.quiet) slog(`Embedded ${result.embedded} chunks across ${totalProcessedPages} pages`);
+
+  // #5289: stale chunks sat on pages this run could not process — surface the
+  // cause loudly instead of the silent no-op the issue reported. Unsealed
+  // pages are queued for projection rebuild; mismatch/conflict skips retry
+  // next pass.
+  const skipNotes: string[] = [];
+  // Unsealed skips counted AFTER an inline seal pass are the ones the rebuild
+  // could not fix this run — those still need a re-run (or the coordinator).
+  const unsealedResidual = (result.skipped_unsealed ?? 0) - sealBaseline;
+  if (unsealedResidual > 0) {
+    skipNotes.push(
+      `${unsealedResidual} page(s) await projection seal — queued for rebuild` +
+      (managedBrain
+        ? ' (the writer coordinator seals them on its poll cycle; re-run `gbrain embed --stale` after)'
+        : ' (re-run `gbrain embed --stale` to embed them)'),
+    );
+  }
+  if ((result.skipped_mismatch ?? 0) > 0) {
+    skipNotes.push(`${result.skipped_mismatch} page(s) have stored stale rows that no longer match the projection's chunk set`);
+  }
+  if ((result.install_conflicts ?? 0) > 0) {
+    skipNotes.push(`${result.install_conflicts} page(s) lost a revision race mid-run (retried next pass)`);
+  }
+  if (skipNotes.length > 0) {
+    serr(`\n  [embed] WARNING: ${skipNotes.join('; ')}.`);
+  }
 
   // #1946 (OV2a): a catch-up pass that completed without being aborted but left
   // chunks unembedded means those chunks are stuck (a non-transient embed
