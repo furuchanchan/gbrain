@@ -30,7 +30,7 @@
 import { safeDump } from 'js-yaml';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_BYTES_BLOCK } from '../content-sanity.ts';
+import { DEFAULT_BYTES_BLOCK, DEFAULT_BYTES_WARN } from '../content-sanity.ts';
 import { applyRedaction, planRedaction, type EchoDictionary, type RedactionPlan } from '../secret-scan.ts';
 import { loadPatterns } from '../skillpack/harvest-lint.ts';
 import { sanitizeForJsonb } from '../batch-rows.ts';
@@ -55,13 +55,18 @@ const DATE_HEADING_RE = /^#{1,6}\s*\d{4}-\d{2}-\d{2}\b/;
 export const MESSAGE_CHAR_CAP = 4000;
 
 /**
- * Part bodies target well under the embed-skip/block threshold — the tie is
- * CODE, not prose: a part page at or above the content-sanity block line
- * would import as a zero-chunk, unsearchable page, defeating the split.
- * (Operators can lower the threshold via config; the 0.6 factor leaves
- * headroom for frontmatter overhead and modest overrides.)
+ * Part bodies stay under BOTH content-sanity size lines — the block tie is
+ * CODE, not prose: a part page at or above the block line would import as a
+ * zero-chunk, unsearchable page, defeating the split, and a part over the
+ * warn line logs PAGE_OVERSIZE_WARN on every re-ingest (#5427). The warn
+ * factor leaves headroom for frontmatter overhead, part headers and the
+ * boundary overlap; a small floor keeps degenerate warn overrides from
+ * exploding the part count.
  */
-export const PART_TARGET_BYTES = Math.min(300 * 1024, Math.floor(DEFAULT_BYTES_BLOCK * 0.6));
+export function partTargetBytes(warnBytes = DEFAULT_BYTES_WARN, blockBytes = DEFAULT_BYTES_BLOCK): number {
+  return Math.max(4 * 1024, Math.min(Math.floor(warnBytes * 0.9), Math.floor(blockBytes * 0.6)));
+}
+export const PART_TARGET_BYTES = partTargetBytes();
 /** Messages repeated at each part boundary for cross-part fact grounding. */
 export const OVERLAP_MESSAGES = 2;
 
@@ -293,7 +298,7 @@ function speakerLabel(m: TranscriptMessage): string {
  */
 export function renderSessionParts(
   redacted: RedactedSession,
-  opts: { sourcePath: string } = { sourcePath: '' },
+  opts: { sourcePath?: string; bytesWarn?: number; bytesBlock?: number } = {},
 ): RenderSessionResult {
   const { session, imperativesFlagged } = redacted;
   const { meta, messages } = session;
@@ -327,13 +332,14 @@ export function renderSessionParts(
   });
 
   // Split at message boundaries under the part target, with overlap.
+  const targetBytes = partTargetBytes(opts.bytesWarn, opts.bytesBlock);
   const groups: string[][] = [];
   let current: string[] = [];
   let currentBytes = 0;
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     const bytes = Buffer.byteLength(b, 'utf8') + 2;
-    if (current.length > 0 && currentBytes + bytes > PART_TARGET_BYTES) {
+    if (current.length > 0 && currentBytes + bytes > targetBytes) {
       groups.push(current);
       const overlap = current.slice(-OVERLAP_MESSAGES);
       current = [...overlap];

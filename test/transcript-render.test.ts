@@ -277,6 +277,31 @@ describe('part splitting [embed-skip is the binding limit]', () => {
     expect(p2Body.startsWith(p1LastAnchor as string)).toBe(true);
   });
 
+  // #5427: parts must fit under the content-sanity WARN line too — a part
+  // over it logs PAGE_OVERSIZE_WARN on every re-ingest.
+  test('part bodies stay under the effective warn line (#5427)', () => {
+    const warn = 20 * 1024;
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      role: 'user' as const, timestamp: '2026-01-01T00:00:00Z', text: `message ${i} `.repeat(60),
+    }));
+    const r = renderSessionParts(
+      redactSession(session(many), { userPatternsPath: '/nonexistent' }),
+      { bytesWarn: warn },
+    );
+    expect(r.parts.length).toBeGreaterThan(1);
+    for (const p of r.parts) {
+      expect(Buffer.byteLength(splitBody(p.content), 'utf8')).toBeLessThan(warn);
+    }
+    // A warn override higher than the block line still honors the block cap.
+    const r2 = renderSessionParts(
+      redactSession(session(many), { userPatternsPath: '/nonexistent' }),
+      { bytesWarn: 900 * 1024, bytesBlock: 60 * 1024 },
+    );
+    for (const p of r2.parts) {
+      expect(Buffer.byteLength(splitBody(p.content), 'utf8')).toBeLessThan(Math.floor(60 * 1024 * 0.6) + 2);
+    }
+  });
+
   test('sessions with zero timestamps are refused (never fabricate provenance)', () => {
     const noTs = session(
       [{ role: 'user', timestamp: '', text: 'hello' }],
