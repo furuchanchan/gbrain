@@ -2,6 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.56.1.18]
 ## [0.56.1.0] - 2026-09-24
 
 **Meeting imports tell you what they could read, and crowded timelines no longer stall extraction.**
