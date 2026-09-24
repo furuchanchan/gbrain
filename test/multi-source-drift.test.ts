@@ -23,6 +23,7 @@ import { tmpdir } from 'os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runSources } from '../src/commands/sources.ts';
 import { findMisroutedPages, multiSourceDriftVerdict } from '../src/core/multi-source-drift.ts';
+import { withEnv } from './helpers/with-env.ts';
 import { writeSlugRootMode } from '../src/core/sync-anchor.ts';
 
 let engine: PGLiteEngine;
@@ -257,16 +258,11 @@ describe('multi_source_drift honest-reporting (#5432)', () => {
   test('env bounds: GBRAIN_DRIFT_LIMIT truncates when opts unset; explicit opts win', async () => {
     const root = makeTmpRoot('env-limit');
     for (let i = 0; i < 6; i++) seedFile(root, `t/e${i}.md`);
-    const prev = process.env.GBRAIN_DRIFT_LIMIT;
-    process.env.GBRAIN_DRIFT_LIMIT = '2';
-    try {
+    await withEnv({ GBRAIN_DRIFT_LIMIT: '2' }, async () => {
       const envRes = await findMisroutedPages(engine, [{ id: 'src-env', local_path: root }]);
       expect(envRes.walk_truncated).toBe(true);
       const optRes = await findMisroutedPages(engine, [{ id: 'src-env', local_path: root }], { limit: 100 });
       expect(optRes.walk_truncated).toBe(false);
-    } finally {
-      if (prev === undefined) delete process.env.GBRAIN_DRIFT_LIMIT;
-      else process.env.GBRAIN_DRIFT_LIMIT = prev;
-    }
+    });
   });
 });
