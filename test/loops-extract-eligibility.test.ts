@@ -47,6 +47,7 @@ function msg(spec: MsgSpec): GmailMessageMeta {
     listUnsubscribe: spec.listUnsub ?? false,
     calendarMethod: spec.calendarMethod ?? null,
     bodyText: spec.body ?? 'Some body text.',
+    attachments: [],
   };
 }
 

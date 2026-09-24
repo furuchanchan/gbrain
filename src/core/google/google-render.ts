@@ -200,6 +200,13 @@ function yamlList(v: string[]): string {
   return `\n${v.map((s) => `  - ${yamlStr(s)}`).join('\n')}`;
 }
 
+function fmtBytes(n: number): string {
+  if (n <= 0) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /**
  * Stable path per thread: keyed on the FIRST message's date + de-prefixed
  * subject + sha8(threadId), so re-renders upsert the same page forever.
@@ -258,6 +265,11 @@ export function renderThreadPage(thread: GmailThreadData): RenderedPage | null {
     `participants: ${yamlList([...participants].sort())}`,
     `senders: ${yamlList([...senders].sort())}`,
     `labels: ${yamlList([...new Set(thread.messages.flatMap((m) => m.labelIds))].sort())}`,
+    // Thread-level filename list so the document a thread carried is
+    // searchable; filenames only — attachment bytes are never fetched.
+    `attachments: ${yamlList(
+      [...new Set(thread.messages.flatMap((m) => m.attachments.map((a) => a.filename)))].sort(),
+    )}`,
     ...(signature ? [`noise: signature-request`] : []),
     '---',
   ];
@@ -278,6 +290,9 @@ export function renderThreadPage(thread: GmailThreadData): RenderedPage | null {
       '',
     );
     if (m.to.length > 0) body.push(`To: ${m.to.join(', ')}${m.cc.length > 0 ? ` · Cc: ${m.cc.join(', ')}` : ''}`, '');
+    for (const a of m.attachments) {
+      body.push(`Attachment: ${a.filename} (${a.mimeType || 'application/octet-stream'} · ${fmtBytes(a.size)})`, '');
+    }
     body.push(m.bodyText || '_empty message_', '');
   }
 

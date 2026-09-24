@@ -28,6 +28,7 @@ import {
   splitAddressList,
   type CalendarEventData,
   type ContactData,
+  type GmailAttachment,
   type GmailMessageMeta,
   type GmailThreadData,
 } from './types.ts';
@@ -266,6 +267,27 @@ export function extractBody(part: RawGmailPart | undefined): { text: string; isH
 }
 
 /**
+ * Enumerate a message's attachments: every part that carries a filename and
+ * is NOT marked `Content-Disposition: inline` (inline images embedded in
+ * signatures and HTML bodies are rendering furniture, not the document the
+ * mail carried). Metadata only — filename, bare MIME type, declared size;
+ * the bytes are never fetched (an `attachmentId`, if present, is ignored).
+ */
+export function extractAttachments(part: RawGmailPart | undefined): GmailAttachment[] {
+  const out: GmailAttachment[] = [];
+  const stack: RawGmailPart[] = part ? [part] : [];
+  while (stack.length > 0) {
+    const p = stack.shift()!;
+    const filename = (p.filename ?? '').trim();
+    if (filename && !/^\s*inline\b/i.test(partHeader(p, 'Content-Disposition'))) {
+      out.push({ filename, mimeType: p.mimeType ?? '', size: p.body?.size ?? 0 });
+    }
+    if (p.parts) stack.push(...p.parts);
+  }
+  return out;
+}
+
+/**
  * iCalendar method for a message: the METHOD of its `text/calendar` /
  * `application/ics` MIME part ('' when the part carries no parsable method),
  * or null when the message has no calendar MIME part at all — including the
@@ -400,6 +422,7 @@ export class GmailClient extends GoogleApiClient {
         listUnsubscribe: header(m, 'List-Unsubscribe') !== '',
         calendarMethod: extractCalendarMethod(m.payload),
         bodyText,
+        attachments: extractAttachments(m.payload),
       };
     });
     messages.sort((a, b) => a.internalDateMs - b.internalDateMs);

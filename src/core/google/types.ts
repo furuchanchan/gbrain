@@ -89,6 +89,15 @@ export function deriveSourceId(account: string): string {
   return id || 'gmail';
 }
 
+/** Metadata for one non-inline MIME part carrying a filename. */
+export interface GmailAttachment {
+  filename: string;
+  /** Bare media type ('application/pdf'); '' when the API omits it. */
+  mimeType: string;
+  /** Declared part size in bytes; 0 when the API omits it. */
+  size: number;
+}
+
 export interface GmailMessageMeta {
   id: string;
   threadId: string;
@@ -113,6 +122,12 @@ export interface GmailMessageMeta {
   calendarMethod?: string | null;
   /** Extracted, HTML-stripped, quote-trimmed, capped body text. */
   bodyText: string;
+  /**
+   * Non-inline parts carrying a filename, in payload order. Metadata only —
+   * the attachment bytes are never fetched or stored, so this is what lets a
+   * page name the document a thread carried without ingesting its content.
+   */
+  attachments: GmailAttachment[];
 }
 
 export interface GmailThreadData {

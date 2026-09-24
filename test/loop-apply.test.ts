@@ -67,6 +67,7 @@ function msg(spec: {
     labelIds: spec.sent ? ['SENT'] : ['INBOX'],
     listUnsubscribe: false,
     bodyText: spec.body ?? 'Can you review the plan?',
+    attachments: [],
   };
 }
 

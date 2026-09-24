@@ -49,6 +49,7 @@ function msg(over: Partial<GmailMessageMeta> = {}): GmailMessageMeta {
     labelIds: [],
     listUnsubscribe: false,
     bodyText: 'Sharing the roadmap draft.',
+    attachments: [],
     ...over,
   };
 }
@@ -286,6 +287,7 @@ describe('renderThreadPage', () => {
         dateIso: '2026-08-11T08:00:00.000Z',
         labelIds: ['SENT'],
         bodyText: 'Looks good, shipping it.',
+    attachments: [],
       }),
     ]);
   }

@@ -64,6 +64,7 @@ function msg(spec: MsgSpec): GmailMessageMeta {
     labelIds: spec.sent ? ['SENT'] : ['INBOX'],
     listUnsubscribe: spec.listUnsub ?? false,
     bodyText: spec.body ?? 'Can you review the plan?',
+    attachments: [],
   };
 }
 
