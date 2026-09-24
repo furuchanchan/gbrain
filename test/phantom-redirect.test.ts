@@ -13,6 +13,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { withEnv } from './helpers/with-env.ts';
 import { runExtractFacts } from '../src/core/cycle/extract-facts.ts';
+import { parseFactsFence } from '../src/core/facts-fence.ts';
 import {
   runPhantomRedirectPass,
   tryRedirectPhantom,
@@ -814,5 +815,98 @@ describe('tryRedirectPhantom — fence placement above the timeline sentinel (#4
       expect(canonicalMd.indexOf('Alice runs acme-example.')).toBeLessThan(factsAt);
       expect(canonicalMd.indexOf('## Timeline')).toBeGreaterThan(canonicalMd.indexOf('gbrain:facts:end'));
     });
+  });
+});
+
+// ─── #5430: DB row numbering mirrors the merged disk fence exactly ─────
+describe('tryRedirectPhantom — row_num assignments replay the disk merge (#5430)', () => {
+  test('dedup-skipped phantom rows never land on a canonical row_num they did not get', async () => {
+    await withTempDirs(async ({ brainDir }) => {
+      const canonicalBody = FACT_FENCE(
+        `| 1 | Shared claim | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
+| 2 | Canonical only | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+      );
+      const phantomBody = FACT_FENCE(
+        `| 1 | Shared claim | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |
+| 2 | Phantom only | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
+      );
+      await putPage('people/alice-example', canonicalBody, { type: 'person' });
+      await putPage('alice', phantomBody);
+      writeMd(brainDir, 'people/alice-example', canonicalBody);
+      writeMd(brainDir, 'alice', phantomBody);
+
+      // Seed the facts index as extract_facts would have produced it.
+      await engine.insertFacts(
+        [
+          { fact: 'Shared claim', row_num: 1, source_markdown_slug: 'people/alice-example', source: 'fence:reconcile' },
+          { fact: 'Canonical only', row_num: 2, source_markdown_slug: 'people/alice-example', source: 'fence:reconcile' },
+        ],
+        { source_id: 'default' },
+      );
+      await engine.insertFacts(
+        [
+          { fact: 'Shared claim', row_num: 1, source_markdown_slug: 'alice', source: 'fence:reconcile' },
+          { fact: 'Phantom only', row_num: 2, source_markdown_slug: 'alice', source: 'fence:reconcile' },
+        ],
+        { source_id: 'default' },
+      );
+
+      const phantom = await engine.getPage('alice', { sourceId: 'default' });
+      const result = await tryRedirectPhantom(engine, phantom!, 'default', brainDir, false);
+      expect(result.outcome).toBe('redirected');
+
+      // The disk merge appends only the unique row at coordinate 3; the DB
+      // must carry the same numbering — not 4, which the old MAX-offset
+      // rule produced (leaving phantom row 2 → canonical row_num 4 while
+      // the fence cell says 3, forcing a full wipe+reinsert on the next
+      // extract_facts run).
+      const canonicalMd = readMd(brainDir, 'people/alice-example');
+      const fenceRows = parseFactsFence(canonicalMd).facts;
+      expect(fenceRows).toHaveLength(3);
+      expect(fenceRows[2].claim).toBe('Phantom only');
+      expect(fenceRows[2].rowNum).toBe(3);
+
+      const rows = await engine.executeRaw<{ fact: string; row_num: number; source_markdown_slug: string }>(
+        `SELECT fact, row_num, source_markdown_slug FROM facts ORDER BY source_markdown_slug, row_num`,
+      );
+      const canonical = rows.filter(r => r.source_markdown_slug === 'people/alice-example');
+      expect(canonical.map(r => [r.row_num, r.fact])).toEqual([
+        [1, 'Shared claim'],
+        [2, 'Canonical only'],
+        [3, 'Phantom only'],
+      ]);
+      // The dedup-skipped row stays on the phantom coordinate and is wiped
+      // with the phantom page — never moved onto a phantom row_num the
+      // canonical fence does not have.
+      expect(rows.filter(r => r.source_markdown_slug === 'alice')).toHaveLength(0);
+    });
+  });
+
+  test('entity_slug is rewritten only when it names the phantom; identical retry is a no-op', async () => {
+    await engine.insertFacts(
+      [
+        { fact: 'About bob', row_num: 1, source_markdown_slug: 'alice', entity_slug: 'people/bob-example', source: 'fence:reconcile' },
+        { fact: 'About alice', row_num: 2, source_markdown_slug: 'alice', entity_slug: 'alice', source: 'fence:reconcile' },
+      ],
+      { source_id: 'default' },
+    );
+    const assignments = [
+      { fromRowNum: 1, toRowNum: 4, claim: 'About bob' },
+      { fromRowNum: 2, toRowNum: 5, claim: 'About alice' },
+    ];
+    const r = await engine.migrateFactsToCanonical('alice', 'people/alice-example', 'default', { assignments });
+    expect(r.migrated).toBe(2);
+
+    const rows = await engine.executeRaw<{ entity_slug: string | null; source_markdown_slug: string; row_num: number }>(
+      `SELECT entity_slug, source_markdown_slug, row_num FROM facts ORDER BY row_num`,
+    );
+    // A row whose entity_slug already points at a different entity keeps
+    // it — only the phantom-named entity is rewritten.
+    expect(rows[0]).toMatchObject({ entity_slug: 'people/bob-example', source_markdown_slug: 'people/alice-example', row_num: 4 });
+    expect(rows[1]).toMatchObject({ entity_slug: 'people/alice-example', source_markdown_slug: 'people/alice-example', row_num: 5 });
+
+    // Identical retry matches nothing (compare-and-swap on phantom coordinate).
+    const retry = await engine.migrateFactsToCanonical('alice', 'people/alice-example', 'default', { assignments });
+    expect(retry.migrated).toBe(0);
   });
 });

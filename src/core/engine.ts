@@ -2438,6 +2438,18 @@ export interface BrainEngine {
     phantomSlug: string,
     canonicalSlug: string,
     sourceId: string,
+    opts?: {
+      /**
+       * #5430 — explicit (phantom fence row_num → canonical row_num)
+       * assignments written to the canonical's disk fence. When provided,
+       * each assignment moves exactly one row via compare-and-swap on
+       * (source_markdown_slug, row_num, claim, expired_at IS NULL) —
+       * entity_slug is rewritten only when it equals the phantom slug,
+       * and a re-run matches nothing (identical retry is a no-op). Omit
+       * for the legacy MAX(row_num) offset behaviour.
+       */
+      assignments?: ReadonlyArray<{ fromRowNum: number; toRowNum: number; claim: string }>;
+    },
   ): Promise<{ migrated: number }>;
 
   // Config

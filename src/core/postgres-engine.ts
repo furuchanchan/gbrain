@@ -993,8 +993,36 @@ export class PostgresEngine implements BrainEngine {
     phantomSlug: string,
     canonicalSlug: string,
     sourceId: string,
+    opts?: { assignments?: ReadonlyArray<{ fromRowNum: number; toRowNum: number; claim: string }> },
   ): Promise<{ migrated: number }> {
     const sql = this.sql;
+    // #5430 — explicit replay: each assignment moves exactly the row the
+    // disk write created, via compare-and-swap on the full identity
+    // (source_markdown_slug + row_num + claim, active rows only).
+    // entity_slug is rewritten only when it still names the phantom —
+    // a row whose entity_slug already points at a different entity keeps
+    // it. Re-runs match nothing (idempotent); a dedup-skipped row is
+    // never moved onto a row_num the canonical fence does not have.
+    if (opts?.assignments !== undefined) {
+      let migrated = 0;
+      await sql.begin(async (tx) => {
+        for (const a of opts.assignments ?? []) {
+          const r = await tx`
+            UPDATE facts
+            SET source_markdown_slug = ${canonicalSlug},
+                entity_slug = CASE WHEN entity_slug = ${phantomSlug} THEN ${canonicalSlug} ELSE entity_slug END,
+                row_num = ${a.toRowNum}
+            WHERE source_id = ${sourceId}
+              AND source_markdown_slug = ${phantomSlug}
+              AND row_num = ${a.fromRowNum}
+              AND fact = ${a.claim}
+              AND expired_at IS NULL
+          `;
+          migrated += r.count ?? 0;
+        }
+      });
+      return { migrated };
+    }
     // UPDATE preserves every other column (embedding, valid_*, kind,
     // status, notability, confidence, source_session, ...) except
     // row_num, which is offset past canonical's current MAX(row_num)

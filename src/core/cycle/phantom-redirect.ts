@@ -203,16 +203,29 @@ async function acquireLockWithRetry(
  * Append the phantom's fact rows to the canonical's disk fence, dedup-
  * guarded by (claim, valid_from). Atomic via `.tmp` + rename.
  *
- * Returns the count of rows actually appended (i.e. NOT counting dedupped).
+ * Returns the count of rows actually appended (i.e. NOT counting dedupped)
+ * plus the (phantom row_num → canonical row_num, claim) assignments — the
+ * DB migration replays exactly these mappings (#5430), so dedup-skipped
+ * phantom rows are never moved onto a row_num the canonical fence did not
+ * get.
  * The disk write happens BEFORE the DB migration in the redirect handler,
  * so if this throws (rename fails, disk full, parse-validation rejects)
  * the DB migration won't run and the cycle can retry next run.
  */
+export interface PhantomFenceAssignment {
+  /** The phantom-side fence coordinate (and the DB row's row_num). */
+  fromRowNum: number;
+  /** The canonical-side coordinate the row was appended at. */
+  toRowNum: number;
+  /** The row's claim — carried so the DB migration can compare-and-swap. */
+  claim: string;
+}
+
 function appendPhantomFenceRowsToCanonical(
   canonicalPath: string,
   phantomFacts: ParsedFact[],
-): number {
-  if (phantomFacts.length === 0) return 0;
+): { appended: number; assignments: PhantomFenceAssignment[] } {
+  if (phantomFacts.length === 0) return { appended: 0, assignments: [] };
   const body = fs.readFileSync(canonicalPath, 'utf-8');
   const { facts: existingFacts } = parseFactsFence(body);
 
@@ -229,17 +242,19 @@ function appendPhantomFenceRowsToCanonical(
     : 1;
 
   let appended = 0;
+  const assignments: PhantomFenceAssignment[] = [];
   const merged: ParsedFact[] = [...existingFacts];
   for (const pf of phantomFacts) {
     const key = `${pf.claim}|${pf.validFrom ?? ''}`;
     if (existingKeys.has(key)) continue;
     merged.push({ ...pf, rowNum: nextRowNum });
     existingKeys.add(key);
+    assignments.push({ fromRowNum: pf.rowNum, toRowNum: nextRowNum, claim: pf.claim });
     nextRowNum += 1;
     appended += 1;
   }
 
-  if (appended === 0) return 0;
+  if (appended === 0) return { appended: 0, assignments };
 
   // Shared placement rule (#4756): replace in place, else insert ABOVE the
   // timeline sentinel — never a blind EOF append below `## Timeline`.
@@ -256,7 +271,7 @@ function appendPhantomFenceRowsToCanonical(
     );
   }
   fs.renameSync(tmpPath, canonicalPath);
-  return appended;
+  return { appended, assignments };
 }
 
 /**
@@ -417,7 +432,7 @@ export async function tryRedirectPhantom(
   // disk fence (dedup-guarded). If this throws, no DB state has moved
   // and the cycle can retry next run.
   const phantomFence = parseFactsFence(page.compiled_truth ?? '');
-  appendPhantomFenceRowsToCanonical(canonicalPath, phantomFence.facts);
+  const { assignments } = appendPhantomFenceRowsToCanonical(canonicalPath, phantomFence.facts);
 
   // Codex #7: refresh canonical's compiled_truth + content_hash so the
   // next `gbrain sync` sees the canonical as unchanged. We re-parse the
@@ -448,7 +463,17 @@ export async function tryRedirectPhantom(
   );
 
   // Codex #3/#4/#12: lossless DB migration. Re-runs return migrated=0.
-  const migrated = await engine.migrateFactsToCanonical(page.slug, canonical, sourceId);
+  // #5430: replay the exact (fact → fence row_num) assignments written to
+  // disk — the old MAX-offset rule numbered the DB rows differently than
+  // the dedup-skipped disk merge did, so the next extract_facts saw the
+  // canonical's DB numbering drift from the fence and wiped/reinserted
+  // the whole page (churning every fact id).
+  const migrated = await engine.migrateFactsToCanonical(
+    page.slug,
+    canonical,
+    sourceId,
+    { assignments },
+  );
 
   // D6: DB FK rewrite for the links table (wiki-link text rewrite is a
   // documented follow-up — codex #5).

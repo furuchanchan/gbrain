@@ -2032,7 +2032,32 @@ export class PGLiteEngine implements BrainEngine {
     phantomSlug: string,
     canonicalSlug: string,
     sourceId: string,
+    opts?: { assignments?: ReadonlyArray<{ fromRowNum: number; toRowNum: number; claim: string }> },
   ): Promise<{ migrated: number }> {
+    // Parity with PostgresEngine.migrateFactsToCanonical — #5430 explicit
+    // replay path (compare-and-swap per assignment; entity_slug rewritten
+    // only when it equals the phantom slug; idempotent on retry).
+    if (opts?.assignments !== undefined) {
+      let migrated = 0;
+      await this.db.transaction(async (tx) => {
+        for (const a of opts.assignments ?? []) {
+          const r = await tx.query(
+            `UPDATE facts
+               SET source_markdown_slug = $1,
+                   entity_slug = CASE WHEN entity_slug = $3 THEN $1 ELSE entity_slug END,
+                   row_num = $2
+             WHERE source_id = $4
+               AND source_markdown_slug = $3
+               AND row_num = $5
+               AND fact = $6
+               AND expired_at IS NULL`,
+            [canonicalSlug, a.toRowNum, phantomSlug, sourceId, a.fromRowNum, a.claim],
+          );
+          migrated += r.affectedRows ?? 0;
+        }
+      });
+      return { migrated };
+    }
     // Parity with PostgresEngine.migrateFactsToCanonical. UPDATE preserves
     // every column except entity_slug + source_markdown_slug + row_num,
     // which is offset past canonical's current MAX(row_num) (#4558; NULL
