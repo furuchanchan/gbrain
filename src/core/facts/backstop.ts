@@ -390,7 +390,28 @@ export async function runFactsBackstop(
       // increments only). Now they land in ingest_log so doctor +
       // dashboard surface failure modes per source.
       try {
-        await runPipeline(parsedPage, ctx, signal);
+        const r = await runPipeline(parsedPage, ctx, signal);
+        // Success receipt: the queue lane used to discard the pipeline
+        // result, so a completed extraction was indistinguishable from a
+        // silent skip. Aborted runs and extractor-skip outcomes already
+        // have their own accounting (or deliberately none); only a clean
+        // finish earns a row.
+        if (!signal.aborted && !r.skipped_reason) {
+          const { createHash } = await import('node:crypto');
+          const { writeFactsAbsorbComplete } = await import('./absorb-log.ts');
+          const bodyHash = createHash('sha256')
+            .update(parsedPage.compiled_truth)
+            .digest('hex')
+            .slice(0, 16);
+          await writeFactsAbsorbComplete(
+            ctx.engine,
+            parsedPage.slug,
+            `sha256=${bodyHash} model=${ctx.model ?? 'unknown'} ` +
+              `inserted=${r.inserted} duplicate=${r.duplicate} superseded=${r.superseded} ` +
+              `fact_ids=${r.fact_ids.join(',')}`,
+            ctx.sourceId,
+          );
+        }
       } catch (err) {
         const { writeFactsAbsorbFailure } = await import('./absorb-log.ts');
         await writeFactsAbsorbFailure(ctx.engine, parsedPage.slug, err, ctx.sourceId);

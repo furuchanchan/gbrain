@@ -20,7 +20,7 @@ import {
   resetGateway,
   type ChatResult,
 } from '../src/core/ai/gateway.ts';
-import { __resetFactsQueueForTests } from '../src/core/facts/queue.ts';
+import { __resetFactsQueueForTests, getFactsQueue } from '../src/core/facts/queue.ts';
 import { MinionWorker } from '../src/core/minions/worker.ts';
 import type { MinionJobContext } from '../src/core/minions/types.ts';
 import { registerBuiltinHandlers } from '../src/commands/jobs.ts';
@@ -261,6 +261,39 @@ describe('runFactsBackstop — mode: queue', () => {
       expect(r.skipped).toBe('extraction_disabled');
     }
     await engine.setConfig('facts.extraction_enabled', 'true');
+  });
+
+  test('queue lane writes a facts:absorb:complete receipt on clean finish', async () => {
+    const slug = 'meetings/queue-receipt-' + Math.random().toString(36).slice(2, 9);
+    chatStub([{ fact: 'queue-receipt-fact', kind: 'event', notability: 'high', entity: 'people/queue-receipt' }]);
+    const r = await runFactsBackstop({ ...meetingPage(slug) }, makeCtx({ mode: 'queue' }));
+    expect(r.mode).toBe('queue');
+    if (r.mode === 'queue') expect(r.enqueued).toBe(true);
+
+    const queue = getFactsQueue();
+    const start = Date.now();
+    while ((queue.pendingCount() > 0 || queue.inflightCount() > 0) && Date.now() - start < 5000) {
+      await new Promise(rr => setTimeout(rr, 25));
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query(
+      `SELECT summary, source_ref FROM ingest_log WHERE source_type = 'facts:absorb:complete' AND source_ref = $1`,
+      [slug],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].summary).toMatch(/^complete: sha256=[0-9a-f]{16} model=/);
+    expect(rows.rows[0].summary).toContain('inserted=1');
+    expect(rows.rows[0].summary).toContain('duplicate=0');
+    expect(rows.rows[0].summary).toMatch(/fact_ids=\d+/);
+    // Success receipts must not land on the failure-lane source_type —
+    // doctor's facts_extraction_health counts every 'facts:absorb' row as a failure.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const failureRows = await (engine as any).db.query(
+      `SELECT summary FROM ingest_log WHERE source_type = 'facts:absorb' AND source_ref = $1`,
+      [slug],
+    );
+    expect(failureRows.rows).toHaveLength(0);
   });
 });
 

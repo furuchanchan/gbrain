@@ -134,6 +134,48 @@ export async function writeFactsAbsorbLog(
 }
 
 /**
+ * Success receipt for the in-process queue lane (issue #5430 item F).
+ * Durable jobs and the managed path already have completion evidence; a
+ * queued extraction that finished used to leave no trace, so a completed
+ * run was indistinguishable from a silent skip on long-lived unmanaged
+ * processes.
+ *
+ * Written under source_type 'facts:absorb:complete' — deliberately NOT
+ * 'facts:absorb': doctor's facts_extraction_health groups every
+ * 'facts:absorb' row's `split_part(summary,':',1)` as a failure reason and
+ * warns past a threshold, so success receipts must live on a sibling
+ * source_type or a busy brain would warn on its own completions.
+ *
+ * Detail shape: `sha256=<16> model=<name> inserted=<n> duplicate=<n>
+ * superseded=<n> fact_ids=<csv>` — truncated to the shared 240-char cap.
+ * Best-effort: a logging failure only warns, never breaks the pipeline.
+ */
+export async function writeFactsAbsorbComplete(
+  engine: BrainEngine,
+  ref: string,
+  detail: string,
+  sourceId: string = 'default',
+): Promise<void> {
+  try {
+    await engine.logIngest({
+      source_id: sourceId,
+      source_type: 'facts:absorb:complete',
+      source_ref: ref,
+      pages_updated: [],
+      summary: `complete: ${(detail ?? '').toString().slice(0, 240)}`,
+    });
+  } catch (e) {
+    if (e instanceof GBrainError && e.problem === 'No database connection') {
+      return; // disconnected engine handle — the receipt is a courtesy
+    }
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[facts:absorb] failed to log completion for ${ref}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
  * Persist a provider failure without copying provider response bodies, keys,
  * or request payloads into ingest_log. Global failures get stable typed
  * reason codes; all other failures retain the existing classifier.
