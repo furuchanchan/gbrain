@@ -641,6 +641,13 @@ export async function computeConversationFactsBacklogCheck(
       }
     }
 
+    const { requireParseableConversationFlag, isConversationFactsEligiblePage } = await import('../../extract-conversation-facts.ts');
+    const requireExplicitParseable = await requireParseableConversationFlag(engine);
+    const parseablePredicate = requireExplicitParseable
+      ? `AND (p.type = 'conversation' OR lower(btrim(coalesce(p.frontmatter->>'conversation_parseable',''))) IN ('true','1','yes','on'))
+         AND lower(btrim(coalesce(p.frontmatter->>'conversation_parseable',''))) NOT IN ('false','0','no','off')`
+      : `AND lower(btrim(coalesce(p.frontmatter->>'conversation_parseable',''))) NOT IN ('false','0','no','off')`;
+
     const rows = await engine.executeRaw<{
       backlog: string | number;
       completed: string | number;
@@ -666,6 +673,7 @@ export async function computeConversationFactsBacklogCheck(
             COALESCE(TO_CHAR(p.effective_date AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'none')
          WHERE p.type = ANY($1::text[])
            AND p.deleted_at IS NULL
+           ${parseablePredicate}
            AND COALESCE(BTRIM(p.frontmatter->>'raw_transcript'), '') = ''
            AND p.content_hash IS NOT NULL
          GROUP BY p.source_id, p.slug
@@ -713,6 +721,7 @@ export async function computeConversationFactsBacklogCheck(
           });
           if (batch.length === 0) break;
           const verifyInProcess = batch.filter((page) => {
+            if (!isConversationFactsEligiblePage(page, types, requireExplicitParseable)) return false;
             const raw = page.frontmatter?.raw_transcript;
             return (typeof raw === 'string' && raw.trim().length > 0) ||
               page.content_hash == null;
@@ -746,6 +755,7 @@ export async function computeConversationFactsBacklogCheck(
           completed,
           scanned_not_extractable: nonExtractable,
           types,
+          require_parseable_flag: requireExplicitParseable,
           freshness_rule: 'v2 snapshot token (content hash + effective date or sidecar sha256)',
         },
       };
@@ -763,6 +773,7 @@ export async function computeConversationFactsBacklogCheck(
           completed,
           scanned_not_extractable: nonExtractable,
           types,
+          require_parseable_flag: requireExplicitParseable,
           fix_hint: fixHint,
           freshness_rule: 'v2 snapshot token (content hash + effective date or sidecar sha256)',
         },
@@ -778,6 +789,7 @@ export async function computeConversationFactsBacklogCheck(
         completed,
         scanned_not_extractable: nonExtractable,
         types,
+        require_parseable_flag: requireExplicitParseable,
         freshness_rule: 'v2 snapshot token (content hash + effective date or sidecar sha256)',
       },
     };

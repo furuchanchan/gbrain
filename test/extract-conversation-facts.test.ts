@@ -42,6 +42,8 @@ import {
   ALLOWED_TYPES,
   pageTypesForAllowed,
   ALLOWED_TYPE_ALIASES,
+  isConversationFactsEligiblePage,
+  REQUIRE_PARSEABLE_FLAG_CONFIG_KEY,
 } from '../src/commands/extract-conversation-facts.ts';
 import { _resetLlmCacheForTests } from '../src/core/conversation-parser/llm-base.ts';
 import { BudgetExhausted } from '../src/core/budget/budget-tracker.ts';
@@ -1652,5 +1654,143 @@ describe('#4136 folded speaker headings — decline gate is non-terminal', () =>
     expect(result.pages_skipped_unrecognized_speaker).toBe(0);
     expect(result.pages_processed).toBe(1);
     expect(result.segments_processed).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('eligibility contract (#5330)', () => {
+  let engine: PGLiteEngine;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    repoDir = mkdtempSync(join(tmpdir(), 'gbrain-extract-'));
+
+    __setChatTransportForTests(async (opts): Promise<ChatResult> => {
+      if (String(opts.system).includes('You parse messages out of a chat-log body')) {
+        return {
+          text: '[]',
+          blocks: [],
+          stopReason: 'end',
+          usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: opts.model!,
+          providerId: 'stub',
+        };
+      }
+      return {
+        text: JSON.stringify({ facts: [] }),
+        blocks: [],
+        stopReason: 'end',
+        usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'stub:stub',
+        providerId: 'stub',
+      };
+    });
+    __setEmbedTransportForTests(
+      (async ({ values }: { values: string[] }) => ({
+        embeddings: values.map(() => Array.from({ length: 1536 }, () => 0.1)),
+      })) as never,
+    );
+  });
+
+  afterAll(async () => {
+    __setChatTransportForTests(null);
+    __setEmbedTransportForTests(null);
+    resetGateway();
+    await engine.disconnect();
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    await engine.executeRaw(`DELETE FROM facts WHERE source LIKE 'cli:extract-conversation-facts%'`);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op = 'extract-conversation-facts'`);
+    await engine.executeRaw(`DELETE FROM pages WHERE slug LIKE 'conversations/%'`);
+    await engine.setConfig('facts.extraction_enabled', 'true');
+    await engine.setConfig('conversation_parser.llm_fallback_enabled', 'false');
+    await engine.setConfig(REQUIRE_PARSEABLE_FLAG_CONFIG_KEY, 'false');
+    await engine.setConfig('sync.repo_path', repoDir);
+  });
+
+  test('isConversationFactsEligiblePage: marker + strict-mode rules', () => {
+    const types = ['conversation', 'meeting', 'slack', 'email'];
+    expect(isConversationFactsEligiblePage({ type: 'note', frontmatter: {} }, types)).toBe(false);
+    expect(isConversationFactsEligiblePage({ type: 'email', frontmatter: {} }, types)).toBe(true);
+    expect(isConversationFactsEligiblePage({ type: 'conversation', frontmatter: { conversation_parseable: false } }, types)).toBe(false);
+    expect(isConversationFactsEligiblePage({ type: 'conversation', frontmatter: {} }, types, true)).toBe(true);
+    expect(isConversationFactsEligiblePage({ type: 'email', frontmatter: {} }, types, true)).toBe(false);
+    expect(isConversationFactsEligiblePage({ type: 'email', frontmatter: { conversation_parseable: 'yes' } }, types, true)).toBe(true);
+  });
+
+  test('core run skips opt-out evidence page but processes conversation', async () => {
+    await engine.putPage('conversations/parseable', {
+      type: 'conversation',
+      title: 'c',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+    await engine.putPage('conversations/evidence', {
+      type: 'email',
+      title: 'ev',
+      compiled_truth: 'Body',
+      timeline: '',
+      frontmatter: { conversation_parseable: false },
+    });
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slugs: ['conversations/parseable', 'conversations/evidence'],
+      sleepMs: 0,
+    });
+    expect(result.pages_processed).toBe(1);
+    expect(result.pages_skipped).toBe(1);
+  });
+
+  test('core run under require_parseable_flag leaves unmarked evidence unprocessed', async () => {
+    await engine.setConfig(REQUIRE_PARSEABLE_FLAG_CONFIG_KEY, 'true');
+    await engine.putPage('conversations/parseable', {
+      type: 'conversation',
+      title: 'c',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+    await engine.putPage('conversations/evidence', {
+      type: 'email',
+      title: 'ev',
+      compiled_truth: 'Body',
+      timeline: '',
+      frontmatter: {},
+    });
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slugs: ['conversations/parseable', 'conversations/evidence'],
+      sleepMs: 0,
+    });
+    expect(result.pages_processed).toBe(1);
+    expect(result.pages_skipped).toBe(1);
+  });
+
+  test('gap override widens segmentation', async () => {
+    // Two pairs 40 minutes apart — splits at the 30-minute default but joins
+    // when the collector declares a 60-minute gap.
+    await engine.putPage('conversations/gap-override', {
+      type: 'conversation',
+      title: 'gap',
+      compiled_truth: [
+        fmt('A', '2024-03-15', '9:00 AM', 'a'),
+        fmt('B', '2024-03-15', '9:01 AM', 'b'),
+        fmt('A', '2024-03-15', '9:41 AM', 'c'),
+        fmt('B', '2024-03-15', '9:42 AM', 'd'),
+      ].join('\n'),
+      timeline: '',
+      frontmatter: { conversation_segment_gap_minutes: 60 },
+    });
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/gap-override',
+      sleepMs: 0,
+    });
+    expect(result.segments_processed).toBe(1);
   });
 });

@@ -591,11 +591,52 @@ function pageBodyBytes(page: Page): number {
   return Buffer.byteLength(compiled, 'utf8') + Buffer.byteLength(timeline, 'utf8');
 }
 
+/** Per-page override of the segmentation gap, when the collector knows it. */
+function pageSegmentGapMinutes(page: Page): number | undefined {
+  const raw = page.frontmatter?.conversation_segment_gap_minutes;
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
 // ---------------------------------------------------------------------------
 // Types config resolver (Eng-v2 A2 — unified single source of truth).
 // ---------------------------------------------------------------------------
 
 const TYPES_CONFIG_KEY = 'cycle.conversation_facts_backfill.types';
+export const REQUIRE_PARSEABLE_FLAG_CONFIG_KEY = 'cycle.conversation_facts_backfill.require_parseable_flag';
+
+function truthyFlag(v: unknown): boolean {
+  return v === true || v === 1 ||
+    (typeof v === 'string' && ['true', '1', 'yes', 'on'].includes(v.trim().toLowerCase()));
+}
+
+function falseyFlag(v: unknown): boolean {
+  return v === false || v === 0 ||
+    (typeof v === 'string' && ['false', '0', 'no', 'off'].includes(v.trim().toLowerCase()));
+}
+
+export async function requireParseableConversationFlag(engine: BrainEngine): Promise<boolean> {
+  const raw = await engine.getConfig(REQUIRE_PARSEABLE_FLAG_CONFIG_KEY);
+  return truthyFlag(raw);
+}
+
+/**
+ * Single source of truth for conversation-facts eligibility. The extractor,
+ * the doctor backlog check and the coverage check all call this, so the three
+ * cannot disagree about what counts as outstanding work.
+ */
+export function isConversationFactsEligiblePage(
+  page: Pick<Page, 'type' | 'frontmatter'>,
+  types: readonly string[],
+  requireExplicitParseable = false,
+): boolean {
+  if (!pageTypesForAllowed(types as readonly AllowedType[]).includes(page.type)) return false;
+  const marker = page.frontmatter?.conversation_parseable;
+  if (falseyFlag(marker)) return false;
+  if (!requireExplicitParseable) return true;
+  return page.type === 'conversation' || truthyFlag(marker);
+}
 
 async function resolveTypesFromConfig(
   engine: BrainEngine,
@@ -996,8 +1037,11 @@ async function processPage(
       );
     }
   }
-  const allSegments = splitIntoSegments(messages);
-  const segments = splitIntoSegments(messages, { sinceIso });
+  // Collector metadata may tighten or widen the default segmentation gap
+  // without changing the parser.
+  const gapMinutes = pageSegmentGapMinutes(page);
+  const allSegments = splitIntoSegments(messages, { gapMinutes });
+  const segments = splitIntoSegments(messages, { sinceIso, gapMinutes });
   if (segments.length === 0) {
     state.result.pages_skipped++;
     if (
@@ -1332,6 +1376,7 @@ export async function runExtractConversationFactsCore(
   }
 
   const types = await resolveTypesFromConfig(engine, opts.types);
+  const requireExplicitParseable = await requireParseableConversationFlag(engine);
   const dryRun = !!opts.dryRun;
   const sleepMs = opts.sleepMs ?? DEFAULT_INTER_CALL_SLEEP_MS;
   const segmentLimit = opts.segmentLimit ?? 0;
@@ -1463,7 +1508,7 @@ export async function runExtractConversationFactsCore(
           result.pages_skipped_disappeared++;
           continue;
         }
-        if (!concreteTypes.includes(page.type)) {
+        if (!isConversationFactsEligiblePage(page, types, requireExplicitParseable)) {
           result.pages_skipped++;
           continue;
         }
@@ -1475,7 +1520,7 @@ export async function runExtractConversationFactsCore(
         result.pages_skipped_disappeared++;
         return;
       }
-      if (!concreteTypes.includes(page.type)) {
+      if (!isConversationFactsEligiblePage(page, types, requireExplicitParseable)) {
         result.pages_skipped++;
         return;
       }
@@ -1504,7 +1549,11 @@ export async function runExtractConversationFactsCore(
           });
           if (batch.length === 0) break;
 
-          let claimable = batch;
+          let claimable = batch.filter((page) =>
+            isConversationFactsEligiblePage(page, types, requireExplicitParseable)
+          );
+          result.pages_skipped += batch.length - claimable.length;
+
           // Checkpoints are an intra-page cursor; fresh durable outcomes are
           // the page-level selection authority and survive checkpoint GC.
           if (!opts.force && claimable.length > 0) {

@@ -22,12 +22,16 @@ export async function computeConversationFormatCoverageCheck(
     const { parseConversation } = await import('../../../core/conversation-parser/parse.ts');
     // Single source of truth for the conversation-facts type allowlist (#4135).
     const allowedTypes = ALLOWED_TYPES;
+    const { requireParseableConversationFlag, isConversationFactsEligiblePage } = await import('../../extract-conversation-facts.ts');
+    const requireExplicitParseable = await requireParseableConversationFlag(engine);
     // PageFilters supports singular `type` only; iterate the allowed types
     // and cap at ~50/each to land at ~200 total max.
     const sample: import('../../../core/types.ts').Page[] = [];
     for (const t of allowedTypes) {
       const slice = await engine.listPages({ limit: 50, type: t as import('../../../core/types.ts').PageType });
-      sample.push(...slice);
+      sample.push(...slice.filter((page) =>
+        isConversationFactsEligiblePage(page, allowedTypes, requireExplicitParseable)
+      ));
     }
     if (sample.length === 0) {
       return {
