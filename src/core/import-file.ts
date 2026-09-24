@@ -630,7 +630,7 @@ export async function importFromContent(
   // formula (byte-parity pinned by test/content-hash-parity-3694.test.ts).
   // Sort tags in place first to preserve the pre-#3694 downstream behavior
   // (parsedPage.tags was sorted by the old inline `.sort()` mutation).
-  if (opts.prepare) opts.prepareFrontmatter?.(parsed);
+  opts.prepareFrontmatter?.(parsed);
   parsed.tags.sort();
   const hash = contentHash({
     title: parsed.title,

@@ -99,9 +99,9 @@ function baseOpts(paths: string[], extra: Record<string, unknown> = {}) {
 }
 
 /** Synthetic openclaw-format session with N large messages. */
-function writeBigAgentSession(dir: string, id: string, messageCount: number): string {
+function writeBigAgentSession(dir: string, id: string, messageCount: number, startTs = '2026-08-10T08:00:00.000Z'): string {
   const lines: string[] = [
-    JSON.stringify({ type: 'session', version: 3, id, timestamp: '2026-08-10T08:00:00.000Z', cwd: '/tmp' }),
+    JSON.stringify({ type: 'session', version: 3, id, timestamp: startTs, cwd: '/tmp' }),
   ];
   const filler = 'lorem widget fact '.repeat(Math.ceil((MESSAGE_CHAR_CAP - 100) / 18));
   for (let i = 0; i < messageCount; i++) {
@@ -839,5 +839,55 @@ describe('raw_data follows the page soft-delete', () => {
 
     expect(await engine.restorePage(slug, { sourceId: 'default' })).toBe(true);
     expect((await engine.getRawData(slug, undefined, { sourceId: 'default' })).length).toBeGreaterThan(0);
+  });
+});
+
+describe('canonical slug on re-ingest (#5431 identity moves)', () => {
+  test('a moved display slug updates the existing page in place and keeps foreign frontmatter keys', async () => {
+    const p = writeBigAgentSession(tmp, 'movesession-01', 5);
+    const r1 = await runTranscriptsIngest(engine, baseOpts([p]));
+    expect(r1.pages.imported).toBe(1);
+    const base = buildTranscriptSlug('openclaw', '2026-08-10T08:00:00.000Z', {
+      sessionId: 'movesession-01',
+    });
+    // Another tool stamps a flag the collector does not own.
+    await engine.executeRaw(
+      `UPDATE pages SET frontmatter = frontmatter || $1::text::jsonb WHERE source_id='default' AND slug=$2`,
+      [JSON.stringify({ reviewed: true }), base],
+    );
+    // Same session id, corrected start date + appended messages → the display
+    // slug moves, but frontmatter.id stays stable.
+    const moved = writeBigAgentSession(join(tmp), 'movesession-01', 8, '2026-08-11T08:00:00.000Z');
+    const r2 = await runTranscriptsIngest(engine, baseOpts([moved]));
+    expect(r2.sessionsImported).toBe(1);
+    // The existing page was UPDATED in place (new content landed — not a
+    // dedup skip under a second slug).
+    const updated = await engine.getPage(base, { sourceId: 'default' });
+    expect(updated).not.toBeNull();
+    expect(updated!.compiled_truth).toContain('marker-7');
+    expect((updated!.frontmatter as Record<string, unknown>).reviewed).toBe(true);
+    const movedBase = buildTranscriptSlug('openclaw', '2026-08-11T08:00:00.000Z', {
+      sessionId: 'movesession-01',
+    });
+    expect(await engine.getPage(movedBase, { sourceId: 'default' })).toBeNull();
+  });
+
+  test('stale parts stranded under an old base slug are reconciled by session id', async () => {
+    const big = writeBigAgentSession(tmp, 'stalemove-01', 150);
+    const r1 = await runTranscriptsIngest(engine, baseOpts([big]));
+    const parts = r1.pages.imported;
+    expect(parts).toBeGreaterThan(1);
+    const oldBase = buildTranscriptSlug('openclaw', '2026-08-10T08:00:00.000Z', {
+      sessionId: 'stalemove-01',
+    });
+    // Shrink to one part AND move the start date: higher parts are stranded
+    // under the old base where a slug-prefix scan would never find them.
+    const small = writeBigAgentSession(join(tmp), 'stalemove-01', 2, '2026-08-11T08:00:00.000Z');
+    const r2 = await runTranscriptsIngest(engine, baseOpts([small]));
+    expect(r2.sessionsImported).toBe(1);
+    expect(r2.partsDeleted).toBe(parts - 1);
+    expect(await engine.getPage(oldBase, { sourceId: 'default' })).not.toBeNull();
+    expect(await engine.getPage(`${oldBase}-p2`, { sourceId: 'default' })).toBeNull();
+    expect(await engine.getPage(`${oldBase}-p${parts}`, { sourceId: 'default' })).toBeNull();
   });
 });

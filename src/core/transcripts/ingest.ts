@@ -145,6 +145,25 @@ function lastMessageTs(messages: Array<{ timestamp: string }>): string {
 
 const RUN_ABORT_MARKER = 'transcripts-ingest run abort';
 
+/** A part's frontmatter.id (`<harness>-<session-hash>-p<N>`) is stable across
+ * title/start-date changes that move the rendered slug — resolve the page that
+ * already exists so a re-ingest updates it instead of dedup-skipping under a
+ * new slug, and so keys other tools stamped on it can be carried forward. */
+async function canonicalTranscriptPage(
+  engine: BrainEngine, sourceId: string, frontmatterId: string,
+): Promise<{ slug: string; frontmatter: Record<string, unknown> } | null> {
+  const rows = await engine.executeRaw<{ slug: string; frontmatter: unknown }>(
+    `SELECT slug, frontmatter FROM pages
+     WHERE source_id = $1 AND deleted_at IS NULL AND frontmatter->>'id' = $2`,
+    [sourceId, frontmatterId]);
+  const row = rows[0];
+  if (!row) return null;
+  const fm = typeof row.frontmatter === 'string'
+    ? (JSON.parse(row.frontmatter) as Record<string, unknown>)
+    : (row.frontmatter as Record<string, unknown> | null);
+  return { slug: row.slug, frontmatter: fm ?? {} };
+}
+
 function isPerSessionImportError(err: unknown): boolean {
   // 'invalid byte sequence' is Postgres rejecting the DATA (e.g. a U+0000 a
   // sanitizer missed, #4392) — one bad session, never a DB-down signal.
@@ -278,21 +297,33 @@ export async function runTranscriptsIngest(
             // path would import.
             newWorkSessions++;
           } else {
-            // The RESOLVED base slug: identity dedup can resolve part 1 to an
-            // EXISTING page under a different slug (same session id, changed
-            // title or corrected start date) — raw-data writes and stale-part
-            // reconciliation must follow the page that actually exists, or
-            // every re-run aborts on a nonexistent slug.
+            // The RESOLVED base slug: a session whose title or start date
+            // changed re-renders at a different base slug, but frontmatter.id
+            // (harness + session id + part) is stable — import each part at the
+            // page that already exists so changed content UPDATES it instead of
+            // being dedup-skipped under the new slug. Raw-data writes and
+            // stale-part reconciliation follow the page that actually exists.
             let resolvedBaseSlug = rendered.baseSlug;
             for (const part of rendered.parts) {
               try {
-                const r = await importFromContent(engine, part.slug, part.content, {
+                const canon = await canonicalTranscriptPage(engine, opts.sourceId, part.frontmatterId);
+                const targetSlug = canon?.slug ?? part.slug;
+                // The collector owns only the keys it renders — preserve
+                // frontmatter keys other tools stamped on the conversation
+                // page (review/validation flags, custom metadata).
+                const carriedFm = canon?.frontmatter ?? {};
+                const r = await importFromContent(engine, targetSlug, part.content, {
                   noEmbed: !opts.embed,
                   sourceId: opts.sourceId,
                   activePack: opts.activePack,
                   source_kind: `transcript:${session.meta.harness}`,
                   source_uri: path,
                   ingested_via: 'cli:transcripts-ingest',
+                  prepareFrontmatter: page => {
+                    for (const [k, v] of Object.entries(carriedFm)) {
+                      if (!(k in page.frontmatter)) (page.frontmatter as Record<string, unknown>)[k] = v;
+                    }
+                  },
                 });
                 outcome.statuses.push(r.status);
                 if (r.status === 'imported') result.pages.imported++;
@@ -385,15 +416,19 @@ export async function runTranscriptsIngest(
             // holes that a first-miss or bounded-miss probe walks past) and
             // run on EVERY pass including all-skipped re-runs, because a
             // prior run can have died between the page writes and this step.
-            const partRows = await engine.executeRaw<{ slug: string }>(
-              `SELECT slug FROM pages
-               WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE $2`,
-              [opts.sourceId, `${resolvedBaseSlug}-p%`],
+            // Keyed on transcript_import.session_id + harness, NOT a slug
+            // prefix: a title/date change splits the parts across two base
+            // slugs and a prefix scan would strand the old-base halves.
+            const partRows = await engine.executeRaw<{ slug: string; part: string | null }>(
+              `SELECT slug, frontmatter->'transcript_import'->>'part' AS part
+               FROM pages
+               WHERE source_id = $1 AND deleted_at IS NULL
+                 AND frontmatter->'transcript_import'->>'harness' = $2
+                 AND frontmatter->'transcript_import'->>'session_id' = $3`,
+              [opts.sourceId, session.meta.harness, session.meta.sessionId],
             );
             for (const row of partRows) {
-              const suffix = row.slug.slice(resolvedBaseSlug.length);
-              const m = /^-p(\d+)$/.exec(suffix);
-              const num = m ? Number(m[1]) : NaN;
+              const num = Number(row.part);
               if (Number.isFinite(num) && num > rendered.parts.length) {
                 await engine.deletePage(row.slug, { sourceId: opts.sourceId });
                 result.partsDeleted++;
