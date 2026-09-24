@@ -28,6 +28,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
+import { loadConfig, loadConfigWithEngine } from '../config.ts';
 import { importFromContent } from '../import-file.ts';
 import { canonicalJson } from '../remediation-step.ts';
 import type { TranscriptAdapter, TranscriptFormat } from './types.ts';
@@ -179,6 +180,13 @@ export async function runTranscriptsIngest(
   // otherwise repeat thousands of times.
   const redactionPatterns = loadImportRedactionPatterns(opts.userPatternsPath);
 
+  // #5427: the part target is sized against the EFFECTIVE warn line (config
+  // file/DB/env), not just the compiled default — an operator-lowered warn
+  // still must not turn every re-ingest into PAGE_OVERSIZE_WARN noise.
+  const baseCfg = loadConfig();
+  const sanityCfg = baseCfg === null ? null : (await loadConfigWithEngine(engine, baseCfg))?.content_sanity ?? {};
+  const renderBytes = { bytesWarn: sanityCfg?.bytes_warn, bytesBlock: sanityCfg?.bytes_block };
+
   const total = opts.paths.length;
   let done = 0;
   let newWorkSessions = 0;
@@ -264,7 +272,7 @@ export async function runTranscriptsIngest(
           });
           outcome.redactions = redacted.redactionCount;
           outcome.imperatives = redacted.imperativesFlagged;
-          const rendered = renderSessionParts(redacted, { sourcePath: path });
+          const rendered = renderSessionParts(redacted, { sourcePath: path, ...renderBytes });
           outcome.baseSlug = rendered.baseSlug;
           outcome.parts = rendered.parts.length;
 
