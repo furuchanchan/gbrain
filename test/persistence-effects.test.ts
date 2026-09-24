@@ -199,3 +199,32 @@ test('Git retry disables legacy hooks, preserves unrelated staging and never reb
   expect(await publishGitEffect(root, 'page.md')).toMatchObject({ git: 'unchanged' });
   expect(git(root, ['rev-parse', 'HEAD'])).toBe(head);
 });
+
+test('metafile-backed pages cannot wedge the mirror scan or sibling effects', async () => {
+  const f = await fixture(body());
+  // 'resolver' sorts between 'page' and 'z-later'; its canonical file is a
+  // sync-excluded metafile whose contents legitimately diverge from the DB page.
+  await engine.putPage('resolver', page('Legacy resolver truth'), { sourceId: f.sourceId });
+  await engine.executeRaw("UPDATE pages SET source_path='RESOLVER.md' WHERE source_id=$1 AND slug='resolver'", [f.sourceId]);
+  writeFileSync(join(f.root, 'RESOLVER.md'),
+    '# Resolver\n\n<!-- BEGIN gbrain-brain-durability (managed; do not edit between markers) -->\nmanaged\n<!-- END gbrain-brain-durability -->\n');
+  await engine.putPage('z-later', page('Later'), { sourceId: f.sourceId });
+  const later = (await engine.readPageSnapshot('z-later', { sourceId: f.sourceId }))!;
+  writeFileSync(join(f.root, 'z-later.md'), serializePageToMarkdown(later.page, later.tags));
+  const row = await withdraw(f); await onlyEffects(row.id);
+  await engine.executeRaw("UPDATE persistence_effects SET next_attempt_at=now()+interval '1 hour' WHERE request_id=$1::uuid AND kind<>'withdrawal-mirror'", [row.id]);
+  for (let i = 0; i < 10; i++) {
+    await runPersistenceEffects(engine, config, { hostId, limit: 5 });
+    const [m] = await engine.executeRaw<{ state: string }>("SELECT state FROM persistence_effects WHERE request_id=$1::uuid AND kind='withdrawal-mirror'", [row.id]);
+    if (m.state === 'committed') break;
+  }
+  const [mirror] = await engine.executeRaw<{ state: string; error_code: string | null; data: { after_slug?: string } }>(
+    "SELECT state,error_code,data FROM persistence_effects WHERE request_id=$1::uuid AND kind='withdrawal-mirror'", [row.id]);
+  expect(mirror.state).toBe('committed'); expect(mirror.error_code).toBeNull();
+  // The mirror no longer gates the request's git/embedding effects behind a parked cursor.
+  await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE request_id=$1::uuid', [row.id]);
+  await runPersistenceEffects(engine, config, { hostId, limit: 8 });
+  const [git] = await engine.executeRaw<{ attempts: number; error_code: string | null }>(
+    "SELECT attempts,error_code FROM persistence_effects WHERE request_id=$1::uuid AND kind='git'", [row.id]);
+  expect(git.attempts).toBeGreaterThan(0); expect(git.error_code).toBeNull();
+});

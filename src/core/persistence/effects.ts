@@ -15,6 +15,7 @@ import { assertEmbeddingEnabled, EmbeddingDisabledError } from '../embedding-dim
 import { validateEmbeddingCreds, EmbeddingCredentialError } from '../embed-preflight.ts';
 import { wrapChunkTextsForStoredMode } from '../embedding-context.ts';
 import { isEmbedRetriableError, MAX_RATE_LIMIT_RETRIES, rateLimitDelayMs, restampIfDemotedToTitleTier, transientBackoffMs } from '../embed-retry.ts';
+import { unsyncableReason } from '../sync.ts';
 import { AIConfigError, normalizeAIError } from '../ai/errors.ts';
 import { isAIInvocationPolicyError, withAIInvocationPreflight } from '../ai/invocation-guard.ts';
 import { quoteIdentifier } from '../search/embedding-column.ts';
@@ -68,9 +69,21 @@ async function materializeAndAdvance(engine: BrainEngine, effect: PersistenceEff
   });
 }
 
+/**
+ * Pages whose source_path is a metafile (`SYNC_SKIP_FILES`) are deliberately
+ * excluded from sync writes, so their file and DB copies legitimately diverge
+ * and a file-target canonical comparison can never succeed. Scans skip them
+ * instead of parking the cursor on an unresolvable page.
+ */
+function isMetafileSnapshot(snapshot: PageSnapshot): boolean {
+  return typeof snapshot.page.source_path === 'string' && snapshot.page.source_path !== ''
+    && unsyncableReason(snapshot.page.source_path) === 'metafile';
+}
+
 async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, binding: WorktreeBinding | null, opts: EffectWorkerOptions): Promise<void> {
   const snapshot = await selectedEffectPage(engine, effect);
   if (!snapshot) { await completeEffect(engine, effect); return; }
+  if (isMetafileSnapshot(snapshot)) { await finishPage(engine, effect, snapshot, { skipped: 'metafile' }); return; }
   if (snapshot.sourceIncarnation !== effect.source_incarnation) throw new OperationError('source_changed', 'The mirror source was replaced.');
   const content = serializePageToMarkdown(snapshot.page, snapshot.tags);
   const file = binding?.local_path ? await prepareFileTarget(engine, { ...effect, slug: snapshot.page.slug }, snapshot, content, opts.hostId, { allowMissing: true }) : undefined;
@@ -95,6 +108,7 @@ async function gitPage(engine: BrainEngine, effect: PersistenceEffect, binding: 
   let path: string;
   if (effect.data.source_scan) {
     if (!snapshot) { await completeEffect(engine, effect); return; }
+    if (isMetafileSnapshot(snapshot)) { await finishPage(engine, effect, snapshot, { git: 'skipped', reason: 'metafile' }); return; }
     const file = await prepareFileTarget(engine, { ...effect, slug: snapshot.page.slug }, snapshot,
       snapshot.page.deleted_at ? null : serializePageToMarkdown(snapshot.page, snapshot.tags), opts.hostId, { allowMissing: true });
     if (!file) throw new OperationError('source_changed', 'The Git binding changed.');
