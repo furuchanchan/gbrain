@@ -66,3 +66,48 @@ describe('ENTITY_HINTS_CAP (#4209)', () => {
     expect(withNone.entity_hints_dropped).toBe(0);
   });
 });
+
+describe('job_binding attestation (#5278)', () => {
+  test('skipped envelopes carry recorded:false with the skip reason', async () => {
+    const r = await operationsByName.extract_facts!.handler(ctx(), {
+      turn_text: 'x', is_dream_generated: true,
+    }) as { skipped: string; job_binding: { recorded: boolean; reason?: string } };
+    expect(r.job_binding.recorded).toBe(false);
+    expect(r.job_binding.reason).toBe('dream_generated');
+  });
+
+  test('no chat model → extraction_unavailable records false with reason', async () => {
+    const LONG = 'this is a real meeting note longer than 80 chars '.repeat(3);
+    const r = await operationsByName.extract_facts!.handler(ctx(), {
+      turn_text: LONG,
+    }) as { skipped: string; job_binding: { recorded: boolean; reason?: string } };
+    expect(r.skipped).toBe('extraction_unavailable');
+    expect(r.job_binding.recorded).toBe(false);
+    expect(r.job_binding.reason).toBe('extraction_unavailable');
+  });
+
+  test('a recorded extraction binds to the durable fact ids it wrote', async () => {
+    const { __setChatTransportForTests } = await import('../src/core/ai/gateway.ts');
+    __setChatTransportForTests(async () => ({
+      text: JSON.stringify({ facts: [{ fact: 'binding-probe-fact', kind: 'event', entity: 'people/binding-probe', confidence: 1.0 }] }),
+      blocks: [], stopReason: 'end',
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      model: 'test:stub', providerId: 'test',
+    }));
+    try {
+      const LONG = 'this is a real meeting note longer than 80 chars '.repeat(3);
+      const r = await operationsByName.extract_facts!.handler(ctx(), {
+        turn_text: LONG,
+      }) as {
+        inserted: number; fact_ids: number[];
+        job_binding: { recorded: boolean; fact_ids: number[]; recorded_at?: string };
+      };
+      expect(r.job_binding.recorded).toBe(true);
+      expect(r.job_binding.fact_ids).toEqual(r.fact_ids);
+      expect(r.fact_ids.length).toBeGreaterThan(0);
+      expect(Number.isFinite(Date.parse(r.job_binding.recorded_at ?? ''))).toBe(true);
+    } finally {
+      __setChatTransportForTests(null);
+    }
+  });
+});

@@ -57,6 +57,14 @@ const extract_facts: Operation = {
     const { isFactsExtractionEnabled } = await import('../facts/extract.ts');
     const { runFactsPipeline } = await import('../facts/backstop.ts');
 
+    // #5278: job_binding attestation on EVERY envelope. Strict callers
+    // distinguish "recorded" / "not recorded" / "engine predates the
+    // contract" (absent field). The binding is honest state, not a token:
+    // recorded=true points at the durable fact rows just written (the same
+    // ids the envelope already returns — attestable via get_fact); every
+    // short-circuit records false with the skip reason.
+    const notRecorded = (reason: string) => ({ job_binding: { recorded: false, reason } });
+
     // #4209: named-cap accounting. The extractor prompt forwards only the
     // first ENTITY_HINTS_CAP hints; report used/dropped on EVERY envelope so
     // over-cap hints are visible in the contract instead of silently eaten.
@@ -71,7 +79,7 @@ const extract_facts: Operation = {
     // to false. Returns zero-counts envelope so callers see a clean
     // success rather than a 'permission_denied' false alarm.
     if (!(await isFactsExtractionEnabled(ctx.engine))) {
-      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'extraction_disabled', ...hintAccounting };
+      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'extraction_disabled', ...hintAccounting, ...notRecorded('extraction_disabled') };
     }
 
     // v0.31.2: routed through the shared pipeline (PR1 commit 9). Anti-loop
@@ -79,7 +87,7 @@ const extract_facts: Operation = {
     // an explicit user op without a parsedPage — the eligibility predicate
     // doesn't apply, but the dream-generated guard still does.
     if (p.is_dream_generated === true) {
-      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'dream_generated', ...hintAccounting };
+      return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'dream_generated', ...hintAccounting, ...notRecorded('dream_generated') };
     }
 
     const sourceId = ctx.sourceId ?? 'default';
@@ -142,6 +150,7 @@ const extract_facts: Operation = {
         inserted: 0, duplicate: 0, superseded: 0, fact_ids: [],
         ...hintAccounting,
         skipped: 'extraction_unavailable',
+        ...notRecorded('extraction_unavailable'),
         agent_action:
           'No server-side chat model is available. You are an LLM: extract the facts ' +
           'yourself (up to ~10 per turn) and write each one with the `remember` verb: ' +
@@ -158,6 +167,7 @@ const extract_facts: Operation = {
         ...hintAccounting,
         skipped: 'extraction_failed',
         reason: r.skipped_reason,
+        ...notRecorded(r.skipped_reason),
         agent_action:
           `The extractor failed on this turn (${r.skipped_reason}). You may extract the ` +
           'facts manually via the `remember` verb (one claim per call, provenance ' +
@@ -172,6 +182,11 @@ const extract_facts: Operation = {
       fact_ids: r.fact_ids,
       ...(r.write_requests ? { write_requests: r.write_requests } : {}),
       ...hintAccounting,
+      job_binding: {
+        recorded: true,
+        fact_ids: r.fact_ids,
+        recorded_at: new Date().toISOString(),
+      },
     };
   },
 };
