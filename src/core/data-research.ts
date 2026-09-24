@@ -384,6 +384,10 @@ const EMAIL_HTML_TAGS = new Set((
 
 function stripEmailMarkup(text: string): string {
   return text
+    // Downlevel-revealed conditional comments (<![if x]>...<![endif]>)
+    // carry no <!-- --> wrapper, so their body must be dropped along with
+    // the markers — generic tag stripping would keep the conditional text.
+    .replace(/<!\[if[^\]]*\]>[\s\S]*?<!\[endif[^\]]*\]>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(style|script)(?=[\s>])(?:[^<>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/\1\s*>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')

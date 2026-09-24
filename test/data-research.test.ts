@@ -317,6 +317,25 @@ describe('data-research', () => {
       expect(stripEmailHtml(html)).toBe('Visible');
     });
 
+    test.each([
+      // Downlevel-revealed conditional comments: the <![if]>..<![endif]>
+      // markers have no <!-- --> wrapper, so comment stripping only eats
+      // the delimiters and leaks the conditional body (#5327).
+      'Real<!-- tracking comment -->body<![if mso]>outlook only junk<![endif]>tail',
+      'Real&lt;!-- tracking comment --&gt;body&lt;![if mso]&gt;outlook only junk&lt;![endif]&gt;tail',
+      'Realbody<![if lte IE 8]>legacy fallback text<![endif]>tail',
+      'Realbody&#60;![if mso]&#62;numeric-encoded junk&#60;![endif]&#62;tail',
+    ])('removes downlevel-revealed conditional blocks and their contents: %s', (html) => {
+      expect(stripEmailHtml(html)).toBe('Realbodytail');
+    });
+
+    test('keeps a bare <![if]> opener harmless when the block never closes', () => {
+      // Malformed input: no <![endif]>. The opener is discarded like any
+      // other unrecognized <![...]> markup; the text stays visible rather
+      // than being swallowed.
+      expect(stripEmailHtml('a<![if mso]>keep me')).toBe('akeep me');
+    });
+
     test('caps encoded input before decoding or removing hidden blocks', () => {
       const prefix = '&lt;style&gt;hidden&lt;/style&gt;&lt;p&gt;';
       const html = prefix + 'x'.repeat(500 * 1024 - prefix.length) + 'outside-the-cap';
