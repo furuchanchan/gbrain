@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.49] - 2026-09-26
+
+### Fixed
+
+- Managed sync: an unfinished cursor left behind under a rotated cursor key
+  is no longer reported by `gbrain doctor` as an unresolved sync failure
+  forever. Resume and `--retry-failed` recompute the key from the current
+  authority, so once a newer run for the same source completes under a
+  different authority the stale cursor can never be reached — it is now
+  treated as superseded instead of a permanent failure. (#5459)
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
