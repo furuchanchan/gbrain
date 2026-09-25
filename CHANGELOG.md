@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.27] - 2026-09-26
+
+**Renaming a slug keeps its bindings.** `updateSlug` moved the page row but left slug-keyed bindings pointing at the old name and recorded no alias, so lookups after a rename went cold. The rename now moves bindings and registers a rename alias in one transaction.
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
