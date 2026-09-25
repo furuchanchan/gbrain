@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.57.0.26] - 2026-09-26
+## [0.57.0.26] - 2026-09-25
 
 **Re-ingesting transcripts updates moved sessions in place.** Re-running transcript ingest duplicated or orphaned sessions whose files were renamed, and rewrote frontmatter it did not own. Sessions now update in place and foreign frontmatter keys are preserved.
 
