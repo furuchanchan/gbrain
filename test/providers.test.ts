@@ -148,6 +148,12 @@ describe('resolved base URL surface (#5302)', () => {
     expect(out).toContain('provider_base_urls.mistral');
   });
 
+  test('output names its resolution scope and the DB-plane verification path', () => {
+    const out = formatEnvOutput(mistral(), {});
+    expect(out).toContain('DB-plane `provider_base_urls.*` overrides are not read here');
+    expect(out).toContain('gbrain config get provider_base_urls.mistral');
+  });
+
   test('file-plane provider_base_urls wins for openai-compat recipes', () => {
     const out = formatEnvOutput(mistral(), {}, {
       provider_base_urls: { mistral: 'https://api.eu.mistral.ai/v1' },
