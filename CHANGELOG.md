@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.17] - 2026-09-26
+
+**`gbrain providers env` now shows which endpoint it will actually hit.** The command listed which env vars were set but never the resolved base URL — a broken override only surfaced as a live probe failure. It now prints the resolved URL with its provenance layer: a file-plane `provider_base_urls` override, a known `*_BASE_URL` env var, or the recipe default, plus the `gbrain config set provider_base_urls.<id>` override path. The mistral recipe documents the regional-inference endpoint the display surfaces.
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
