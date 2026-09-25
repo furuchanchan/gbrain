@@ -50,9 +50,10 @@ export function envReady(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
- * #5302: resolve which base URL the gateway will actually hit for a recipe,
- * with provenance — until now there was no non-destructive way to see it
- * (a broken-override negative test was the only check).
+ * #5302: resolve the base URL a recipe lands on across file/env/default
+ * planes, with provenance — until now there was no non-destructive way to
+ * see it (a broken-override negative test was the only check). DB-plane
+ * overrides are not read by this command.
  *
  * Resolution mirrors the real paths:
  *  - openai-compat recipes: `provider_base_urls.<id>` (file plane; a
@@ -125,7 +126,8 @@ export function formatEnvOutput(
   if (resolved) {
     lines.push('');
     lines.push(`Base URL: ${resolved.url}  (${resolved.source})`);
-    lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
+    lines.push('  Resolution scope: file plane, env vars, built-in defaults — DB-plane `provider_base_urls.*` overrides are not read here.');
+    lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists — verify via \`gbrain config get provider_base_urls.${recipe.id}\`) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
   }
   if (recipe.auth_env?.setup_url) {
     lines.push('');
