@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.30] - 2026-09-26
+
+**Doctor checks that could not run say so.** Checks that errored internally reported `ok`, so a broken credential or missing table could silently pass health. They now report `not verified` with the real reason, and onboarding copy no longer claims a check ran when it did not.
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
