@@ -10,6 +10,20 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.41] - 2026-09-26
+
+**Incremental calendar sync now respects the window — plus `g_future_days`.**
+
+After a source's first windowed list, every sync went incremental, and
+Google's syncToken mode can't carry timeMin/timeMax — so any change to a
+recurring series replayed every expanded instance, importing ~700
+phantom pages per RSVP (search noise, and enough managed-writer receipts
+to fill the default queue cap). The sweep now filters every returned
+instance by the window on both paths; the forward edge is a per-source
+`g_future_days` key (default 60, `--future-days` on `sources add`); and a
+`--full` reconcile soft-deletes live calendar pages outside the window so
+existing overflow drains instead of re-importing forever.
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
