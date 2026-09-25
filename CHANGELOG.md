@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.57.0.16] - 2026-09-26
+## [0.57.0.16] - 2026-09-25
 
 **The in-process extraction queue lane now leaves a success receipt.** A completed `facts:absorb` run used to be indistinguishable from a silent skip — the queue lane discarded the pipeline result, so nothing recorded that extraction finished. A clean finish now writes an ingest row under the `facts:absorb:complete` source type with the page body hash, model, and inserted/duplicate/superseded counts plus the fact ids. A separate source type keeps absorb-failure grouping from counting successes as failures; a logging failure only warns and never aborts the run.
 
