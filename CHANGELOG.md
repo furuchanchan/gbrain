@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.57.0.48] - 2026-09-26
+## [0.57.0.48] - 2026-09-25
 
 **Dream synthesis and propose-takes now separate who said what.** On user↔assistant transcripts, reflection pages and take proposals attributed assistant-suggested deadlines, evidence fields, and next steps to the user, and claims later withdrawn in the same page survived as if still standing. The synthesize output policy now keeps speaker and timing explicit (a later correction overrides earlier text), the take-extraction prompt drops withdrawn or narrowed claims and only attributes assistant judgments to `holder 'brain'`, and `PROPOSE_TAKES_PROMPT_VERSION` was bumped so cached proposals re-extract.
 
