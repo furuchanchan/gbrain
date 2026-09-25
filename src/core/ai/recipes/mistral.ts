@@ -11,9 +11,10 @@ import type { Recipe } from '../types.ts';
  * the EU for some features. The regional-inference endpoint
  * `https://api.eu.mistral.ai/v1` (billed at 1.1x list) is the mechanism
  * that assures the inference region; opt in via
- * `gbrain config set provider_base_urls.mistral https://api.eu.mistral.ai/v1`.
- * `gbrain providers env mistral` shows the resolved URL and which layer
- * set it.
+ * `gbrain config set provider_base_urls.mistral https://api.eu.mistral.ai/v1`
+ * (DB plane — verify with `gbrain config get provider_base_urls.mistral`;
+ * `gbrain providers env mistral` resolves file/env/default only and does
+ * not read that layer).
  *
  * Verified against the live API on 2026-07-19 (model catalog, embedding
  * dimensions, dimension-parameter rejection, and the batch ceiling — see
