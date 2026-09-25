@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.45] - 2026-09-26
+
+**Withdrawals no longer wedge on the resolver file.**
+
+A withdrawal-mirror scan used to park forever on a legacy page backed by
+`RESOLVER.md` (or any sync-skipped metafile): the file legitimately
+diverges from the stored page — the managed durability block lives only
+in the file — so the mirror kept refusing, and the same request's git
+and embedding follow-ups were never claimed. Metafile-backed pages now
+materialize and advance like missing files, and the managed block is
+never overwritten. (#5396)
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
