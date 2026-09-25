@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.57.0.23] - 2026-09-26
+## [0.57.0.23] - 2026-09-25
 
 **`gbrain list --tsv` escapes cells and `lint --fix` stops inventing dates.** TSV output could carry raw newlines and tabs inside cells, breaking row parsing downstream, and the lint fixer fabricated a `created:` value for pages that had none. Cells are now escaped and lint leaves `created` alone rather than guessing.
 
