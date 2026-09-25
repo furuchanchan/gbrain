@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.29] - 2026-09-26
+
+**`push-status` attribution stays inside the workspace root.** The status command could report pushes from a parent checkout when run inside a nested root. Attribution is now scoped to the current workspace root.
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
