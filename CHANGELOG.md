@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.57.0.47] - 2026-09-26
+## [0.57.0.47] - 2026-09-25
 
 **`think --save` now writes into the resolved source and cites only gathered pages.** A saved synthesis always landed in source `default` regardless of `--source`, evidence rows were bound by bare slug — cross-source collisions could cite a page that was never gathered — and no `.md` file was written to the source repo. `persistSynthesis` now takes the resolved source, `persistCitations` resolves ids from a gathered-page map (ambiguous slugs and un-gathered citations are reported, not guessed), and `--save` refuses `__all__` scope.
 
