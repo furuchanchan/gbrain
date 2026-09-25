@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.33] - 2026-09-26
+
+**`gbrain extract-conversation-facts --json` now works.**
+
+The generated flag registry listed `--json` for this command, but the
+argument parser rejected it (`Unknown flag: --json`, exit 1) — a script
+written against the registry failed silently when stderr was suppressed.
+The flag is implemented: the run summary prints as one JSON object with
+the same counters as the `Done:` report (`dry_run`, `sources`,
+`spent_usd`, `budget_exhausted`, and every aggregate page/fact field).
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
