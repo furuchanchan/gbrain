@@ -114,6 +114,30 @@ describe('#5364 diagnostics across workers, sources, CLI, and cycle', () => {
     }
   });
 
+  test('CLI --json emits the run summary as one JSON object (#5448)', async () => {
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runExtractConversationFacts(engine, ['--dry-run', '--json', '--sleep', '0', '--types', 'conversation']);
+      const lines = log.mock.calls.map(call => call.join(' '));
+      const jsonLine = lines.find(l => l.trim().startsWith('{'));
+      expect(jsonLine).toBeDefined();
+      const parsed = JSON.parse(jsonLine!);
+      expect(parsed.dry_run).toBe(true);
+      expect(parsed.segments_processed).toBe(6);
+      expect(parsed.pages_processed).toBe(6);
+      expect(parsed.pages_considered).toBe(10);
+      expect(parsed.pages_skipped).toBe(4);
+      expect(parsed.pages_skipped_unparsed).toBe(2);
+      expect(parsed.pages_skipped_insufficient_turns).toBe(2);
+      expect(parsed.facts_extracted).toBe(0);
+      expect(parsed.budget_exhausted).toBe(false);
+      expect(lines.join('\n')).not.toContain('Done:');
+      expect(calls).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   test('cycle totals equal exact per-source subsets in dry-run and durable replay', async () => {
     const dry = await runPhaseConversationFactsBackfill(engine, { dryRun: true });
     expect(dry.status).toBe('ok');

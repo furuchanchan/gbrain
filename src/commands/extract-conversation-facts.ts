@@ -1769,6 +1769,7 @@ interface ParsedArgs {
   workers?: number;
   yes?: boolean;
   help?: boolean;
+  json?: boolean;
   error?: string;
 }
 
@@ -1778,6 +1779,7 @@ function parseArgs(args: string[]): ParsedArgs {
     const a = args[i];
     if (a === '--help' || a === '-h') { out.help = true; continue; }
     if (a === '--dry-run') { out.dryRun = true; continue; }
+    if (a === '--json') { out.json = true; continue; }
     if (a === '--force') { out.force = true; continue; }
     if (a === '--yes' || a === '-y') { out.yes = true; continue; }
     if (a === '--override-disabled') { out.overrideDisabled = true; continue; }
@@ -1854,6 +1856,7 @@ Options:
                          (falls back to the full allowlist).
   --slug <slug>          Process a single page (overrides multi-page enumeration).
   --dry-run              Show segmentation + counts; no model calls, DB writes, or checkpoint advance.
+  --json                 Emit the run summary as one JSON object instead of the text report.
   --limit <N>            Cap pages processed (default: all).
   --since <iso>          Only consider messages newer than this ISO timestamp.
   --force                Re-process the target page (clears its resume entry).
@@ -2032,6 +2035,15 @@ export async function runExtractConversationFacts(
     progress.finish();
   }
 
+  if (parsed.json) {
+    console.log(JSON.stringify({
+      dry_run: !!parsed.dryRun,
+      sources: sourceIds.length,
+      spent_usd: totalSpent,
+      budget_exhausted: anyBudgetExhausted,
+      ...aggregate,
+    }, null, 2));
+  } else {
   const outcome = parsed.dryRun
     ? '(dry run) segmentation only; no facts extracted'
     : `extracted ${aggregate.facts_extracted} facts (${aggregate.facts_inserted} inserted)`;
@@ -2083,6 +2095,7 @@ export async function runExtractConversationFacts(
   }
   if (anyBudgetExhausted) {
     console.log(`  Budget cap reached. Re-run with a higher --max-cost-usd to continue.`);
+  }
   }
 
   // v0.41.15.0 (codex #3): exit 3 when pages were skipped due to
