@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.57.0.22] - 2026-09-26
+## [0.57.0.22] - 2026-09-25
 
 **The truth-fence backfill refuses dirty files, not a dirty tree.** The v0.32.2 backfill aborted if any tracked file had uncommitted edits. It now compares each target file against a DB snapshot — unrelated dirty files no longer block — and writes the file and its rows in one transaction, rolling the file back if the write fails.
 
