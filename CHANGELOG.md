@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.57.0.18] - 2026-09-26
+
+**`--segment-limit` boundary rows stop silently.** When a facts segment hit the limit mid-run, extraction stopped without writing the terminal row that marks where it stopped, so a re-run could resume from the wrong place. The boundary now writes the terminal row so re-runs continue deterministically.
+
 ## [0.57.0.0] - 2026-09-24
 
 **Know when an accepted write needs attention.**
