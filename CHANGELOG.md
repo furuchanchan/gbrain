@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.58.1.35] - 2026-09-25
+
+**Purge protects un-stamped archives; doctor ignores archived-source failures.**
+
+Sources archived before the archive timestamp columns existed carried an
+epoch (1970) expiry, so a bare `sources purge` could permanently delete them
+with no grace window — the sweep now skips missing or epoch expiries and
+reports them with restore + re-archive instructions. Doctor's sync_failures
+check stops counting failures on archived sources, which cannot be cleared
+while archived; they are reported as ignored instead of unresolved.
+
 ## [0.58.1.0] - 2026-09-24
 
 **Spend less time rebuilding test fixtures without dropping database coverage.**
