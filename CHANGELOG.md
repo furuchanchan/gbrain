@@ -10,6 +10,20 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.58.1.40] - 2026-09-25
+
+**The symbol resolver's output now reaches search and the CLI.**
+
+`edges-backfill` resolved same-file edges into `edge_metadata`, but no
+read path ever consumed it — resolved edges were treated as unresolved
+everywhere. Now the two-pass structural walk (`--walk-depth`,
+`--near-symbol`) follows the resolved chunk (or ambiguous candidates)
+instead of re-matching the symbol name across every file that defines
+it, `code-callers`/`code-callees` print `[in-file: resolved]` /
+`[in-file: ambiguous]` instead of `[unresolved]`, and `--json` edge rows
+carry `resolution` + `resolved_chunk_id`. The `resolved` flag keeps its
+#3680 meaning (table residency) throughout.
+
 ## [0.58.1.0] - 2026-09-24
 
 **Spend less time rebuilding test fixtures without dropping database coverage.**
