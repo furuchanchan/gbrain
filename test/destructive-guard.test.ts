@@ -394,6 +394,36 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
     expect(remainingPages[0].n).toBe(0);
   });
 
+  test('gbrain#5452 — epoch or missing archive timestamps are never purge-eligible and are reported', async () => {
+    const epochId = 'pe-epoch';
+    const nullId = 'pe-null-expiry';
+    await seedSource(engine, epochId, { withPages: 1 });
+    await seedSource(engine, nullId, { withPages: 1 });
+    await softDeleteSource(engine, epochId);
+    await softDeleteSource(engine, nullId);
+    await engine.executeRaw(
+      `UPDATE sources SET archived_at = '1970-01-01T00:00:00Z', archive_expires_at = '1970-01-01T00:00:00Z' WHERE id = $1`,
+      [epochId],
+    );
+    await engine.executeRaw(
+      `UPDATE sources SET archive_expires_at = NULL WHERE id = $1`,
+      [nullId],
+    );
+    const { purged, blocked } = await purgeExpiredSources(engine);
+    expect(purged).not.toContain(epochId);
+    expect(purged).not.toContain(nullId);
+    expect(blocked.map((b) => b.id)).toEqual(expect.arrayContaining([epochId, nullId]));
+    // Both sources and their pages survive — full contents intact.
+    const intact = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM pages WHERE source_id IN ($1, $2)`,
+      [epochId, nullId],
+    );
+    expect(intact[0].n).toBe(2);
+    // Cleanup: leftover archived rows are reported as suspects by every
+    // later purge sweep in this describe.
+    await engine.executeRaw(`DELETE FROM sources WHERE id IN ($1, $2)`, [epochId, nullId]);
+  });
+
   test('gbrain#4115 — an FK-blocked source is reported and skipped; the deletable one still purges', async () => {
     const blockedId = 'pe-fk-blocked';
     const deletableId = 'pe-fk-deletable';
@@ -457,6 +487,8 @@ describe('soft-delete + restore lifecycle (column-based v0.26.5)', () => {
   test('gbrain#4115 — a source restored between SELECT and DELETE is neither purged nor blocked (review gap G8)', async () => {
     const stub = {
       async executeRaw(sql: string): Promise<Array<{ id: string }>> {
+        // #5452 suspects listing — no epoch/missing-expiry rows here.
+        if (sql.includes('archive_expires_at IS NULL')) return [];
         if (sql.trimStart().startsWith('SELECT')) return [{ id: 'restored-mid-sweep' }];
         return []; // per-id DELETE re-checks the expiry predicate → 0 rows
       },
