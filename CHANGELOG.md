@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.58.1.31] - 2026-09-25
+
+**Legacy facts get a dedup probe before backstop inserts.** Rows written by the old DB-only path were re-inserted by the backstop on every run, duplicating facts. A probe now skips rows the database already holds.
+
 ## [0.58.1.0] - 2026-09-24
 
 **Spend less time rebuilding test fixtures without dropping database coverage.**
