@@ -51,6 +51,16 @@ export interface GoogleSourceState {
    */
   gmail_backfill_floor_ms: number | null;
   gmail_backfill_done: boolean;
+  /**
+   * The window edge (epoch ms) the completed backfill covered — `now -
+   * historyDays` at completion time. Persisted so a widened
+   * `g_history_days` can re-open the backfill for just the newly covered
+   * older slice instead of silently importing nothing. Absent on state
+   * files that predate the field; those seed it from the current window
+   * on the next run (correct unless the window was already widened
+   * before the upgrade).
+   */
+  gmail_backfill_cutoff_ms?: number | null;
   /** Bookmark for the history-expired fallback: newest internalDate imported. */
   gmail_newest_ms: number | null;
   /**

@@ -126,6 +126,7 @@ function emptyState(): GoogleSourceState {
     gmail_history_id: null,
     gmail_backfill_floor_ms: null,
     gmail_backfill_done: false,
+    gmail_backfill_cutoff_ms: null,
     gmail_newest_ms: null,
     calendar_sync_token: null,
     calendar_id: null,
@@ -693,6 +694,29 @@ async function sweepGmail(
     return true;
   };
 
+  // A completed backfill records the window edge it covered
+  // (gmail_backfill_cutoff_ms). Widening g_history_days reopens the
+  // backfill seeded at that edge so the next pass drains ONLY the newly
+  // covered older slice — the delta lane can never reach it (history.list
+  // only moves forward). Legacy state predating the field seeds it from
+  // the current window, which is correct unless the window was widened
+  // before this code ran — that one case still can't be detected.
+  if (state.gmail_backfill_done) {
+    if (typeof state.gmail_backfill_cutoff_ms !== 'number') {
+      state.gmail_backfill_cutoff_ms = cutoffMs;
+      await saveGoogleState(deps, state);
+    } else if (cutoffMs < state.gmail_backfill_cutoff_ms) {
+      deps.log(
+        `[google] g_history_days now reaches ${Math.ceil((state.gmail_backfill_cutoff_ms - cutoffMs) / 86_400_000)}d ` +
+          'past the backfilled window — reopening the backfill for the newly covered slice',
+      );
+      state.gmail_backfill_done = false;
+      state.gmail_backfill_floor_ms = state.gmail_backfill_cutoff_ms;
+      state.gmail_backfill_cutoff_ms = null;
+      await saveGoogleState(deps, state);
+    }
+  }
+
   // ── Initial (or resumed) backfill ──
   if (!state.gmail_backfill_done) {
     // Anchor the delta lane BEFORE importing anything: changes that land
@@ -800,6 +824,9 @@ async function sweepGmail(
     if (summary.failedFiles === 0) {
       state.gmail_backfill_done = true;
       state.gmail_backfill_floor_ms = null;
+      // Remember the window edge this backfill covered — a widened
+      // g_history_days compares against it to re-open for the new slice.
+      state.gmail_backfill_cutoff_ms = cutoffMs;
       await saveGoogleState(deps, state);
     } else {
       // Failures stay in the window; the next run retries from the floor.
