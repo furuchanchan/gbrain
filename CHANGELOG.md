@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.58.1.36] - 2026-09-25
+
+**Large PGLite brains no longer freeze at 100% CPU mid-import.**
+
+On brains much larger than `shared_buffers`, `sync`/`embed`/`reindex` could
+deadlock after every ~2,000 pages: Postgres ran its automatic checkpoint
+inline inside a buffer flush and waited on I/O only itself could finish.
+The engine now issues a top-level CHECKPOINT once WAL distance passes 256 MB
+(`GBRAIN_PG_CHECKPOINT_MB`), before the automatic trigger can fire mid-flush.
+
 ## [0.58.1.0] - 2026-09-24
 
 **Spend less time rebuilding test fixtures without dropping database coverage.**
