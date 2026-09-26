@@ -454,3 +454,63 @@ describe('facts-absorb minion handler honors the queued notabilityFilter (#4870)
     ]);
   });
 });
+
+describe('runFactsBackstop — legacy DB-only dedup probe (#5275)', () => {
+  test('re-extracting an identical live legacy row counts duplicate, not a second insert', async () => {
+    const vf = new Date('2026-09-01T12:00:00Z');
+    chatStub([
+      { fact: 'dedup-legacy-A', kind: 'event', notability: 'high', entity: 'people/dedup-legacy-a' },
+    ]);
+    const r1 = await runFactsBackstop(meetingPage(), makeCtx({ mode: 'inline', validFrom: vf, sourceSlug: 'meetings/shared-dedup-source' }));
+    expect(r1.mode).toBe('inline');
+    if (r1.mode === 'inline') expect(r1.inserted).toBe(1);
+
+    chatStub([
+      { fact: 'dedup-legacy-A', kind: 'event', notability: 'high', entity: 'people/dedup-legacy-a' },
+    ]);
+    const r2 = await runFactsBackstop(meetingPage(), makeCtx({ mode: 'inline', validFrom: vf, sourceSlug: 'meetings/shared-dedup-source' }));
+    expect(r2.mode).toBe('inline');
+    if (r2.mode === 'inline') {
+      expect(r2.inserted).toBe(0);
+      expect(r2.duplicate).toBe(1);
+      expect(r2.fact_ids).toHaveLength(0);
+    }
+  });
+
+  test('different fact text misses the probe and inserts', async () => {
+    const vf = new Date('2026-09-02T12:00:00Z');
+    chatStub([
+      { fact: 'dedup-legacy-B-one', kind: 'event', notability: 'high', entity: 'people/dedup-legacy-b' },
+    ]);
+    const r1 = await runFactsBackstop(meetingPage(), makeCtx({ mode: 'inline', validFrom: vf, sourceSlug: 'meetings/shared-dedup-source' }));
+    if (r1.mode === 'inline') expect(r1.inserted).toBe(1);
+
+    chatStub([
+      { fact: 'dedup-legacy-B-two', kind: 'event', notability: 'high', entity: 'people/dedup-legacy-b' },
+    ]);
+    const r2 = await runFactsBackstop(meetingPage(), makeCtx({ mode: 'inline', validFrom: vf, sourceSlug: 'meetings/shared-dedup-source' }));
+    expect(r2.mode).toBe('inline');
+    if (r2.mode === 'inline') expect(r2.inserted).toBe(1);
+  });
+
+  test('an expired identical row does not block the fresh insert', async () => {
+    const vf = new Date('2026-09-03T12:00:00Z');
+    chatStub([
+      { fact: 'dedup-legacy-C', kind: 'event', notability: 'high', entity: 'people/dedup-legacy-c' },
+    ]);
+    const r1 = await runFactsBackstop(meetingPage(), makeCtx({ mode: 'inline', validFrom: vf, sourceSlug: 'meetings/shared-dedup-source' }));
+    if (r1.mode === 'inline') expect(r1.inserted).toBe(1);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `UPDATE facts SET expired_at = now() WHERE fact = 'dedup-legacy-C'`,
+    );
+
+    chatStub([
+      { fact: 'dedup-legacy-C', kind: 'event', notability: 'high', entity: 'people/dedup-legacy-c' },
+    ]);
+    const r2 = await runFactsBackstop(meetingPage(), makeCtx({ mode: 'inline', validFrom: vf, sourceSlug: 'meetings/shared-dedup-source' }));
+    expect(r2.mode).toBe('inline');
+    if (r2.mode === 'inline') expect(r2.inserted).toBe(1);
+  });
+});
