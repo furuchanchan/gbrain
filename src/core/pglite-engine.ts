@@ -1687,7 +1687,7 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   async transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T> {
-    return this.db.transaction(async handle => {
+    const result = await this.db.transaction(async handle => {
       const tx = composablePgliteTransaction(handle);
       const txEngine = Object.create(this) as PGLiteEngine;
       Object.defineProperty(txEngine, '_chunkWritesInTransaction', { value: true });
@@ -1695,6 +1695,31 @@ export class PGLiteEngine implements BrainEngine {
       Object.defineProperty(txEngine, 'db', { get: () => tx });
       return fn(txEngine);
     });
+    await this._pgCheckpointIfNeeded();
+    return result;
+  }
+
+  // gbrain#5449 — PGLite runs a single in-process backend: when WAL since the
+  // last checkpoint crosses the automatic threshold mid-flush, Postgres runs
+  // CreateCheckPoint inline from XLogWrite, hits a buffer already marked
+  // BM_IO_IN_PROGRESS, and spins in WaitIO forever (100% CPU, blocked event
+  // loop). Pre-empt the automatic trigger: every N committed transactions,
+  // issue a top-level CHECKPOINT when WAL distance exceeds GBRAIN_PG_CHECKPOINT_MB.
+  private _pgCommits = 0;
+  private _pgCkptBusy = false;
+  private async _pgCheckpointIfNeeded(): Promise<void> {
+    if (this._chunkWritesInTransaction || this._pgCkptBusy || !this._db) return;
+    if (++this._pgCommits % 25 !== 0) return;
+    const limitMb = Number(process.env.GBRAIN_PG_CHECKPOINT_MB ?? '256');
+    if (!(limitMb > 0)) return;
+    this._pgCkptBusy = true;
+    try {
+      const { rows } = await this._db.query<{ mb: number }>(
+        `SELECT (pg_wal_lsn_diff(pg_current_wal_lsn(), redo_lsn) / 1048576)::float8 AS mb FROM pg_control_checkpoint()`,
+      );
+      if (Number(rows[0]?.mb ?? 0) >= limitMb) await this._db.query('CHECKPOINT');
+    } catch { /* best-effort — a failed probe must never abort the caller */ }
+    finally { this._pgCkptBusy = false; }
   }
 
   async transactionDirect<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T> {
