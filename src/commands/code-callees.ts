@@ -90,7 +90,12 @@ export async function runCodeCallees(engine: BrainEngine, args: string[]): Promi
     } else {
       console.log(`${edges.length} callee(s) for "${sym}":`);
       for (const e of edges) {
-        const res = e.resolved ? 'resolved' : 'unresolved';
+        // #5439: a symbol-table edge carries its own resolution outcome —
+        // '[resolved]' keeps meaning chunk-table residency (#3680).
+        const res = e.resolved ? 'resolved'
+          : e.resolution === 'resolved' ? 'in-file: resolved'
+          : e.resolution === 'ambiguous' ? 'in-file: ambiguous'
+          : 'unresolved';
         console.log(`  ${e.from_symbol_qualified}  → ${e.to_symbol_qualified}  [${res}]`);
       }
       if (hint) console.log(hint);

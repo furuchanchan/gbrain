@@ -192,6 +192,135 @@ describe('Layer 7 (A2) — expandAnchors', () => {
   });
 });
 
+describe('Layer 7 (A2) — resolver outcome consumption (#5439)', () => {
+  let engine: PGLiteEngine;
+  let chunkX: number;
+  let chunkBmain: number;
+  let chunkBalias: number;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+
+    // Caller page.
+    await engine.putPage('src-x-ts', {
+      type: 'code', page_kind: 'code',
+      title: 'src/x.ts (typescript)',
+      compiled_truth: 'export function x() { return b(); }',
+      timeline: '',
+    });
+    await installFixtureChunks(engine, 'src-x-ts', [{
+      chunk_index: 0,
+      chunk_text: 'export function x() { return b(); }',
+      chunk_source: 'compiled_truth',
+      language: 'typescript',
+      symbol_name: 'x', symbol_type: 'function',
+      symbol_name_qualified: 'x',
+    }]);
+
+    // The qualified name 'b' is defined in TWO files — the aliasing case the
+    // resolver exists to disambiguate.
+    for (const slug of ['src-bmain-ts', 'src-balias-ts']) {
+      await engine.putPage(slug, {
+        type: 'code', page_kind: 'code',
+        title: `${slug} (typescript)`,
+        compiled_truth: 'export function b() { return 1; }',
+        timeline: '',
+      });
+      await installFixtureChunks(engine, slug, [{
+        chunk_index: 0,
+        chunk_text: 'export function b() { return 1; }',
+        chunk_source: 'compiled_truth',
+        language: 'typescript',
+        symbol_name: 'b', symbol_type: 'function',
+        symbol_name_qualified: 'b',
+      }]);
+    }
+
+    chunkX = (await engine.getChunks('src-x-ts'))[0]!.id;
+    chunkBmain = (await engine.getChunks('src-bmain-ts'))[0]!.id;
+    chunkBalias = (await engine.getChunks('src-balias-ts'))[0]!.id;
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  }, 30_000);
+
+  const anchor = (chunkId: number) => [{
+    slug: 'src-x-ts', page_id: 0, title: 'x', type: 'code',
+    chunk_text: '', chunk_source: 'compiled_truth', chunk_id: chunkId,
+    chunk_index: 0, score: 1.0, stale: false, source_id: 'default',
+  } as never];
+
+  test('resolved_chunk_id in edge_metadata wins over the name lookup', async () => {
+    await engine.addCodeEdges([{
+      from_chunk_id: chunkX, to_chunk_id: null,
+      from_symbol_qualified: 'x', to_symbol_qualified: 'b',
+      edge_type: 'calls',
+      edge_metadata: { resolved_chunk_id: chunkBmain },
+    }]);
+    const expanded = await expandAnchors(engine, anchor(chunkX), { walkDepth: 1 });
+    const ids = expanded.map(e => e.chunk_id);
+    expect(ids).toContain(chunkBmain);
+    // The pre-fix behavior re-looked-up 'b' by name across ALL files and
+    // pulled in the alias file too — exactly what the resolver prevents.
+    expect(ids).not.toContain(chunkBalias);
+  });
+
+  test('ambiguous candidates are followed; unresolved edges still fall back to name lookup', async () => {
+    await engine.addCodeEdges([{
+      from_chunk_id: chunkX, to_chunk_id: null,
+      from_symbol_qualified: 'x', to_symbol_qualified: 'ambig_target',
+      edge_type: 'calls',
+      edge_metadata: { ambiguous: true, candidates: [chunkBalias] },
+    }]);
+    const expanded = await expandAnchors(engine, anchor(chunkX), { walkDepth: 1 });
+    const ids = expanded.map(e => e.chunk_id);
+    expect(ids).toContain(chunkBalias);
+  });
+
+  test('unresolved edges (no resolver outcome) still match by qualified name', async () => {
+    // A second caller chunk y → 'b' with NO edge_metadata: the name lookup
+    // fans out to every definition, both files.
+    await engine.putPage('src-y-ts', {
+      type: 'code', page_kind: 'code',
+      title: 'src/y.ts (typescript)',
+      compiled_truth: 'export function y() { return b(); }',
+      timeline: '',
+    });
+    await installFixtureChunks(engine, 'src-y-ts', [{
+      chunk_index: 0,
+      chunk_text: 'export function y() { return b(); }',
+      chunk_source: 'compiled_truth',
+      language: 'typescript',
+      symbol_name: 'y', symbol_type: 'function',
+      symbol_name_qualified: 'y',
+    }]);
+    const chunkY = (await engine.getChunks('src-y-ts'))[0]!.id;
+    await engine.addCodeEdges([{
+      from_chunk_id: chunkY, to_chunk_id: null,
+      from_symbol_qualified: 'y', to_symbol_qualified: 'b',
+      edge_type: 'calls',
+    }]);
+    const expanded = await expandAnchors(engine, anchor(chunkY), { walkDepth: 1 });
+    const ids = expanded.map(e => e.chunk_id);
+    expect(ids).toContain(chunkBmain);
+    expect(ids).toContain(chunkBalias);
+  });
+
+  test('engine edge reads surface resolution + resolved_chunk_id (#5439)', async () => {
+    const edges = await engine.getEdgesByChunk(chunkX, { direction: 'out' });
+    const resolved = edges.find(e => e.to_symbol_qualified === 'b')!;
+    expect(resolved.resolved).toBe(false); // table residency unchanged
+    expect(resolved.resolution).toBe('resolved');
+    expect(resolved.resolved_chunk_id).toBe(chunkBmain);
+    const ambiguous = edges.find(e => e.to_symbol_qualified === 'ambig_target')!;
+    expect(ambiguous.resolution).toBe('ambiguous');
+    expect(ambiguous.resolved_chunk_id).toBeNull();
+  });
+});
+
 describe('Layer 7 (A2) — query operation schema', () => {
   test('query op exposes near_symbol + walk_depth params', async () => {
     const { operations } = await import('../src/core/operations.ts');
