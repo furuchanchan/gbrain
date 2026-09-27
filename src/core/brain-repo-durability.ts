@@ -373,8 +373,12 @@ function resolveHooksDir(repoPath: string): { dir: string; tracked: boolean } {
   } catch { /* unset — normal */ }
   if (hooksPath) {
     const dir = isAbsolute(hooksPath) ? hooksPath : join(repoPath, hooksPath);
-    // A hooksPath outside .git/ (e.g. .githooks) is a TRACKED location.
-    const tracked = !dir.includes(`${join('.git', '')}`) && !dir.endsWith('.git/hooks');
+    // A hooksPath outside the resolved git dir (e.g. .githooks) is a TRACKED
+    // location. Compare against the real git dir — a '.git' substring match
+    // false-matches '.githooks' and repo paths like 'site.github.io'.
+    const gitDir = gitDirPath(repoPath, '');
+    const rel = relative(gitDir, dir);
+    const tracked = rel !== '' && (rel.startsWith('..') || isAbsolute(rel));
     return { dir, tracked };
   }
   return { dir: gitDirPath(repoPath, 'hooks'), tracked: false };
