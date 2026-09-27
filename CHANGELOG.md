@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.0.24] - 2026-09-25
+
+**Hook installs no longer pollute repos with a `.git` in the path.** The hooks-dir classifier marked a path tracked by matching the substring `.git`, which false-matched `.githooks` and checkouts like `site.github.io` — leaving the post-commit hook unignored and dirtying the tree on every pull. The dir is now compared against the resolved git dir.
+
 ## [0.59.0.0] - 2026-09-25
 
 **The LongMemEval reader now checks the evidence before giving its short answer.**
