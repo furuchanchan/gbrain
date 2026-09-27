@@ -10,6 +10,19 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.0.44] - 2026-09-25
+
+**Keep embedding drift repairable on worker-backed engines.**
+
+`gbrain sync --source <id>` on a Postgres-backed brain used to drop the
+intrinsic >100-file deferral on the floor — no backfill job, no drain
+hint — leaving fresh chunks unembedded until a manual
+`gbrain embed --stale`. The single-source gate now mirrors `--all`: when
+the worker surface exists the deferral reaches the backfill submitter
+(queued job, or an explicit skip/drain outcome), so large imports on
+worker-backed engines repair themselves the same way they always did on
+PGLite. (#5386)
+
 ## [0.59.0.0] - 2026-09-25
 
 **The LongMemEval reader now checks the evidence before giving its short answer.**
