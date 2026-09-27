@@ -557,6 +557,92 @@ describe('backfill floor freeze on failure', () => {
   });
 });
 
+// ── Widened g_history_days reopens a completed backfill (#5438) ──────────────
+
+describe('widened g_history_days reopens the backfill (#5438)', () => {
+  test('done + wider window drains ONLY the newly covered slice and records the new edge', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-widen-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    fx.messages.push(
+      gmsg('18c2f4a9b3d21e01', T_A, daysAgoMs(30)), // inside the 90d window
+      gmsg('18c2f4a9b3d21e02', T_B, daysAgoMs(120), {
+        headers: { From: 'Dana Example <dana@example.com>', To: 'a@example.com', Subject: 'Old archive thread' },
+        body: 'An older thread beyond the first window.',
+      }), // inside 180d only
+    );
+    try {
+      await insertGoogleSource(dir);
+      await withHome(async () => {
+        // Initial backfill covers 90d → only T_A imports; the covered edge
+        // is persisted for later comparison.
+        const res1 = await sweep(dir, fx, vault);
+        expect(res1.status).toBe('first_sync');
+        let state = readGoogleState(dir);
+        expect(state.gmail_backfill_done).toBe(true);
+        expect(typeof state.gmail_backfill_cutoff_ms).toBe('number');
+        expect(Math.abs(state.gmail_backfill_cutoff_ms! - daysAgoMs(90))).toBeLessThan(10_000);
+        expect(await emailSlugs()).toHaveLength(1);
+
+        // Widening g_history_days to 180 reopens the backfill seeded at the
+        // stored edge: the resume window is [180d, 90d) — T_B imports and
+        // T_A is never reprocessed (thread fetches stay delta-only).
+        const fetchesBefore = fx.threadFetches;
+        const res2 = await sweep(dir, fx, vault, {}, 'gmail', { cfg: { g_history_days: 180 } });
+        expect(res2.status).toBe('synced');
+        expect(fx.threadFetches - fetchesBefore).toBe(1); // only the new thread
+        const slugs = await emailSlugs();
+        expect(slugs).toHaveLength(2);
+        expect(slugs.some((s) => s.includes('old-archive-thread'))).toBe(true);
+        state = readGoogleState(dir);
+        expect(state.gmail_backfill_done).toBe(true);
+        expect(state.gmail_backfill_floor_ms).toBeNull();
+        expect(state.gmail_backfill_cutoff_ms).toBeLessThan(daysAgoMs(150));
+
+        // An unchanged window never reopens — the stored edge vs the
+        // recomputed cutoff only drifts FORWARD with time.
+        const res3 = await sweep(dir, fx, vault, {}, 'gmail', { cfg: { g_history_days: 180 } });
+        expect(res3.status).toBe('up_to_date');
+        expect(fx.threadFetches - fetchesBefore).toBe(1);
+        state = readGoogleState(dir);
+        expect(state.gmail_backfill_done).toBe(true);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy state without gmail_backfill_cutoff_ms seeds it once and stays done', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-widen-legacy-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    fx.messages.push(gmsg('18c2f4a9b3d21e01', T_A, daysAgoMs(30)));
+    try {
+      await insertGoogleSource(dir);
+      writeBackfilledState(dir); // predates the field — no gmail_backfill_cutoff_ms
+      await withHome(async () => {
+        const res = await sweep(dir, fx, vault);
+        expect(res.status).toBe('up_to_date');
+        const state = readGoogleState(dir);
+        expect(state.gmail_backfill_done).toBe(true);
+        // The edge is seeded from the current window so a LATER widen can
+        // reopen; this run itself does not re-backfill.
+        expect(typeof state.gmail_backfill_cutoff_ms).toBe('number');
+        expect(Math.abs(state.gmail_backfill_cutoff_ms! - daysAgoMs(90))).toBeLessThan(10_000);
+
+        // With the edge seeded, a subsequent widen does reopen.
+        const res2 = await sweep(dir, fx, vault, {}, 'gmail', { cfg: { g_history_days: 180 } });
+        expect(res2.status).toBe('up_to_date'); // reopened but the new slice is empty
+        const state2 = readGoogleState(dir);
+        expect(state2.gmail_backfill_done).toBe(true);
+        expect(state2.gmail_backfill_cutoff_ms).toBeLessThan(daysAgoMs(150));
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── 404-vanished threads ─────────────────────────────────────────────────────
 
 describe('404-vanished threads', () => {
