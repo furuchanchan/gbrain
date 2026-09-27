@@ -5,6 +5,7 @@
  */
 import type { PGlite } from '@electric-sql/pglite';
 import { currentCodeEdgeFilter } from '../code-intel/read-scope.ts';
+import { readEdgeResolution } from '../chunkers/symbol-resolver.ts';
 
 // PGLite's parameter bridge corrupts the current engine session when a single
 // statement crosses the signed-int16 bind ceiling (32,767 parameters). Keep
@@ -199,15 +200,21 @@ export async function getEdgesByChunk(
   }
 
 function rowToCodeEdge(row: Record<string, unknown>): import('../types.ts').CodeEdgeResult {
+  // #5439: parity with pgRowToCodeEdge — surface the resolver's outcome
+  // alongside table residency.
+  const resolution = readEdgeResolution(row.edge_metadata as Record<string, unknown>);
+  const toChunkId = row.to_chunk_id == null ? null : (row.to_chunk_id as number);
   return {
     id: row.id as number,
     from_chunk_id: row.from_chunk_id as number,
-    to_chunk_id: row.to_chunk_id == null ? null : (row.to_chunk_id as number),
+    to_chunk_id: toChunkId,
     from_symbol_qualified: (row.from_symbol_qualified as string) ?? '',
     to_symbol_qualified: (row.to_symbol_qualified as string) ?? '',
     edge_type: (row.edge_type as string) ?? '',
     edge_metadata: (row.edge_metadata as Record<string, unknown>) ?? {},
     source_id: row.source_id == null ? null : (row.source_id as string),
     resolved: Boolean(row.resolved),
+    resolution: row.resolved ? 'resolved' : resolution.kind,
+    resolved_chunk_id: toChunkId ?? (resolution.kind === 'resolved' ? resolution.chunk_id : null),
   };
 }

@@ -1409,7 +1409,21 @@ export interface CodeEdgeResult {
   edge_type: string;
   edge_metadata: Record<string, unknown>;
   source_id: string | null;
+  /** Table residency (#3680): true = row lives in code_edges_chunk. */
   resolved: boolean;
+  /**
+   * The within-file symbol resolver's outcome, decoded from edge_metadata
+   * (#5439). 'resolved' for chunk-table rows by construction (to_chunk_id
+   * is already the target); for symbol-table rows it is 'resolved',
+   * 'ambiguous' (candidates in edge_metadata.candidates), or 'unresolved'.
+   */
+  resolution: 'resolved' | 'ambiguous' | 'unresolved';
+  /**
+   * The effective resolved target chunk: to_chunk_id for chunk-table
+   * rows, the resolver's same-file pick for resolved symbol-table rows,
+   * else null.
+   */
+  resolved_chunk_id: number | null;
 }
 
 // Links
