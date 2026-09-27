@@ -5462,10 +5462,19 @@ See also:
     // v0.42.42.0 (#2139, Step 4b): the inline gate auto-deferred this run's
     // embeds (non-TTY, above floor) — enqueue a capped backfill job so the
     // NULL-embedded chunks get embedded out of band instead of being stranded.
+    // #5386: mirror --all — intrinsic `large_sync` deferrals are deliverable
+    // whenever the worker surface exists (federated v2), not only when the
+    // no-worker manual-drain branch applies; otherwise a worker-backed
+    // engine strands them with no follow-up job and no drain hint.
+    let singleV2Enabled = false;
+    if (result.embedDeferralReason === 'large_sync' && !singleSourceNoWorkerSurface) {
+      const { isFederatedV2Enabled } = await import('../core/feature-flags.ts');
+      singleV2Enabled = await isFederatedV2Enabled(engine);
+    }
     let singleEmbedBackfill: SyncEmbedBackfillOutcome | undefined;
     if (
       !companyPolicy && (singleSourceAutoDefer || (
-        singleSourceNoWorkerSurface && result.embedDeferralReason === 'large_sync'
+        result.embedDeferralReason === 'large_sync' && (singleSourceNoWorkerSurface || singleV2Enabled)
       )) &&
       result.status !== 'dry_run' &&
       result.status !== 'up_to_date' &&
