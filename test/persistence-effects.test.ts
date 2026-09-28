@@ -146,6 +146,28 @@ test('missing withdrawal files materialize and advance mirror and Git scans with
   expect((await getWriteRequestById(engine, row.id))!.state).toBe('committed');
 });
 
+// #5396: a legacy page whose source_path is a metafile (RESOLVER.md) holds
+// DB bytes that diverge from the file BY DESIGN — sync skips metafiles, so
+// the file's managed durability block is never mirrored back. Requiring
+// canonical equality here wedges the scan and the request's other effects.
+test('metafile-backed page advances the mirror scan without clobbering the file (#5396)', async () => {
+  const f = await fixture(body());
+  await engine.putPage('resolver', page('Resolver body'), { sourceId: f.sourceId });
+  await engine.executeRaw(`UPDATE pages SET source_path='RESOLVER.md' WHERE source_id=$1 AND slug='resolver'`, [f.sourceId]);
+  const resolverFile = join(f.root, 'RESOLVER.md');
+  const managed = '# Resolver\n\n<!-- BEGIN gbrain-brain-durability (managed; do not edit between markers) -->\nmanaged block\n<!-- END gbrain-brain-durability -->\n';
+  writeFileSync(resolverFile, managed);
+  const row = await withdraw(f); await onlyEffects(row.id);
+  await engine.executeRaw("UPDATE persistence_effects SET next_attempt_at=now()+interval '1 hour' WHERE request_id=$1::uuid AND kind<>'withdrawal-mirror'", [row.id]);
+  await runPersistenceEffects(engine, config, { hostId, limit: 5 });
+  const mirror = (await publicEffectsForRequest(engine, row.id)).find(effect => effect.kind === 'withdrawal-mirror')!;
+  expect(mirror.state).toBe('committed');
+  // The managed block survives: the mirror never writes DB bytes over a metafile.
+  expect(readFileSync(resolverFile, 'utf8')).toBe(managed);
+  const [git] = await engine.executeRaw<{ state: string }>("SELECT state FROM persistence_effects WHERE request_id=$1::uuid AND kind='git'", [row.id]);
+  expect(['queued', 'committed']).toContain(git.state);
+});
+
 test('configured recovery capacity refuses file mutation without undoing withdrawal', async () => {
   const f = await fixture(body()); const original = readFileSync(f.file, 'utf8'); const row = await withdraw(f); await onlyEffects(row.id);
   await engine.setConfig('persistence.limits.worktree_recovery_bytes', '1');
