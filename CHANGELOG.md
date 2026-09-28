@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.0.39] - 2026-09-29
+
+**`gbrain recall --grep` no longer misses facts outside the newest-N window.**
+
+On a local (non-thin-client) install, `recall --grep` fetched only the newest
+`--limit` rows and filtered the text afterwards — so any match older than that
+window reported "No matching facts." while the fact existed and was active.
+The grep term now filters in SQL before the LIMIT on every local arm (entity,
+session, since, default), matching the op and thin-client paths.
+`--supersessions` keeps its client-side filter because its list call takes no
+grep option.
+
 ## [0.59.0.0] - 2026-09-25
 
 **The LongMemEval reader now checks the evidence before giving its short answer.**
