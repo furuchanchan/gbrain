@@ -118,6 +118,10 @@ async function gitPage(engine: BrainEngine, effect: PersistenceEffect, binding: 
   let path: string;
   if (effect.data.source_scan) {
     if (!snapshot) { await completeEffect(engine, effect); return; }
+    // Same metafile carve-out as the mirror: a sync-skipped file (RESOLVER.md,
+    // schema.md, ...) legitimately diverges from the DB page, so requiring
+    // canonical equality here would wedge this cursor instead.
+    if (isMetafileSourcePath(snapshot.page.source_path)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId); return; }
     const file = await prepareFileTarget(engine, { ...effect, slug: snapshot.page.slug }, snapshot,
       snapshot.page.deleted_at ? null : serializePageToMarkdown(snapshot.page, snapshot.tags), opts.hostId, { allowMissing: true });
     if (!file) throw new OperationError('source_changed', 'The Git binding changed.');

@@ -152,6 +152,11 @@ test('missing withdrawal files materialize and advance mirror and Git scans with
 // canonical equality here wedges the scan and the request's other effects.
 test('metafile-backed page advances the mirror scan without clobbering the file (#5396)', async () => {
   const f = await fixture(body());
+  // Durability-enabled canonical repo: publishGitEffect must really commit, so
+  // the git stage scans past 'page' and reaches the metafile page too.
+  git(f.root, ['init']); git(f.root, ['config', 'user.name', 'Example Writer']); git(f.root, ['config', 'user.email', 'writer@example.invalid']);
+  mkdirSync(join(f.root, '.git', 'hooks'), { recursive: true });
+  writeFileSync(join(f.root, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n# gbrain brain-durability post-commit hook (v0.42.44+)\n');
   await engine.putPage('resolver', page('Resolver body'), { sourceId: f.sourceId });
   await engine.executeRaw(`UPDATE pages SET source_path='RESOLVER.md' WHERE source_id=$1 AND slug='resolver'`, [f.sourceId]);
   const resolverFile = join(f.root, 'RESOLVER.md');
@@ -164,8 +169,18 @@ test('metafile-backed page advances the mirror scan without clobbering the file 
   expect(mirror.state).toBe('committed');
   // The managed block survives: the mirror never writes DB bytes over a metafile.
   expect(readFileSync(resolverFile, 'utf8')).toBe(managed);
-  const [git] = await engine.executeRaw<{ state: string }>("SELECT state FROM persistence_effects WHERE request_id=$1::uuid AND kind='git'", [row.id]);
-  expect(['queued', 'committed']).toContain(git.state);
+  const [gitRow] = await engine.executeRaw<{ state: string }>("SELECT state FROM persistence_effects WHERE request_id=$1::uuid AND kind='git'", [row.id]);
+  expect(['queued', 'committed']).toContain(gitRow.state);
+  // The git stage must complete too: it shares the metafile snapshot and the
+  // same canonical-equality gate that wedged the mirror.
+  await engine.executeRaw("UPDATE persistence_effects SET next_attempt_at=now() WHERE request_id=$1::uuid AND kind='git'", [row.id]);
+  await runPersistenceEffects(engine, config, { hostId, limit: 5 });
+  const [gitAfter] = await engine.executeRaw<{ state: string; error_code: string | null; data: string }>(
+    "SELECT state,error_code,data::text FROM persistence_effects WHERE request_id=$1::uuid AND kind='git'", [row.id]);
+  expect(gitAfter).toMatchObject({ state: 'committed', error_code: null });
+  // The scan walked past the metafile page, not around it.
+  expect(gitAfter.data).toContain('resolver');
+  expect(readFileSync(resolverFile, 'utf8')).toBe(managed);
 });
 
 test('configured recovery capacity refuses file mutation without undoing withdrawal', async () => {
