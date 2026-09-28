@@ -167,6 +167,36 @@ export function __resetBackstopWarningsForTests(): void {
 }
 
 /**
+ * #5275: legacy DB-only rows sit OUTSIDE idx_facts_fence_key (partial WHERE
+ * row_num IS NOT NULL), so ON CONFLICT never applies and insertFact does no
+ * further dedup — re-extraction inserted exact duplicates. Probe the natural
+ * key first; a live identical row counts as `duplicate` (existing status
+ * vocabulary) and skips the insert. `IS NOT DISTINCT FROM` keeps NULL
+ * entity_slug/context in the key domain, and the probe binds the same
+ * valid_from fallback insertFact will persist so probe and insert cannot
+ * diverge. Returns null when a live duplicate already exists.
+ */
+async function insertLegacyFactDeduped(
+  ctx: FactsBackstopCtx,
+  newFact: NewFact,
+): Promise<{ id: number; status: FactInsertStatus } | null> {
+  const vf: Date = newFact.valid_from ?? new Date();
+  const dupe = await ctx.engine.executeRaw<{ id: number }>(
+    `SELECT id FROM facts
+       WHERE source_id = $1
+         AND entity_slug IS NOT DISTINCT FROM $2
+         AND fact = $3 AND kind = $4
+         AND context IS NOT DISTINCT FROM $5
+         AND valid_from = $6
+         AND expired_at IS NULL AND row_num IS NULL
+       LIMIT 1`,
+    [ctx.sourceId, newFact.entity_slug ?? null, newFact.fact, newFact.kind ?? 'fact',
+     newFact.context ?? null, vf]);
+  if (dupe.length > 0) return null;
+  return ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: legacy DB-only insert lane — probe deduped above, no entity page to fence onto
+}
+
+/**
  * ONE sentence for every keyless-extraction surface (backstop note, doctor's
  * facts_extraction_health) — a future provider addition edits it here only.
  */
@@ -769,10 +799,10 @@ async function runPipelineBodyInner(
       valid_from: f.valid_from ?? ctx.validFrom,
       context: ctx.sourceSlug ?? input.pageSlug ?? null,
     };
-    const result = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: legacy DB-only fallback for unparented / thin-client facts (no entity page to fence onto)
-    fact_ids.push(result.id);
-    if (result.status === 'inserted') inserted += 1;
-    else if ((result.status as FactInsertStatus) === 'duplicate') duplicate += 1;
+    const result = await insertLegacyFactDeduped(ctx, newFact); // gbrain-allow-direct-insert: legacy DB-only fallback for unparented / thin-client facts (no entity page to fence onto)
+    if (result) fact_ids.push(result.id);
+    if (result?.status === 'inserted') inserted += 1;
+    else if (!result || (result.status as FactInsertStatus) === 'duplicate') duplicate += 1;
     else superseded += 1;
   }
 
@@ -854,10 +884,10 @@ async function runPipelineBodyInner(
           valid_from: f.valid_from ?? ctx.validFrom,
           context: ctx.sourceSlug ?? input.pageSlug ?? null,
         };
-        const legacyResult = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: stub-guard / unresolvable-target fallback for unprefixed or fallback-resolved entity slugs (no fenceable page or usable tree)
-        fact_ids.push(legacyResult.id);
-        if (legacyResult.status === 'inserted') inserted += 1;
-        else if ((legacyResult.status as FactInsertStatus) === 'duplicate') duplicate += 1;
+        const legacyResult = await insertLegacyFactDeduped(ctx, newFact); // gbrain-allow-direct-insert: stub-guard / unresolvable-target fallback for unprefixed or fallback-resolved entity slugs (no fenceable page or usable tree)
+        if (legacyResult) fact_ids.push(legacyResult.id);
+        if (legacyResult?.status === 'inserted') inserted += 1;
+        else if (!legacyResult || (legacyResult.status as FactInsertStatus) === 'duplicate') duplicate += 1;
         else superseded += 1;
       }
       continue;
