@@ -274,8 +274,14 @@ async function runOne(job: HarvestJob): Promise<{
       // gate-skip releases the claim and writes NO sidecar — when the gate
       // opens later, the sweep (which applies the same gates) extracts.
       const caps = job.capabilities ?? (await import('../capability.ts')).detectCapabilities();
-      if (!caps.extraction.available) return { outcome: 'degraded', reason: 'keyless' };
-      const { isFactsExtractionEnabled } = await import('../facts/extract.ts');
+      const { isFactsExtractionEnabled, isFactsExtractionAvailable } = await import('../facts/extract.ts');
+      // #5735: the engine-blind probe misses a DB-plane facts.extraction_model —
+      // check the model the pipeline will run before calling keyless. An
+      // explicitly-supplied report stays the caller's override.
+      if (!caps.extraction.available
+        && (job.capabilities !== undefined || !(await isFactsExtractionAvailable(job.engine)))) {
+        return { outcome: 'degraded', reason: 'keyless' };
+      }
       if (!(await isFactsExtractionEnabled(job.engine))) {
         return { outcome: 'degraded', reason: 'extraction_disabled' };
       }
@@ -421,8 +427,12 @@ async function runWritebackTurn(job: HarvestJob, full: string, ingestedPath: str
     return { outcome: 'ok', reason: 'writeback_off' };
   }
   const caps = job.capabilities ?? (await import('../capability.ts')).detectCapabilities();
-  if (!caps.extraction.available) return { outcome: 'degraded', reason: 'keyless' };
-  const { isFactsExtractionEnabled } = await import('../facts/extract.ts');
+  const { isFactsExtractionEnabled, isFactsExtractionAvailable } = await import('../facts/extract.ts');
+  // #5735: same engine-blind-probe fallback as the extract lane above.
+  if (!caps.extraction.available
+    && (job.capabilities !== undefined || !(await isFactsExtractionAvailable(job.engine)))) {
+    return { outcome: 'degraded', reason: 'keyless' };
+  }
   if (!(await isFactsExtractionEnabled(job.engine))) {
     return { outcome: 'degraded', reason: 'extraction_disabled' };
   }

@@ -72,6 +72,17 @@ export async function getFactsExtractionModel(engine?: BrainEngine): Promise<str
 }
 
 /**
+ * Engine-aware extraction availability: resolve the model extraction will
+ * actually run (DB-plane facts.extraction_model / models.* before file/env)
+ * and ask the configured gateway whether it is servable. detectCapabilities()
+ * is engine-blind by design, so corpus gates whose probe reports keyless fall
+ * back to this before they skip (#5735).
+ */
+export async function isFactsExtractionAvailable(engine: BrainEngine): Promise<boolean> {
+  return isAvailable('chat', await getFactsExtractionModel(engine));
+}
+
+/**
  * #2113: output-token cap for the extractor call. The pre-fix hardcoded 1500
  * silently truncated output on mandatory-reasoning models (thinking tokens
  * count toward the cap), so the JSON never parsed and extraction returned

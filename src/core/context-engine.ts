@@ -1057,8 +1057,12 @@ export function createGBrainContextEngine(ctx: {
         return { status: 'banked', reason: 'already_ingested' };
       }
       const { detectCapabilities } = await import('./capability.ts');
-      if (!detectCapabilities().extraction.available) return { status: 'banked', reason: 'keyless' };
-      const { isFactsExtractionEnabled } = await import('./facts/extract.ts');
+      const { isFactsExtractionEnabled, isFactsExtractionAvailable } = await import('./facts/extract.ts');
+      // #5735: engine-blind probe misses a DB-plane facts.extraction_model —
+      // check the model the pipeline will run before calling keyless.
+      if (!detectCapabilities().extraction.available && !(await isFactsExtractionAvailable(pg))) {
+        return { status: 'banked', reason: 'keyless' };
+      }
       if (!(await isFactsExtractionEnabled(pg))) return { status: 'banked', reason: 'extraction_disabled' };
       const { resolveSourceId } = await import('./source-resolver.ts');
       const sourceId = await resolveSourceId(pg, null, workspaceDir);

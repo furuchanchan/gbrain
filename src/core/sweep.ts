@@ -605,8 +605,13 @@ async function runCorpusIngestPass(
 
   // [CX-P0.5] Keyless rule: no extraction provider configured ⇒ skip the
   // whole pass. Agent-authored fences (pass 1) carry keyless memory.
+  // #5735: the probe is engine-blind — a DB-plane facts.extraction_model it
+  // cannot see still counts as available. An explicitly-supplied report stays
+  // the caller's override (tests pin keyless posture through it).
+  const { isFactsExtractionEnabled, isFactsExtractionAvailable } = await import('./facts/extract.ts');
   const caps = ctx.capabilities ?? detectCapabilities();
-  if (!caps.extraction.available) {
+  if (!caps.extraction.available
+    && (ctx.capabilities !== undefined || !(await isFactsExtractionAvailable(engine)))) {
     const retired = await retireWbCandidatesIfOff();
     skip('keyless', candidates.length - retired.size);
     return;
@@ -614,7 +619,6 @@ async function runCorpusIngestPass(
 
   // Existing spend gate: operators flip facts.extraction_enabled off to
   // stop ALL fact extraction brain-wide (facts/extract.ts:43).
-  const { isFactsExtractionEnabled } = await import('./facts/extract.ts');
   if (!(await isFactsExtractionEnabled(engine))) {
     const retired = await retireWbCandidatesIfOff();
     skip('extraction_disabled', candidates.length - retired.size);
