@@ -93,8 +93,46 @@ function stableId(value: unknown): string {
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
 
+// Cycle bookkeeping stamped into sources.config at the end of every source
+// cycle is not connector configuration: hashing it re-keyed the managed
+// checkpoint after each completed cycle and the next sync restarted the
+// connector's backfill. Identity is stable connector config only.
+const CYCLE_BOOKKEEPING_KEYS = new Set(['last_source_cycle_at', 'last_full_cycle_at']);
+
+function stableConnectorConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const stable: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) if (!CYCLE_BOOKKEEPING_KEYS.has(key)) stable[key] = value;
+  return stable;
+}
+
 export function connectorCheckpointKey(sourceId: string, incarnation: string, connector: ConnectorKind, config: Record<string, unknown>): string {
+  return digest({ sourceId, incarnation, connector, config: stableConnectorConfig(config) });
+}
+
+/** Pre-normalization fingerprint: full config including cycle bookkeeping. */
+export function legacyConnectorCheckpointKey(sourceId: string, incarnation: string, connector: ConnectorKind, config: Record<string, unknown>): string {
   return digest({ sourceId, incarnation, connector, config });
+}
+
+export async function readConnectorCheckpoint(engine: BrainEngine, sourceId: string, incarnation: string,
+  connector: ConnectorKind, config: Record<string, unknown>): Promise<unknown[]> {
+  const checkpointKey = connectorCheckpointKey(sourceId, incarnation, connector, config);
+  const [row] = await engine.executeRaw<{ completed_keys: unknown[] }>(
+    "SELECT completed_keys FROM op_checkpoints WHERE op='managed-connector' AND fingerprint=$1", [checkpointKey]);
+  if (row) return row.completed_keys ?? [];
+  const legacyKey = legacyConnectorCheckpointKey(sourceId, incarnation, connector, config);
+  if (legacyKey === checkpointKey) return [];
+  const [legacyRow] = await engine.executeRaw<{ completed_keys: unknown[] }>(
+    "SELECT completed_keys FROM op_checkpoints WHERE op='managed-connector' AND fingerprint=$1", [legacyKey]);
+  if (!legacyRow) return [];
+  // A legacy-key hit proves the row was written under the identical full
+  // config, so adoption is verifiable rather than newest-wins; republish it
+  // under the stable key. Rows keyed under older bookkeeping states are
+  // unrecoverable — the fingerprint preimage is opaque — and stay untouched.
+  await engine.executeRaw(
+    `INSERT INTO op_checkpoints(op,fingerprint,completed_keys) VALUES('managed-connector',$1,$2::text::jsonb)
+      ON CONFLICT(op,fingerprint) DO NOTHING`, [checkpointKey, JSON.stringify(legacyRow.completed_keys ?? [])]);
+  return legacyRow.completed_keys ?? [];
 }
 
 async function connectorFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'worktree_id' | 'slug'>,
@@ -190,8 +228,7 @@ export class ManagedConnectorSync {
         await this.refuseRetryBlocker(this.engine);
       }
     }
-    const [row] = await this.engine.executeRaw<{ completed_keys: unknown[] }>("SELECT completed_keys FROM op_checkpoints WHERE op='managed-connector' AND fingerprint=$1", [this.checkpointKey]);
-    this.checkpoint = row?.completed_keys ?? [];
+    this.checkpoint = await readConnectorCheckpoint(this.engine, this.sourceId, this.source.incarnation, this.connector, this.source.config);
     if (this.retryFailed) {
       const pointers = await this.engine.executeRaw<{ completed_keys: ConnectorRetry[] }>(`SELECT completed_keys FROM op_checkpoints
         WHERE op='managed-connector-retry' AND completed_keys->0->>'checkpointKey'=$1
