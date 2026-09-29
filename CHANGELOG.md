@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- Corpus extraction gates (checkpoint harvest, maintenance sweep, checkpoint compact) no longer misclassify an install as keyless when `facts.extraction_model` is set in the brain database to a servable local model while file/env providers are unset (#5735). The gates now check the model extraction actually resolves — the engine-aware `getFactsExtractionModel` against the configured gateway — instead of only the engine-blind `detectCapabilities()` probe; an explicitly supplied capability report remains the override.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
