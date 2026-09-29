@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.5] - 2026-10-01
+
+**`retry-effects` can now settle a superseded embedding obligation, so recovered brains stop accumulating permanent write-receipt debt.**
+
+After an embedding-provider outage, a failed embedding effect could never be resolved once its page moved to a newer revision: `retry-effects` refused with `revision_conflict` and receipt compaction skips any receipt with a non-committed effect — so those receipts kept their full reservation forever (a reporter held 27 uncompacted receipts after `gbrain embed --stale` recovered). The explicit retry now settles the obligation when there is nothing left to embed: a deleted or missing page (`reason: page_deleted`), or a newer revision whose own vectors are already complete (`reason: revision_changed` — the same completeness the worker's reconcile path verifies). The effect commits with `outcome: { embedding: 'superseded' }` and the receipt becomes compactable. A newer revision that is *not* fully embedded still refuses with `revision_conflict`, so live embedding debt keeps surfacing instead of being settled away silently.
+
+### To take advantage of 0.60.10.5
+
+Re-run `gbrain sources writer retry-effects <source> --request-id <id>` on the refused receipts. `--dry-run` reports `would_supersede` first. Receipts whose current revision was never embedded still need an `embed --stale` pass (or a managed rewrite) before they settle.
+
+### For contributors
+
+- The settle runs inside `retryEmbeddingEffect` (`src/core/persistence/effect-retry.ts`) after the same host/source/claim guards the retry path already applies, and reuses `readEmbeddingEffectProjection` for the completeness check; an unready current projection falls back to the conflict report rather than erroring.
+- `persistence-effect-retry.test.ts` gained the #5734 check: complete newer revision settles with zero provider calls; deleted page settles `page_deleted`; an unembedded newer revision still refuses `revision_conflict` (the pre-existing pin stays green).
+- Refs #5734.
+
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
