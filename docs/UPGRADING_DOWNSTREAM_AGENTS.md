@@ -43,6 +43,17 @@ not know to backfill the structured timeline.
 
 Total time: ~10 minutes for all four skills.
 
+> **If the binary upgraded but schema work did not complete:** the recovery
+> advice (`gbrain apply-migrations --yes`) assumes no run is still in flight —
+> a timed-out `bun install`/`post-upgrade` leaves its migration child running
+> in the background. Check first: `gbrain apply-migrations --list` reports an
+> in-flight run on Postgres brains (holder pid/host and when the lock lapses),
+> and `pgrep -fl apply-migrations` finds a detached local child. Wait for it
+> to finish; only run `apply-migrations --yes` once nothing is in flight —
+> a second runner refuses on Postgres (serializing on the
+> `gbrain-apply-migrations` row in `gbrain_cycle_locks`) rather than writing
+> duplicate backfills in parallel.
+
 ---
 
 ## 1. brain-ops/SKILL.md

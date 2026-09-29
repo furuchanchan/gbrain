@@ -54,11 +54,29 @@ export async function runUpgrade(args: string[], opts: { targetVersion?: string 
       console.log(`Upgrading bun-link source clone at ${linkInfo.repoRoot}...`);
       try {
         execFileSync('git', ['-C', linkInfo.repoRoot, 'pull', '--ff-only'], { stdio: 'inherit', timeout: 120_000 });
+      } catch {
+        console.error('Auto-upgrade failed at `git pull`. Try manually:');
+        console.error(`  cd ${linkInfo.repoRoot} && git pull && bun install`);
+        break;
+      }
+      try {
         execFileSync('bun', ['install'], { cwd: linkInfo.repoRoot, env: upgradeEnv, stdio: 'inherit', timeout: 120_000 });
         upgraded = true;
       } catch {
-        console.error('Auto-upgrade failed. Try manually:');
-        console.error(`  cd ${linkInfo.repoRoot} && git pull && bun install`);
+        // #5693 — `bun install`'s postinstall runs `apply-migrations` inline;
+        // on a brain where orchestrators take minutes the 120s timeout fires
+        // AFTER the swap already landed, and the child keeps running
+        // detached. Distinguish "swap failed" from "swap landed, migrations
+        // still in flight" so the printed advice can't start a second run.
+        const swapped = readRepoVersion(linkInfo.repoRoot);
+        if (swapped && swapped !== oldVersion) {
+          upgraded = true;
+          console.error(`The source swap to v${swapped} completed, but \`bun install\` did not finish within the 120s window — its postinstall migrations may still be running in the background.`);
+          console.error('Do NOT start a second apply-migrations in parallel: check `pgrep -fl apply-migrations` and wait for it to finish (`gbrain apply-migrations --list` reports the in-flight run on Postgres).');
+        } else {
+          console.error('Auto-upgrade failed during `bun install`. Try manually:');
+          console.error(`  cd ${linkInfo.repoRoot} && git pull && bun install`);
+        }
       }
       break;
     }
@@ -864,6 +882,23 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
  * Returns { repoRoot } when confident; null otherwise (caller falls
  * through to the existing detection chain).
  */
+/** Best-effort version read from a source checkout (VERSION file, then package.json). */
+function readRepoVersion(repoRoot: string): string | null {
+  try {
+    const versionFile = join(repoRoot, 'VERSION');
+    if (existsSync(versionFile)) {
+      const v = readFileSync(versionFile, 'utf8').trim().replace(/^v/, '');
+      if (v) return v;
+    }
+  } catch { /* fall through to package.json */ }
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { version?: string };
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version.replace(/^v/, '') : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectBunLink(): { repoRoot: string } | null {
   try {
     const argv1 = process.argv[1];

@@ -14,7 +14,9 @@
 
 import { VERSION } from '../version.ts';
 import { loadConfig } from '../core/config.ts';
+import type { BrainEngine } from '../core/engine.ts';
 import { PgliteBusyError } from '../core/pglite-lock.ts';
+import { tryAcquireDbLock, inspectLock, type DbLockHandle } from '../core/db-lock.ts';
 import { loadCompletedMigrations, appendCompletedMigration, type CompletedMigrationEntry } from '../core/preferences.ts';
 import { migrations, compareVersions, type Migration, type OrchestratorOpts } from './migrations/index.ts';
 import {
@@ -22,6 +24,12 @@ import {
   statusForVersion as ledgerStatusForVersion,
   MAX_CONSECUTIVE_PARTIALS,
 } from '../core/migration-ledger.ts';
+
+// #5693 — single-runner lock id in gbrain_cycle_locks (pooler-safe; advisory
+// locks don't survive PgBouncer). Shared by the run guard and the --list
+// in-flight probe.
+const APPLY_MIGRATIONS_LOCK_ID = 'gbrain-apply-migrations';
+const APPLY_MIGRATIONS_LOCK_TTL_MINUTES = 10;
 
 interface ApplyMigrationsArgs {
   list: boolean;
@@ -243,6 +251,28 @@ function printList(plan: Plan, installed: string, dbProbe: DbProbeOutcome): void
   } else {
     console.log(`${needsWork} migration(s) need action. Run \`gbrain apply-migrations --yes\` to apply.`);
   }
+}
+
+/** #5693 — --list answers "is an apply-migrations still in flight?" so the
+ * upgrade guide's "if schema work did not complete" check can distinguish a
+ * still-running postinstall from a run that never finished. */
+async function printInFlightRunLine(): Promise<void> {
+  const cfg = loadConfig();
+  if (cfg?.engine !== 'postgres') return;
+  let eng: BrainEngine | undefined;
+  try {
+    const { createEngine } = await import('../core/engine-factory.ts');
+    const { toEngineConfig } = await import('../core/config.ts');
+    eng = await createEngine(toEngineConfig(cfg));
+    await eng.connect(toEngineConfig(cfg));
+    const snap = await inspectLock(eng, APPLY_MIGRATIONS_LOCK_ID);
+    if (snap && !snap.ttl_expired) {
+      console.log(`In flight: an apply-migrations run holds this brain (pid ${snap.holder_pid} on ${snap.holder_host}, acquired ${snap.acquired_at.toISOString()}, TTL expires ${snap.ttl_expires_at.toISOString()}).`);
+    } else {
+      console.log('No apply-migrations run in flight.');
+    }
+  } catch { /* probe is best-effort; an unreachable DB was already reported above */ }
+  finally { try { await eng?.disconnect(); } catch { /* best effort */ } }
 }
 
 function printDryRun(plan: Plan, installed: string, dbProbe: DbProbeOutcome): void {
@@ -507,7 +537,11 @@ export async function runApplyMigrations(args: string[]): Promise<void> {
   // #4364: --require-db turns an unreachable DB into a hard failure instead
   // of a filesystem-only plan that renders identically to a clean database.
   const listExit = cli.requireDb && dbProbe.status === 'unreachable' ? 1 : 0;
-  if (cli.list) { printList(plan, installed, dbProbe); process.exit(listExit); }
+  if (cli.list) {
+    printList(plan, installed, dbProbe);
+    await printInFlightRunLine();
+    process.exit(listExit);
+  }
   if (cli.dryRun) {
     const previews: Array<{ version: string; preview?: unknown; error?: string }> = [];
     for (const migration of [...plan.applied, ...plan.partial, ...plan.pending, ...plan.wedged]) {
@@ -528,9 +562,63 @@ export async function runApplyMigrations(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // #5693 — single-runner guard (Postgres). The postinstall child can outlive
+  // a timed-out `bun install`, and nothing else stopped a manual
+  // `apply-migrations` from running in parallel with it — two orchestrators
+  // then admit duplicate writes for the same pages. The gbrain_cycle_locks
+  // row is the pooler-safe lock primitive (pgBouncer strips advisory locks).
+  // PGLite already serializes via its single-writer lock. Read-only surfaces
+  // (--list/--dry-run/--force-*) returned before this point and never lock.
+  let runLock: DbLockHandle | null = null;
+  let lockEngine: BrainEngine | undefined;
+  let lockHeartbeat: ReturnType<typeof setInterval> | undefined;
+  const lockCfg = loadConfig();
+  if (lockCfg?.engine === 'postgres') {
+    try {
+      const { createEngine } = await import('../core/engine-factory.ts');
+      const { toEngineConfig } = await import('../core/config.ts');
+      lockEngine = await createEngine(toEngineConfig(lockCfg));
+      await lockEngine.connect(toEngineConfig(lockCfg));
+      runLock = await tryAcquireDbLock(lockEngine, APPLY_MIGRATIONS_LOCK_ID, APPLY_MIGRATIONS_LOCK_TTL_MINUTES);
+    } catch (err) {
+      // DB unreachable: dbProbe already reported it, and a parallel runner
+      // cannot hold the lock either — proceed without it.
+      try { await lockEngine?.disconnect(); } catch { /* best effort */ }
+      lockEngine = undefined;
+    }
+    if (lockEngine && !runLock) {
+      const snap = await inspectLock(lockEngine, APPLY_MIGRATIONS_LOCK_ID);
+      const holder = snap
+        ? `pid ${snap.holder_pid} on ${snap.holder_host}, acquired ${snap.acquired_at.toISOString()}, TTL expires ${snap.ttl_expires_at.toISOString()}`
+        : 'holder unknown';
+      await lockEngine.disconnect();
+      throw new Error(
+        `Another apply-migrations run already holds this brain (${holder}). ` +
+        `Parallel orchestrators admit duplicate writes. Confirm whether it is still running (\`pgrep -fl apply-migrations\`); ` +
+        `the lock releases itself when the run ends or the TTL lapses — do not force it unless the holder is gone.`,
+      );
+    }
+    if (runLock) {
+      // Orchestrators can run for hours; heartbeat keeps the TTL honest while
+      // a crash still frees the lock within APPLY_MIGRATIONS_LOCK_TTL_MINUTES.
+      lockHeartbeat = setInterval(() => {
+        void runLock?.refresh({ signal: AbortSignal.timeout(15_000) })
+          .then(owned => { if (!owned) console.error(`[apply-migrations] '${APPLY_MIGRATIONS_LOCK_ID}' lock was taken by another holder — this run no longer has exclusive authority.`); })
+          .catch(() => {});
+      }, 30_000);
+      lockHeartbeat.unref?.();
+    }
+  }
+  const releaseRunLock = async (): Promise<void> => {
+    if (lockHeartbeat) clearInterval(lockHeartbeat);
+    try { await runLock?.release(); } catch { /* best effort */ }
+    try { await lockEngine?.disconnect(); } catch { /* best effort */ }
+  };
+
   const toRun: Migration[] = [...plan.partial, ...plan.pending, ...plan.applied.filter(migration => migration.reconcile)]
     .sort((left, right) => compareVersions(left.version, right.version));
   if (toRun.length === 0) {
+    await releaseRunLock();
     if (schemaBehind) {
       console.error(
         'Orchestrator migrations are up to date, but schema migrations are behind. ' +
@@ -619,7 +707,7 @@ export async function runApplyMigrations(args: string[]): Promise<void> {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Migration v${m.version} threw: ${msg}`);
-      if (e instanceof PgliteBusyError) throw e;
+      if (e instanceof PgliteBusyError) { await releaseRunLock(); throw e; }
       // Same partial-on-throw treatment so the cap counts runaway failures.
       try {
         if (recordCheckpoint) appendCompletedMigration({ version: m.version, status: 'partial' });
@@ -629,6 +717,7 @@ export async function runApplyMigrations(args: string[]): Promise<void> {
     }
   }
 
+  await releaseRunLock();
   if (failed) process.exit(1);
 }
 
