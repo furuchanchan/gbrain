@@ -856,6 +856,8 @@ Options:
   --priority recent          prioritize recently updated pages
   --catch-up                 include unprocessed backlog
   --include-null-signature   re-embed pages without an embedding signature
+  --pace[=<mode>]            pace the run against DB contention (bare --pace = balanced)
+  --pace-max-concurrency <n> cap concurrency while pacing
   --background               submit as a background job and exit
   --help, -h                 show this help
 `;
