@@ -19,6 +19,9 @@ const PLAN = {
   from_model: 'openai:text-embedding-3-small', from_dims: 1536,
   column_dims: 1536, to_model: 'openai:text-embedding-3-small', to_dims: 1536,
   dim_change: false, chunks_to_embed: 10, total_chars: 1000,
+  null_signature_chunks: 0, false_stamped_chunks: 0, est_cost_usd: 0,
+  price_known: true, resuming: false, reranker_warning: null,
+  signature_census: [], synopsis_tier_pages: 0,
 };
 const CALL = { operation: 'embed', model: 'openai:text-embedding-3-small', kind: 'embedding' as const, maxInputTokens: 100_000 };
 const debited = async () => {
