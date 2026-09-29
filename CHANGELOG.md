@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.7] - 2026-10-01
+
+**The v0.28.0 takes backfill no longer wedges on managed brains — the whole migration chain can proceed again.**
+
+On a managed brain, `takes` carries the `managed_writer_guard` trigger: writes are refused `writer_coordinator_required` unless the persistence coordinator's `gbrain.write_sources` capability covers the row's source. The v0.28.0 orchestrator's backfill phase ran `extractTakesFromDb` bare, so its first write was refused, v0.28.0 recorded `partial` on every run, and after three runs it was `wedged` — blocking v0.29.1, v0.31.0, v0.32.2, v0.43.0 and v0.46.3 entirely. The backfill is itself a maintenance writer of a derived index, so it now runs inside one coordinated transaction granting exactly the enumerated page sources — the same pattern the other maintenance writers adopted after #5280. Pre-managed pages with fenced takes still index; unmanaged brains take the identical unguarded path (the guard is a no-op there).
+
+### To take advantage of 0.60.10.7
+
+If your `gbrain apply-migrations --list` shows `wedged 0.28.0`, re-run `gbrain apply-migrations --force-retry 0.28.0` after upgrading — the backfill now completes and the chain continues.
+
+### For contributors
+
+- `extractTakesFromDb` (src/core/cycle/extract-takes.ts) enumerates page refs as before, then — when `managedPersistenceEnabled` — runs the parse/upsert loop inside `engine.transaction(tx => withCoordinatedWrite(tx, sourceIds, …))` with `sourceIds` covering exactly the enumerated sources. `pruneRemovedTakes` and `--rebuild` DELETEs ride the same transaction; `dryRun` never takes the coordinated path.
+- `extract-takes-managed.test.ts` (new) drives `__testing.phaseBBackfill` on a managed PGLite brain end-to-end: phase completes, takes rows materialize, `--rebuild` DELETE+INSERT passes the guard, and the `gbrain.write_sources` grant is restored afterwards (no capability leak).
+- Refs #5728.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
