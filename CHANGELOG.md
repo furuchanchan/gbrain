@@ -10,6 +10,23 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.18.5] - 2026-09-30
+
+**Withdrawal discovery over large sources is resumable: a spent scan budget returns a pending receipt with a retained, source-revision-bound plan instead of refusing outright.**
+
+Whole-source discovery previously refused once its checked scan budget (~10s) was spent mid-scan, so a withdrawal over a source above the inventory ceiling could never complete — the operation that needs full coverage the most was the one it could not finish. Discovery now scans in bounded batches and, when the budget is spent, rolls back the attempt and returns a `withdrawal_pending` receipt carrying the full plan: scan phase, cursor, accumulated affected set, the claim-set hash, the source incarnation, and the plan's `started_at`. The caller persists that plan to `fact_withdrawal_discovery` only after the rolled-back transaction releases the connection (single-connection engines cannot interleave a write inside an open transaction), and at least one batch of progress lands per invocation, so repeated retries always advance.
+
+Retrying the same withdrawal resumes the retained plan from its cursor. A replaced source incarnation or a changed claim set resets rather than resumes stale coverage; retained plans garbage-collect after an hour. Drift phases re-cover any page whose `updated_at` advanced past the plan's `started_at`, so a page written mid-plan is rescanned even when its id sits behind the cursor. Every fixed safety bound is unchanged: 256 affected pages, 1 MiB target manifest, row/byte/chunk/fact ceilings, fail-closed on malformed evidence — the scan is resumable, the limits are not raised.
+
+### To take advantage of 0.59.18.5
+
+Nothing to do: a `forget` over a large source that used to refuse with `withdrawal_capacity`-style exhaustion now completes across retries, and managed effect runners resume the retained plan automatically (250ms requeue).
+
+### For contributors
+
+- `persistWithdrawalDiscoveryPlan(engine, error)` is the single persist seam; the pending `OperationError` carries `pendingPlan`. Outermost boundaries that persist: `recordFactWithdrawal` (outer engine), `submitForgetMutation` (post-`retryWriteAdmission`), and `recordFailure` (effect path, before requeue).
+- New suite `test/withdrawal-resumable-discovery.test.ts` (5 tests): pending→plan row→resume→plan gone; multi-pending completion under tiny batch/budget; incarnation replacement resets; drift rescans a mid-plan write; over-bound set still refuses deterministically.
+- Refs #5674.
 ## [0.59.18.0] - 2026-09-29
 
 **Dream no longer keeps made-up quotes, wrong-speaker quotes or invented numbers as memory, and `gbrain eval compare` computes the statistics it claims.**
