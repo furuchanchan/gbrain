@@ -31,6 +31,9 @@ export async function upgradeWithdrawalEffect(engine: BrainEngine, effect: Persi
     const claims = await tx.executeRaw<WithdrawalClaim>('SELECT visibility,fact_hash FROM fact_withdrawals WHERE source_id=$1 ORDER BY visibility,fact_hash LIMIT $2',
       [effect.source_id, WITHDRAWAL_LIMITS.targets + 1]);
     if (!claims.length) throw new OperationError('withdrawal_provenance', 'Legacy withdrawal intent has no verifiable ledger. Its queued work remains retained.');
+    // Discovery runs inside the tx (single-connection engines cannot
+    // interleave an outer handle); a thrown withdrawal_pending rolls back,
+    // and recordFailure persists the carried plan + requeues this effect.
     const discovered = await discoverWithdrawalTargets(tx, effect.source_id, claims).catch(withdrawalDiscoveryFailure);
     const remaining = await tx.executeRaw<{ id: number }>(`SELECT id FROM pages WHERE source_id=$1 AND id=ANY($2::int[])
       AND ($3::text IS NULL OR slug>$3)`, [effect.source_id, discovered.map(target => target.page_id), effect.data.after_slug ?? null]);

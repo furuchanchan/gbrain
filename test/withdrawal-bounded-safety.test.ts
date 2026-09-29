@@ -8,6 +8,7 @@ import type { BrainEngine } from '../src/core/engine.ts';
 import type { OperationContext } from '../src/core/ops/contract.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { recordFactWithdrawal } from '../src/core/facts/withdrawal.ts';
+import { persistWithdrawalDiscoveryPlan } from '../src/core/facts/withdrawal-discovery.ts';
 import { withdrawalFenceBlocks } from '../src/core/facts/withdrawal-overlay.ts';
 import { renderFactsTable, parseFactsFence, FACTS_FENCE_BEGIN } from '../src/core/facts-fence.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
@@ -77,9 +78,14 @@ for (const backend of testBackends()) describe(`bounded withdrawal ${backend}`, 
       sourceIncarnation: binding.source_incarnation, slug: 'affected', pageId: snapshot.page.id, requestId: randomUUID(),
       callerIntent: { id: fact.id }, intent: { id: fact.id }, worktreeId: binding.worktree_id, topologyGeneration: binding.topology_generation });
     const withdraw = () => engine.transaction(async tx => {
-      const result = await recordFactWithdrawal(tx, fact.id, sourceId, false, { requestId: request.id });
+      const result = await recordFactWithdrawal(tx, fact.id, sourceId, false, { requestId: request.id, deferPlanPersistence: true });
       await completeWrite(tx, request, 'committed', { status: 'forgotten' });
       return result;
+    }).catch(async (error: unknown) => {
+      // Mirrors the production outermost boundary: the carried plan is
+      // persisted only after the rolled-back transaction releases the tx.
+      await persistWithdrawalDiscoveryPlan(engine, error);
+      throw error;
     });
     return { sourceId, root, fact, request, withdraw };
   }
@@ -116,16 +122,23 @@ for (const backend of testBackends()) describe(`bounded withdrawal ${backend}`, 
     await drain(f.request.id); expect(git(f.root, 'rev-parse', 'HEAD')).toBe(head);
   });
 
-  test('discovery time exhaustion refuses before any withdrawal mutation', async () => {
+  test('discovery time exhaustion commits a resumable plan instead of failing', async () => {
     const f = await fixture(), before = await state(f.sourceId);
     let now = 0;
     const clock = spyOn(performance, 'now').mockImplementation(() => now += 11_000);
-    try { await expect(f.withdraw()).rejects.toMatchObject({ code: 'withdrawal_capacity' }); }
+    try { await expect(f.withdraw()).rejects.toMatchObject({ code: 'withdrawal_pending' }); }
     finally { clock.mockRestore(); }
+    // The thrown pending receipt rolls back the attempt but the retained plan
+    // survives — the next invocation resumes instead of re-scanning.
     expect(await state(f.sourceId)).toEqual(before);
     expect(await engine.executeRaw('SELECT 1 FROM fact_withdrawals WHERE source_id=$1', [f.sourceId])).toEqual([]);
     expect(await engine.executeRaw('SELECT expired_at FROM facts WHERE id=$1', [f.fact.id])).toEqual([{ expired_at: null }]);
     expect(await engine.executeRaw('SELECT 1 FROM persistence_effects WHERE request_id=$1::uuid', [f.request.id])).toEqual([]);
+    expect(await engine.executeRaw('SELECT 1 FROM fact_withdrawal_discovery WHERE source_id=$1', [f.sourceId])).toHaveLength(1);
+    const result = await f.withdraw();
+    expect(result.withdrawn).toBe(true);
+    expect(result.pages.map(page => page.slug)).toEqual(['affected']);
+    expect(await engine.executeRaw('SELECT 1 FROM fact_withdrawal_discovery WHERE source_id=$1', [f.sourceId])).toEqual([]);
   });
 
   test('oversized persisted target manifests retain intent without file publication', async () => {
@@ -287,18 +300,21 @@ for (const backend of testBackends()) describe(`bounded withdrawal ${backend}`, 
       await engine.executeRaw(`INSERT INTO pages(source_id,slug,type,title,compiled_truth,timeline,frontmatter)
         SELECT $1,'capacity-page-'||n,'note','Capacity control','Unrelated control text','','{}'::jsonb FROM generate_series(1,11998) n`, [f.sourceId]);
       const pages = () => engine.executeRaw(`SELECT count(*)::int AS count,md5(string_agg(row_to_json(p)::text,'' ORDER BY id)) AS fingerprint
-        FROM pages p WHERE source_id=$1`, [f.sourceId]);
-      const facts = () => engine.executeRaw('SELECT row_to_json(f) AS fact FROM facts f WHERE source_id=$1 ORDER BY id', [f.sourceId]);
-      const chunks = () => engine.executeRaw(`SELECT row_to_json(c) AS chunk FROM content_chunks c JOIN pages p ON p.id=c.page_id
-        WHERE p.source_id=$1 ORDER BY c.id`, [f.sourceId]);
-      const beforePages = await pages(), beforeFacts = await facts(), beforeChunks = await chunks();
-      expect(beforePages[0].count).toBe(12001);
-      const beforeRequest = await engine.executeRaw('SELECT row_to_json(r) AS request FROM persistence_requests r WHERE id=$1::uuid', [f.request.id]);
-      await expect(f.withdraw()).rejects.toMatchObject({ code: 'withdrawal_capacity' });
-      expect(await pages()).toEqual(beforePages); expect(await facts()).toEqual(beforeFacts); expect(await chunks()).toEqual(beforeChunks);
-      expect(await engine.executeRaw('SELECT row_to_json(r) AS request FROM persistence_requests r WHERE id=$1::uuid', [f.request.id])).toEqual(beforeRequest);
-      expect(await engine.executeRaw('SELECT 1 FROM fact_withdrawals WHERE source_id=$1', [f.sourceId])).toEqual([]);
-      expect(await engine.executeRaw('SELECT 1 FROM persistence_effects WHERE request_id=$1::uuid', [f.request.id])).toEqual([]);
+        FROM pages p WHERE source_id=$1 AND slug<>'affected'`, [f.sourceId]);
+      const beforePages = await pages();
+      expect(beforePages[0].count).toBe(12000);
+      // #5674: a source over the old inventory ceiling withdraws through
+      // retained resumable progress instead of refusing outright.
+      let result: { withdrawn: boolean; pages: Array<{ slug: string }> } | undefined;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        try { result = await f.withdraw(); break; }
+        catch (error) { if ((error as { code?: string }).code !== 'withdrawal_pending') throw error; }
+      }
+      expect(result?.withdrawn).toBe(true);
+      expect(result?.pages.map(page => page.slug)).toEqual(['affected']);
+      expect(await pages()).toEqual(beforePages);
+      expect(await engine.executeRaw('SELECT 1 FROM fact_withdrawal_discovery WHERE source_id=$1', [f.sourceId])).toEqual([]);
+      expect(await engine.executeRaw('SELECT slug FROM pages WHERE source_id=$1 AND slug=$2', [f.sourceId, 'affected'])).toHaveLength(1);
     } finally { await engine.executeRaw('DELETE FROM sources WHERE id=$1', [f.sourceId]); }
   }, 120_000);
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { targetedWithdrawalEffect, upgradeWithdrawalEffect } from './effect-targets.ts';
+import { persistWithdrawalDiscoveryPlan } from '../facts/withdrawal-discovery.ts';
 import { existsSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
@@ -228,6 +229,9 @@ function embeddingStorageFailure(error: unknown): unknown {
 }
 
 async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, error: unknown, signal?: AbortSignal): Promise<void> {
+  // A withdrawal_pending receipt carries its retained discovery plan; it must
+  // be written only now — after the failed effect's transaction rolled back.
+  await persistWithdrawalDiscoveryPlan(engine, error).catch(() => {});
   const code = error instanceof OperationError ? error.code : 'effect_unavailable';
   // Source replacement is final only without recovery. Unknown physical bytes
   // retain their record and continue to block this root for explicit repair.
@@ -258,7 +262,7 @@ async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, err
       : transientBackoffMs(attempt - 1);
     await retryEffect(engine, effect, reason, delay); return;
   }
-  await retryEffect(engine, effect, code, ['projection_pending', 'revision_conflict', 'writer_busy', 'writer_pool_capacity'].includes(code) ? 250 : 30_000);
+  await retryEffect(engine, effect, code, ['projection_pending', 'revision_conflict', 'writer_busy', 'writer_pool_capacity', 'withdrawal_pending'].includes(code) ? 250 : 30_000);
 }
 
 /** Bounded, idempotent work. Recovery obtains kernel exclusion before a DB claim. */

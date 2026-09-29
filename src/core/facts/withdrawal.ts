@@ -2,7 +2,7 @@ import type { BrainEngine } from '../engine.ts';
 import { renderFactsTable, type ParsedFact } from '../facts-fence.ts';
 import { OperationError } from '../ops/contract.ts';
 import { withdrawnFact, withdrawalFenceBlocks } from './withdrawal-overlay.ts';
-import { ambiguousFenceClaims, discoverWithdrawalTargets, withdrawalDiscoveryFailure } from './withdrawal-discovery.ts';
+import { ambiguousFenceClaims, discoverWithdrawalTargets, persistWithdrawalDiscoveryPlan, withdrawalDiscoveryFailure } from './withdrawal-discovery.ts';
 
 export interface WithdrawalCommit {
   withdrawn: boolean;
@@ -12,7 +12,10 @@ export interface WithdrawalCommit {
 /** DB-first: no filesystem ownership, provider work or root lock is required. */
 export async function recordFactWithdrawal(
   engine: BrainEngine, id: number, sourceId: string, worldOnly = false,
-  opts: { requestId?: string } = {},
+  // deferPlanPersistence: a caller that passes a tx as `engine` must persist
+  // the pending plan itself via persistWithdrawalDiscoveryPlan after its own
+  // outer transaction rolls back — no write can interleave on PGLite (#5674).
+  opts: { requestId?: string; deferPlanPersistence?: boolean } = {},
 ): Promise<WithdrawalCommit> {
   return engine.transaction(async tx => {
     // A managed caller takes this EXCLUSIVE source lock before authority,
@@ -58,6 +61,12 @@ export async function recordFactWithdrawal(
         WHERE s.id=$2 ON CONFLICT(request_id,kind) DO NOTHING`, [opts.requestId, sourceId, JSON.stringify({ version: 2, targets: pages.map(page => ({ slug: page.slug, page_id: page.id, revision: page.knowledge_revision })).sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0) })]);
     }
     return { withdrawn: true, pages: pages.map(page => ({ sourceId, slug: page.slug, revision: page.knowledge_revision })) };
+  }).catch(async (error: unknown) => {
+    // The pending plan persists after this transaction releases the
+    // connection; a caller that passed a tx opts out and persists at its own
+    // outermost boundary instead (no interleaved write can run on PGLite).
+    if (!opts.deferPlanPersistence) await persistWithdrawalDiscoveryPlan(engine, error);
+    throw error;
   });
 }
 

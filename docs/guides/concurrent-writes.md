@@ -320,8 +320,20 @@ intent or intervening edits and can make withdrawn content active again.
 
 Discovery has fixed safety limits: 12,000 source pages, 40,000 chunks, 40,000 fact
 rows, 64 MiB of combined text and 256 affected pages in a target manifest no larger
-than 1 MiB. It reads bodies in batches of 128 and refuses when its checked scan
-budget exceeds 10 seconds; an individual matching batch also has a 16,384-row/8 MiB input limit.
+than 1 MiB. It reads bodies in batches of 128 and checks its scan budget after each
+batch — at least one batch of progress lands per invocation. When the 10-second
+budget is spent mid-scan, the attempt rolls back and returns a `withdrawal_pending`
+receipt carrying the plan state; the caller then persists that plan to
+`fact_withdrawal_discovery` — only after the rolled-back transaction releases the
+connection, because a single-connection engine cannot interleave a write inside an
+open transaction. Retrying the same withdrawal resumes the retained plan from its
+cursor and accumulated affected set, keyed to the source incarnation and the claim
+set's content hash; a replaced incarnation or a different claim set resets it rather
+than resuming stale coverage, and plans older than an hour are garbage-collected.
+Drift phases (`drift_pages`, `drift_chunks`) then re-cover any page whose
+`updated_at` advanced past the plan's `started_at`, so a page written mid-plan is
+rescanned even when its id sits behind the cursor. An individual matching batch
+also has a 16,384-row/8 MiB input limit.
 Each body also has a 16,384-marker parsing limit, enforced during a linear scan.
 These are capacity limits, not a latency guarantee or permission to spend on
 providers. `withdrawal_capacity` or `withdrawal_provenance` refuses the attempt

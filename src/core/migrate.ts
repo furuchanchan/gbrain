@@ -6708,6 +6708,29 @@ CREATE TRIGGER minion_queue_protocol BEFORE INSERT OR UPDATE ON minion_jobs
     idempotent: true,
     sql: FACT_WITHDRAWAL_SUBJECT_SQL,
   },
+  {
+    // Durable progress for resumable withdrawal discovery (#5674): a scan that
+    // cannot finish inside one invocation commits a plan row keyed by the
+    // source + claim set and resumes from its cursor instead of refusing on
+    // whole-source inventory size.
+    version: 170,
+    name: 'fact_withdrawal_discovery_plans',
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS fact_withdrawal_discovery (
+        source_id          TEXT        NOT NULL,
+        claims_key         TEXT        NOT NULL,
+        claims             JSONB       NOT NULL,
+        source_incarnation UUID        NOT NULL,
+        phase              TEXT        NOT NULL,
+        cursor             BIGINT      NOT NULL DEFAULT 0,
+        affected           INTEGER[]   NOT NULL DEFAULT '{}',
+        started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (source_id, claims_key)
+      );
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

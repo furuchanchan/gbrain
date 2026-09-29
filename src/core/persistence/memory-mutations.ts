@@ -4,6 +4,7 @@ import { OperationError, verbError } from '../ops/contract.ts';
 import { enforceClientSlugFence, enforceSubagentSlugFence, validatePageSlug } from '../ops/context.ts';
 import { isNullLikeEntity } from '../facts/write-single.ts';
 import { recordFactWithdrawal } from '../facts/withdrawal.ts';
+import { persistWithdrawalDiscoveryPlan } from '../facts/withdrawal-discovery.ts';
 import { initializeLocalPersistence, requestPrincipalForContext } from './page-mutations.ts';
 import { authorizeStoredRequest, submissionAuthority } from './authority.ts';
 import { admitWrite, admitWriteInTransaction, assertPageRequestIdentity, assertReplayIntent, completeWrite, getWriteRequest, intentDigest } from './journal.ts';
@@ -133,7 +134,7 @@ export async function submitForgetMutation(ctx: OperationContext, operation: 'fo
     return withCoordinatedWrite(tx, [sourceId], async () => {
       // Even an expired legacy fact acquires a ledger so a stale import cannot
       // reactivate it. Internal affected-page identities never enter the receipt.
-      await recordFactWithdrawal(tx, id, sourceId, ctx.remote !== false, { requestId: row.id });
+      await recordFactWithdrawal(tx, id, sourceId, ctx.remote !== false, { requestId: row.id, deferPlanPersistence: true });
       if (reason) await tx.executeRaw(`UPDATE facts SET context=concat_ws(' | ',NULLIF(context,''),$3::text)
         WHERE id=$1 AND source_id=$2`, [id, sourceId, `forgotten: ${reason}`]);
       if (operation === 'forget_fact' && fact.expired_at !== null) {
@@ -144,6 +145,11 @@ export async function submitForgetMutation(ctx: OperationContext, operation: 'fo
         : { id, expired: true, path: 'legacy_db', reason: reason ?? 'forgotten' };
       return completeWrite(tx, row, 'committed', { ...outcome, persistence: { mode: 'database' } });
     });
-  }));
+  })).catch(async (error: unknown) => {
+    // A withdrawal_pending receipt carries the retained discovery plan; persist
+    // it only now — the rolled-back transaction has released the connection.
+    await persistWithdrawalDiscoveryPlan(ctx.engine, error);
+    throw error;
+  });
   return writeResponse(done);
 }
