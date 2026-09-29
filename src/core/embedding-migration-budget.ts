@@ -1,6 +1,7 @@
 import type { BrainEngine } from './engine.ts';
 import { BudgetTracker, loadPricingOverrides } from './budget/budget-tracker.ts';
-import type { AIInvocation, AIInvocationPermit } from './ai/invocation-guard.ts';
+import { usageCostUsd } from './budget/reservation-cost.ts';
+import type { AIInvocation, AIInvocationPermit, AIInvocationUsage } from './ai/invocation-guard.ts';
 import { MIGRATION_STATE_KEY, readMigrationState, type EmbeddingMigrationPlan, type MigrationState } from './embedding-migration.ts';
 import type { DbLockHandle } from './db-lock.ts';
 
@@ -52,6 +53,7 @@ export async function authorizeMigrationBudget(engine: BrainEngine, plan: Embedd
     if (call.kind !== 'embedding' && call.kind !== 'rerank') throw new Error('Migration permits embedding and reranker probes only');
     if (call.model !== (call.kind === 'embedding' ? plan.to_model : rerankerModel)) throw new Error('Provider model differs from the authorized migration plan; no request dispatched');
     if (!Number.isSafeInteger(call.maxInputTokens) || call.maxInputTokens! <= 0) throw new Error('Provider request has no conservative input ceiling; no request dispatched');
+    let debitedUsd = 0;
     await engine.transaction(async tx => {
       await assertMigrationLeases(tx, locks);
       await tx.executeRaw('SELECT key FROM config WHERE key=$1 FOR UPDATE', [MIGRATION_STATE_KEY]);
@@ -64,10 +66,31 @@ export async function authorizeMigrationBudget(engine: BrainEngine, plan: Embedd
         estimatedInputTokens: call.maxInputTokens!, maxOutputTokens: 0 };
       tracker.reserve(estimate);
       tracker.record({ modelId: call.model, kind: estimate.kind, inputTokens: call.maxInputTokens!, outputTokens: 0 });
-      current.budget.debited_usd += tracker.totalSpent;
+      debitedUsd = tracker.totalSpent;
+      current.budget.debited_usd += debitedUsd;
       current.budget.requests++;
       await tx.setConfig(MIGRATION_STATE_KEY, JSON.stringify(current));
     });
-    return { settle: async () => {} };
+    let settled = false;
+    return { settle: async (usage: AIInvocationUsage | null) => {
+      // #5680 — the debit is a reservation at the provider's maxInputTokens
+      // ceiling; reconcile it down to provider-reported usage once the call
+      // lands. Usage null (failed/unmeasured call) keeps the conservative
+      // debit — never under-count a spent request. Unpriced actuals keep it
+      // too (the reserve already priced this model).
+      if (settled || usage === null) return;
+      settled = true;
+      const actualCost = usageCostUsd(call.model, usage.inputTokens, usage.outputTokens,
+        call.kind === 'embedding' ? 'embed' : 'rerank', pricingOverrides);
+      if (actualCost === null || actualCost >= debitedUsd) return;
+      await engine.transaction(async tx => {
+        await assertMigrationLeases(tx, locks);
+        await tx.executeRaw('SELECT key FROM config WHERE key=$1 FOR UPDATE', [MIGRATION_STATE_KEY]);
+        const current = (await readMigrationState(tx)).state;
+        if (!current?.budget || current.to_model !== plan.to_model || current.to_dims !== plan.to_dims) return;
+        current.budget.debited_usd = Math.max(0, current.budget.debited_usd - (debitedUsd - actualCost));
+        await tx.setConfig(MIGRATION_STATE_KEY, JSON.stringify(current));
+      });
+    } };
   };
 }
