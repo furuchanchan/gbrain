@@ -10,6 +10,31 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.18.6] - 2026-09-30
+
+**Withdrawal discovery over large sources is resumable and provably complete: a spent scan budget returns a pending receipt with a retained, source-revision-bound plan, and discovery only commits once every write window is verified empty.**
+
+Whole-source discovery previously refused once its checked scan budget (~10s) was spent mid-scan, so a withdrawal over a source above the inventory ceiling could never complete — the operation that needs full coverage the most was the one it could not finish. Discovery now scans in bounded batches and, when the budget is spent, rolls back the attempt and returns a `withdrawal_pending` receipt carrying the full plan: scan phase, cursor, accumulated affected set, the claim-set hash, the source incarnation, and the plan's `started_at`. The caller persists that plan to `fact_withdrawal_discovery` only after the rolled-back transaction releases the connection, and at least one batch of progress lands per invocation, so repeated retries always advance.
+
+The scan covers six ordered phases — facts, pages, chunks, then drift passes over each of the three — so concurrent writes cannot slip through a paused plan:
+
+- Facts provenance matches claims in bounded id-keyset batches (the `gbrain_fact_fingerprint` join is per-batch, not a whole-source query per retry), so a large facts table cannot repeatedly exhaust a statement timeout with no saved progress.
+- Drift passes stream each table ordered by its write timestamp plus id from the plan's `started_at`, so a claim written into an already-scanned page mid-plan is still visited. A persisted drift checkpoint restarts its whole window on resume — a low-id write that landed during the pause is re-covered, not permanently skipped.
+- A final coverage probe re-reads all three drift windows immediately before commit; the withdrawal only publishes when every window is provably empty — commit after concurrent writes races is proven, not assumed.
+
+Retrying the same withdrawal resumes the retained plan from its cursor. A replaced source incarnation or a changed claim set resets rather than resumes stale coverage; plans idle past an hour restart, and entry GC also reaps plans orphaned by a deleted source. Every fixed safety bound is unchanged: 256 affected pages, 1 MiB target manifest, row/byte/chunk/fact ceilings, fail-closed on malformed evidence — the scan is resumable, the limits are not raised.
+
+### To take advantage of 0.59.18.6
+
+Nothing to do: a `forget` over a large source that used to refuse with `withdrawal_capacity`-style exhaustion now completes across retries, and managed effect runners resume the retained plan automatically (250ms requeue).
+
+### For contributors
+
+- `persistWithdrawalDiscoveryPlan(engine, error)` is the single persist seam; the pending `OperationError` carries `pendingPlan`. Outermost boundaries that persist: `recordFactWithdrawal` (outer engine), `submitForgetMutation` (post-`retryWriteAdmission`), and `recordFailure` (effect path, before requeue).
+- Drift cursor params bind as text and cast server-side (`$N::text::timestamptz`) — a bound timestamptz serializes through JS Date on Postgres and loses the microseconds the `::text` projection carries, which re-matched the cursor row forever on PostgresEngine (PGLite hid the bug).
+- Batched fact ids join through `jsonb_to_recordset` — `=ANY($N::bigint[])` fails on Postgres (`cannot cast type bigint to bigint[]`).
+- New suite `test/withdrawal-resumable-discovery.test.ts` (10 tests per engine, qualified on both PGLite and Postgres): pending→plan row→resume→plan gone; multi-pending completion under tiny batch/budget; incarnation replacement resets; drift rescans a mid-plan write; over-bound set still refuses; low-id drift write re-covered; persisted drift checkpoint restarts its window; bounded facts provenance over a 40,050-fact source with duplicate claims completes with committed progress; idle-expired plan restarts; deleted-source plan GC'd.
+- Refs #5674.
 ## [0.59.18.5] - 2026-09-30
 
 **Withdrawal discovery over large sources is resumable: a spent scan budget returns a pending receipt with a retained, source-revision-bound plan instead of refusing outright.**
