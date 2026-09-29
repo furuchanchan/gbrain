@@ -191,6 +191,15 @@ describe('resolved base URL surface (#5302)', () => {
     expect(overrideLine).not.toContain('config set');
   });
 
+  test('openai-compat override hint names an env var only when the gateway reads one', () => {
+    const overrideLine = (out: string) => out.split('\n').find(line => line.includes('Override:'))!;
+    const mistralLine = overrideLine(formatEnvOutput(mistral(), {}));
+    expect(mistralLine).toContain('gbrain config set provider_base_urls.mistral');
+    expect(mistralLine).not.toContain('_BASE_URL');
+    const ollamaLine = overrideLine(formatEnvOutput(getRecipe('ollama')!, {}));
+    expect(ollamaLine).toContain('OLLAMA_BASE_URL env var');
+  });
+
   test('a known *_BASE_URL env var resolves for openai-compat when no config override', () => {
     const ollama = getRecipe('ollama')!;
     const out = formatEnvOutput(ollama, { OLLAMA_BASE_URL: 'http://host:11434/v1' });

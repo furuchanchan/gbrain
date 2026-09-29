@@ -162,7 +162,10 @@ export function formatEnvOutput(
       // override hint only names the env var and the file-plane key.
       lines.push(`  Override: ${PROVIDERS_BASE_URL_ENVS[recipe.id] ?? 'the provider base-url env var'} env var, or a file-plane \`provider_base_urls.${recipe.id}\` value.`);
     } else {
-      lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists — verify via \`gbrain config get provider_base_urls.${recipe.id}\`) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
+      // Name an env var only when the gateway actually reads one for this
+      // recipe; a guessed `<ID>_BASE_URL` would send users to a no-op knob.
+      const envKey = PROVIDERS_BASE_URL_ENVS[recipe.id];
+      lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists — verify via \`gbrain config get provider_base_urls.${recipe.id}\`)${envKey ? `, or the ${envKey} env var` : ''}.`);
     }
   }
   if (recipe.auth_env?.setup_url) {
