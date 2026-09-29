@@ -73,11 +73,12 @@ function stripPrivacyFencesForRemoteReader(page: Page): Page {
 
 const get_page: Operation = {
   name: 'get_page',
-  description: 'Read a page by slug (supports optional fuzzy matching). Slug aliases left by renames redirect to the canonical page in the source that owns the alias (archived sources excluded); a redirected read reports `resolved_slug`. To edit a page, pass include_content: true — the returned `content` field is the canonical full markdown (frontmatter + body + timeline sentinel); edit THAT and pass it back to put_page to round-trip losslessly. Reassembling compiled_truth/timeline by hand risks dropping sections. Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
+  description: 'Read a page by slug (supports optional fuzzy matching). Slug aliases left by renames redirect to the canonical page in the source that owns the alias (archived sources excluded); a redirected read reports `resolved_slug`. To edit a page, pass include_content: true — the returned `content` field is the canonical full markdown (frontmatter + body + timeline sentinel); edit THAT and pass it back to put_page to round-trip losslessly. Reassembling compiled_truth/timeline by hand risks dropping sections. `timeline` is only the markdown `<!-- timeline -->` sentinel section — entries appended by add_timeline_entry/auto_timeline live in the structured timeline store; pass include_timeline: true to read them here, or use get_timeline. Soft-deleted pages are hidden by default; pass include_deleted: true to surface them with deleted_at populated (see v0.26.5 recovery window).',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     fuzzy: { type: 'boolean', description: 'Enable fuzzy slug resolution (default: false)' },
     include_content: { type: 'boolean', description: '#2225: include the canonical serialized `content` field (frontmatter + body + timeline sentinel) for lossless get→edit→put_page round-trips. Default false — it roughly duplicates compiled_truth + timeline, so read-only callers should not pay for it.' },
+    include_timeline: { type: 'boolean', description: '#5709: include `timeline_entries` — the structured timeline store entries for the resolved page, same shape and untrusted-reader filtering as get_timeline. Default false — the `timeline` field only carries the markdown sentinel section, which is empty for pages whose entries were appended via add_timeline_entry.' },
     include_deleted: { type: 'boolean', description: 'v0.26.5: surface soft-deleted pages with deleted_at populated (default: false). Used by restore workflows.' },
     source_id: { type: 'string', description: "#4329: scope the lookup to a single source (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId / the caller's grant. '__all__' spans every source for trusted local callers, your granted sources for remote callers." },
   },
@@ -86,6 +87,7 @@ const get_page: Operation = {
     const fuzzy = (p.fuzzy as boolean) || false;
     const includeDeleted = (p.include_deleted as boolean) === true;
     const includeContent = (p.include_content as boolean) === true;
+    const includeTimeline = (p.include_timeline as boolean) === true;
     // #4329: honor a per-call source_id (pre-fix it was silently dropped).
     // resolveRequestedScope (inside federatedSearchScope) enforces the remote
     // caller's grant on the explicit value.
@@ -193,6 +195,17 @@ const get_page: Operation = {
       ...visibleBody,
       revision: snapshot!.revision,
       tags,
+      // #5709: the structured timeline store scoped to the resolved page's
+      // own source — a same-slug page in another granted source must not
+      // union its entries in (get_timeline's sourceId semantics).
+      ...(includeTimeline
+        ? {
+            timeline_entries: await ctx.engine.getTimeline(page.slug, {
+              sourceId: page.source_id,
+              ...(excludePrivate ? { excludePrivate: true } : {}),
+            }),
+          }
+        : {}),
       ...(includeContent ? { content: serializePageToMarkdown(visibleBody as Page, tags) } : {}),
       ...(resolved_slug ? { resolved_slug } : {}),
       ...(content_flag ? { content_flag } : {}),
