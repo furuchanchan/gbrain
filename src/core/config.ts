@@ -332,6 +332,20 @@ export interface GBrainConfig {
   embedding_image_ocr_model?: string;
 
   /**
+   * Prefix prepended to query text inside `embedQuery()` only — documents are
+   * never touched. For asymmetric instruction-style embedding models whose
+   * model card requires a query instruction (Qwen3-Embedding
+   * `Instruct: {task}\nQuery:`, e5/BGE `query:` prefixes, INSTRUCTOR, gte-Qwen);
+   * omitting it costs measured retrieval quality on those models while
+   * OpenAI-compatible servers receive queries and documents identically.
+   * No re-embedding of documents is needed when changing it; the semantic
+   * query cache keys on the produced embedding so changed-prefix rows
+   * self-invalidate. File/env/DB planes (`GBRAIN_EMBEDDING_QUERY_PREFIX`,
+   * `gbrain config set embedding_query_prefix`).
+   */
+  embedding_query_prefix?: string;
+
+  /**
    * v0.36 — embedding-column registry (D7). Maps a content_chunks column
    * name to its provider + dimensions + pgvector type. Both keys live in
    * the DB plane (`gbrain config set ...`) so users can flip without
@@ -737,6 +751,9 @@ export function loadConfig(): GBrainConfig | null {
     ...(process.env.GBRAIN_EMBEDDING_IMAGE_OCR_MODEL
       ? { embedding_image_ocr_model: process.env.GBRAIN_EMBEDDING_IMAGE_OCR_MODEL }
       : {}),
+    ...(process.env.GBRAIN_EMBEDDING_QUERY_PREFIX
+      ? { embedding_query_prefix: process.env.GBRAIN_EMBEDDING_QUERY_PREFIX }
+      : {}),
     ...(process.env.GBRAIN_RETRIEVAL_REFLEX
       ? { retrieval_reflex: !(process.env.GBRAIN_RETRIEVAL_REFLEX === 'false' || process.env.GBRAIN_RETRIEVAL_REFLEX === '0') }
       : {}),
@@ -897,6 +914,7 @@ export async function loadConfigWithEngine(
   const dbMultimodalModel = await dbStr('embedding_multimodal_model');
   const dbOcr = await dbBool('embedding_image_ocr');
   const dbOcrModel = await dbStr('embedding_image_ocr_model');
+  const dbQueryPrefix = await dbStr('embedding_query_prefix');
   const dbProviderBaseUrls = await dbPrefixMap('provider_base_urls.');
   // v0.36 (D7) — embedding-column registry merge. Stored as JSON string in
   // the config table. Parse + shape-check here; full registry validation
@@ -920,6 +938,9 @@ export async function loadConfigWithEngine(
   }
   if (merged.embedding_image_ocr_model === undefined && dbOcrModel !== undefined) {
     merged.embedding_image_ocr_model = dbOcrModel;
+  }
+  if (merged.embedding_query_prefix === undefined && dbQueryPrefix !== undefined) {
+    merged.embedding_query_prefix = dbQueryPrefix;
   }
   if (dbProviderBaseUrls !== undefined) {
     const next = { ...(merged.provider_base_urls ?? {}) };

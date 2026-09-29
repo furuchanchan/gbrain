@@ -178,6 +178,39 @@ describe('embedQuery — per-model filtering (CDX2-F6, end-to-end)', () => {
   });
 });
 
+describe('embedQuery — embedding_query_prefix (#5691)', () => {
+  test('configured prefix is prepended to queries only — documents untouched', async () => {
+    configureGateway({
+      embedding_model: 'voyage:voyage-4',
+      embedding_dimensions: 1024,
+      embedding_query_prefix: 'Instruct: retrieve relevant passages\nQuery:',
+      env: { VOYAGE_API_KEY: 'sk-fake' },
+    });
+    const seen: string[] = [];
+    __setEmbedTransportForTests((async (args: any) => {
+      seen.push(...args.values);
+      return fakeEmbeddings(args.values.length, 1024);
+    }) as any);
+
+    await embedQuery('what did alice promise?');
+    await embed(['a stored document']);
+
+    expect(seen[0]).toBe('Instruct: retrieve relevant passages\nQuery:what did alice promise?');
+    expect(seen[1]).toBe('a stored document');
+  });
+
+  test('unset prefix embeds the bare query (back-compat)', async () => {
+    configureVoyage4();
+    const seen: string[] = [];
+    __setEmbedTransportForTests((async (args: any) => {
+      seen.push(...args.values);
+      return fakeEmbeddings(args.values.length, 1024);
+    }) as any);
+    await embedQuery('bare query');
+    expect(seen[0]).toBe('bare query');
+  });
+});
+
 describe('embedQuery — routes through same recipe as embed', () => {
   beforeEach(() => configureVoyage4());
 

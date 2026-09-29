@@ -82,6 +82,7 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
     embedding_dimensions: c.embedding_dimensions,
     embedding_multimodal_model: c.embedding_multimodal_model,
     embedding_image_ocr_model: c.embedding_image_ocr_model,
+    embedding_query_prefix: c.embedding_query_prefix,
     expansion_model: c.expansion_model,
     chat_model: c.chat_model,
     chat_fallback_chain: c.chat_fallback_chain,

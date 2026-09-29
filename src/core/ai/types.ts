@@ -464,6 +464,12 @@ export interface AIGatewayConfig {
    * deliberately never models.tier-resolved (#4107).
    */
   embedding_image_ocr_model?: string;
+  /**
+   * Prefix prepended to query text inside embedQuery() only (documents are
+   * never touched) — for instruction-style asymmetric embedding models
+   * (Qwen3-Embedding `Instruct: …\nQuery:`, e5/BGE `query:`, INSTRUCTOR).
+   */
+  embedding_query_prefix?: string;
   /** Current expansion model as "provider:modelId". */
   expansion_model?: string;
   /** Default chat model for `gateway.chat()` callers (subagent default). */

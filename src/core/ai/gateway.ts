@@ -438,6 +438,7 @@ export function configureGateway(config: AIGatewayConfig): void {
     embedding_dimensions: config.embedding_dimensions,
     embedding_multimodal_model: config.embedding_multimodal_model,
     embedding_image_ocr_model: config.embedding_image_ocr_model,
+    embedding_query_prefix: config.embedding_query_prefix,
     expansion_model: config.expansion_model ?? DEFAULT_EXPANSION_MODEL,
     chat_model: config.chat_model ?? DEFAULT_CHAT_MODEL,
     chat_fallback_chain: config.chat_fallback_chain,
@@ -1869,7 +1870,10 @@ export async function embedQuery(
   text: string,
   opts?: { embeddingModel?: string; dimensions?: number; abortSignal?: AbortSignal },
 ): Promise<Float32Array> {
-  const [v] = await embed([text], {
+  // #5691: instruction-style asymmetric models (Qwen3-Embedding, e5/BGE,
+  // INSTRUCTOR) take a query instruction; documents stay unprefixed.
+  const queryPrefix = requireConfig().embedding_query_prefix ?? '';
+  const [v] = await embed([queryPrefix + text], {
     inputType: 'query',
     embeddingModel: opts?.embeddingModel,
     dimensions: opts?.dimensions,

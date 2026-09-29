@@ -90,6 +90,7 @@ describe('loadConfigWithEngine DB-plane round trips', () => {
     const engine = makeCountingEngine({
       embedding_multimodal: 'true',
       embedding_multimodal_model: 'voyage:voyage-multimodal-3',
+      embedding_query_prefix: 'Instruct: retrieve\nQuery:',
       'content_sanity.bytes_warn': '1024',
       'dream.synthesize.verdict_model': 'anthropic:claude-haiku-4-5',
     });
@@ -98,6 +99,7 @@ describe('loadConfigWithEngine DB-plane round trips', () => {
 
     expect(merged?.embedding_multimodal).toBe(true);
     expect(merged?.embedding_multimodal_model).toBe('voyage:voyage-multimodal-3');
+    expect(merged?.embedding_query_prefix).toBe('Instruct: retrieve\nQuery:');
     expect(merged?.content_sanity?.bytes_warn).toBe(1024);
     expect(merged?.dream?.synthesize?.verdict_model).toBe('anthropic:claude-haiku-4-5');
   });
@@ -105,12 +107,20 @@ describe('loadConfigWithEngine DB-plane round trips', () => {
   test('file/env config still beats the DB plane', async () => {
     // Precedence is the reason each key is resolved separately in the first
     // place; the snapshot must not disturb it.
-    const engine = makeCountingEngine({ embedding_multimodal_model: 'db:model' });
-    const base = { ...BASE, embedding_multimodal_model: 'file:model' } as GBrainConfig;
+    const engine = makeCountingEngine({
+      embedding_multimodal_model: 'db:model',
+      embedding_query_prefix: 'db-prefix',
+    });
+    const base = {
+      ...BASE,
+      embedding_multimodal_model: 'file:model',
+      embedding_query_prefix: 'file-prefix',
+    } as GBrainConfig;
 
     const merged = await loadConfigWithEngine(engine, base);
 
     expect(merged?.embedding_multimodal_model).toBe('file:model');
+    expect(merged?.embedding_query_prefix).toBe('file-prefix');
   });
 
   test('an engine without getAllConfig still resolves every key', async () => {
