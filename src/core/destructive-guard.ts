@@ -470,12 +470,36 @@ export interface PurgeExpiredResult {
 export async function purgeExpiredSources(
   engine: BrainEngine,
 ): Promise<PurgeExpiredResult> {
+  // gbrain#5452 — archived rows stamped before the v0.26.5 column move can
+  // carry a missing or epoch (1970) archive_expires_at. An epoch expiry reads
+  // as "expired", so a bare `sources purge` would permanently delete a source
+  // without the promised 72h grace window. Exclude those rows from the
+  // candidates AND report them so the operator can restore + re-archive.
+  // Dash-less flag spelling below — the flag-registry generator harvests
+  // bare `--x` tokens out of strings one import level deep (the jobs sweep
+  // surfaces purgeExpiredSources via a dep-depth import).
+  const suspectReason = (id: string) =>
+    `archive timestamps are missing or epoch (${id} was archived before the column-based stamp) — refusing to treat as expired; reset the 72h window with \`gbrain sources restore ${id}\` (the no-federate flag skips re-federation) then \`gbrain sources archive ${id}\``;
   if(await managedPersistenceEnabled(engine)){
     const {runManagedSourceLifecycle}=await import('./persistence/source-lifecycle.ts');
+    const {topologyPrincipal}=await import('./persistence/topology-locks.ts');
+    // Both timestamps must be present and real: an expiry derived from a
+    // missing/epoch archived_at cannot be trusted to have honored the window.
     const candidates=await engine.executeRaw<{id:string;incarnation:string}>(`SELECT id,incarnation FROM sources WHERE archived=true
-      AND archive_expires_at IS NOT NULL AND archive_expires_at<=now() ORDER BY id`);
-    const result:PurgeExpiredResult={purged:[],blocked:[]};
+      AND archived_at IS NOT NULL AND archived_at>'1970-01-02'::timestamptz
+      AND archive_expires_at > '1970-01-02'::timestamptz AND archive_expires_at<=now() ORDER BY id`);
+    const suspects=await engine.executeRaw<{id:string}>(`SELECT id FROM sources WHERE archived=true
+      AND (archived_at IS NULL OR archived_at<='1970-01-02'::timestamptz
+        OR archive_expires_at IS NULL OR archive_expires_at<='1970-01-02'::timestamptz) ORDER BY id`);
+    // A blocked entry names the operative refusal: when the installation has
+    // no verified local writer, no lifecycle op can run and the stamp-repair
+    // advice would itself fail — the writer fence is reported for every row.
+    let writerFence:string|undefined;
+    try{await topologyPrincipal(engine);}
+    catch(error){writerFence=error instanceof Error?error.message:'Source lifecycle could not finish.';}
+    const result:PurgeExpiredResult={purged:[],blocked:suspects.map(s=>({id:s.id,reason:writerFence??suspectReason(s.id)}))};
     for(const source of candidates){
+      if(writerFence){result.blocked.push({id:source.id,reason:writerFence});continue;}
       try{const receipt=await runManagedSourceLifecycle(engine,{operation:'purge',sourceId:source.id,expectedIncarnation:source.incarnation,confirmDestructive:true,expiredOnly:true});if(!receipt.noop)result.purged.push(source.id);}
       catch(error){result.blocked.push({id:source.id,reason:error instanceof Error?error.message:'Source lifecycle could not finish.'});}
     }
@@ -485,10 +509,20 @@ export async function purgeExpiredSources(
   const candidates = await engine.executeRaw<{ id: string; config: unknown; local_path: string | null }>(
     `SELECT id, config, local_path FROM sources
      WHERE archived = true
-       AND archive_expires_at IS NOT NULL
+       AND archived_at IS NOT NULL
+       AND archived_at > '1970-01-02'::timestamptz
+       AND archive_expires_at > '1970-01-02'::timestamptz
        AND archive_expires_at <= now()
      ORDER BY id`,
   );
+  const suspects = await engine.executeRaw<{ id: string }>(
+    `SELECT id FROM sources
+     WHERE archived = true
+       AND (archived_at IS NULL OR archived_at <= '1970-01-02'::timestamptz
+         OR archive_expires_at IS NULL OR archive_expires_at <= '1970-01-02'::timestamptz)
+     ORDER BY id`,
+  );
+  const suspectBlocked = suspects.map((s) => ({ id: s.id, reason: suspectReason(s.id) }));
   const purged: string[] = [];
   const blocked: PurgeExpiredResult['blocked'] = [];
   const cloneRoot = gbrainPath('clones');
@@ -496,10 +530,16 @@ export async function purgeExpiredSources(
     const { id } = candidate;
     try {
       const rows = await engine.executeRaw<{ id: string }>(
+        // The candidate set was read earlier — re-check the full refusal
+        // conditions at delete time so a timestamp flipped to missing/epoch
+        // in between can never slip through.
         `DELETE FROM sources
          WHERE id = $1
            AND archived = true
+           AND archived_at IS NOT NULL
+           AND archived_at > '1970-01-02'::timestamptz
            AND archive_expires_at IS NOT NULL
+           AND archive_expires_at > '1970-01-02'::timestamptz
            AND archive_expires_at <= now()
          RETURNING id`,
         [id],
@@ -534,9 +574,14 @@ export async function purgeExpiredSources(
         } catch {
           // Best-effort cleanup; source deletion already completed.
         }
+      } else {
+        // The row no longer matches: restored, already gone — or its archive
+        // timestamps flipped to missing/epoch after selection. A still-archived
+        // row is a suspect, so it is reported refused rather than skipped.
+        const still = await engine.executeRaw<{ id: string }>(
+          `SELECT id FROM sources WHERE id = $1 AND archived = true`, [id]);
+        if (still.length) blocked.push({ id, reason: suspectReason(id) });
       }
-      // 0 rows = restored/already gone between SELECT and DELETE; neither
-      // purged nor blocked.
     } catch (err) {
       // SQLSTATE 23503 foreign_key_violation — same detection idiom as
       // oauth-provider.ts's delete path for this exact FK.
@@ -552,7 +597,7 @@ export async function purgeExpiredSources(
       throw err;
     }
   }
-  return { purged, blocked };
+  return { purged, blocked: [...blocked, ...suspectBlocked] };
 }
 
 // ── Display Helpers ─────────────────────────────────────────

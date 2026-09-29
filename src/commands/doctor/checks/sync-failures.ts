@@ -9,16 +9,25 @@ export async function checkSyncFailures(engine: BrainEngine | null, opts: { sour
   const managed = engine ? await readManagedSyncFailures(engine, opts.sourceIds) : [];
   let legacy: SyncFailure[] = [];
   try { legacy = loadSyncFailures().filter(row => (!engine || !row.managed_cursor_key) && (!opts.sourceIds || opts.sourceIds.includes(row.source_id))); } catch { }
-  const entries: SyncFailure[] = [...legacy, ...managed.map(row => ({ source_id: row.source_id, path: row.path, code: row.code, error: row.message,
+  // gbrain#5452 — failures that belong to an archived source cannot be cleared
+  // (sync refuses archived sources) and represent no live health signal;
+  // exclude them from the unresolved count and say so.
+  const archivedIds = new Set(
+    engine ? (await engine.executeRaw<{ id: string }>(`SELECT id FROM sources WHERE archived = true`)).map(row => row.id) : [],
+  );
+  const archivedFailureCount = legacy.filter(row => archivedIds.has(row.source_id)).length + managed.filter(row => archivedIds.has(row.source_id)).length;
+  const activeLegacy = archivedIds.size ? legacy.filter(row => !archivedIds.has(row.source_id)) : legacy;
+  const activeManaged = archivedIds.size ? managed.filter(row => !archivedIds.has(row.source_id)) : managed;
+  const entries: SyncFailure[] = [...activeLegacy, ...activeManaged.map(row => ({ source_id: row.source_id, path: row.path, code: row.code, error: row.message,
     commit: row.target ?? '', first_seen: row.first_seen, ts: row.first_seen, attempts: row.attempts, state: 'open' as const }))];
   const severity = decideSyncFailureSeverity({ entries, nowMs: Date.now(), failHours: resolveHoursEnv('GBRAIN_SYNC_FRESHNESS_FAIL_HOURS', 72) });
-  if (!severity.unresolved) return entries.length ? { name: 'sync_failures', status: 'ok', message: 'All historical sync failures are acknowledged.' } : null;
-  const summary = `${severity.unresolved} unresolved sync failure(s)${severity.auto_skipped ? ` (${severity.auto_skipped} auto-skipped — pages NOT indexed)` : ''}.`;
+  if (!severity.unresolved) return entries.length || archivedFailureCount ? { name: 'sync_failures', status: 'ok', message: archivedFailureCount && !entries.length ? `All historical sync failures are acknowledged or on archived sources (${archivedFailureCount} archived-source failure(s) ignored).` : 'All historical sync failures are acknowledged.' } : null;
+  const summary = `${severity.unresolved} unresolved sync failure(s)${severity.auto_skipped ? ` (${severity.auto_skipped} auto-skipped — pages NOT indexed)` : ''}${archivedFailureCount ? ` (${archivedFailureCount} on archived source(s) ignored)` : ''}.`;
   if (opts.remote !== false) return { name: 'sync_failures', status: severity.status, message: summary + ' Ask the host operator to inspect doctor and repair the accepted sync; no paths or receipt details are exposed remotely.' };
   const [brain] = engine ? await engine.executeRaw<{ enabled: boolean }>('SELECT enabled FROM persistence_brain WHERE singleton=1') : [];
-  const requiresManagedRetry = brain?.enabled || managed.length > 0 || legacy.some(row => row.managed_cursor_key);
-  const details = managed.map(formatManagedSyncFailure);
-  const unresolvedLegacy = unacknowledgedSyncFailures(legacy);
+  const requiresManagedRetry = brain?.enabled || activeManaged.length > 0 || activeLegacy.some(row => row.managed_cursor_key);
+  const details = activeManaged.map(formatManagedSyncFailure);
+  const unresolvedLegacy = unacknowledgedSyncFailures(activeLegacy);
   details.push(...unresolvedLegacy.map(row => `${row.source_id}: ${row.path} (${row.code}: ${row.error})`));
   const remediation = requiresManagedRetry ? undefined : [makeRemediationStep({
     id: 'sync-retry-failed', job: 'sync-retry-failed', params: { failure_count: severity.unresolved,

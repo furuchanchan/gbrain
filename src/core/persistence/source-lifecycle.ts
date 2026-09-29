@@ -130,7 +130,14 @@ export async function runManagedSourceLifecycle(engine:BrainEngine,input:SourceL
       throw new OperationError('writer_transfer_required','The source already has a different canonical binding. Use rebind or verified ownership transfer.');
     if(input.operation==='claim'&&!currentBinding&&source?.local_path&&realpathSync(source.local_path)!==root!.source)
       throw new OperationError('source_changed','The requested claim path differs from the configured source root.');
-    const expired=input.expiredOnly?await tx.executeRaw('SELECT id FROM sources WHERE id=$1 AND archived=true AND archive_expires_at<=now()',[input.sourceId]):null;
+    // expiredOnly re-checks the full refusal set inside the deletion
+    // transaction: a missing/epoch archive timestamp (archived before the
+    // column-based stamp, or flipped after the caller's candidate scan) is
+    // never purge-eligible — it noops here and the sweep reports it blocked.
+    const expired=input.expiredOnly?await tx.executeRaw(`SELECT id FROM sources WHERE id=$1 AND archived=true
+      AND archived_at IS NOT NULL AND archived_at>'1970-01-02'::timestamptz
+      AND archive_expires_at IS NOT NULL AND archive_expires_at>'1970-01-02'::timestamptz
+      AND archive_expires_at<=now()`,[input.sourceId]):null;
     const noop=expired?.length===0 || input.operation==='archive'&&source?.archived || input.operation==='restore'&&!source?.archived
       || input.operation==='claim'&&!!currentBinding || input.operation==='rebind'&&sameBinding;
     if(noop){
