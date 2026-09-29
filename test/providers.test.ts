@@ -171,6 +171,26 @@ describe('resolved base URL surface (#5302)', () => {
     expect(out).toContain('Base URL: https://api.eu.mistral.ai/v1');
   });
 
+  test('an unparseable configured URL prints a fixed redacted marker, never its contents', () => {
+    const out = formatEnvOutput(mistral(), {}, {
+      provider_base_urls: { mistral: 'https://u2:s3cr3t-key@' },
+    });
+    expect(out).not.toContain('s3cr3t-key');
+    expect(out).not.toContain('u2:');
+    expect(out).toContain('Base URL: (invalid URL — value redacted)');
+  });
+
+  test('native recipe override hint names only env/file-plane knobs, never the DB plane', () => {
+    const anthropic = getRecipe('anthropic')!;
+    const out = formatEnvOutput(anthropic, {}, {
+      provider_base_urls: { anthropic: 'https://file.example/v1' },
+    });
+    const overrideLine = out.split('\n').find(line => line.includes('Override:'))!;
+    expect(overrideLine).toContain('ANTHROPIC_BASE_URL');
+    expect(overrideLine).not.toContain('DB plane');
+    expect(overrideLine).not.toContain('config set');
+  });
+
   test('a known *_BASE_URL env var resolves for openai-compat when no config override', () => {
     const ollama = getRecipe('ollama')!;
     const out = formatEnvOutput(ollama, { OLLAMA_BASE_URL: 'http://host:11434/v1' });

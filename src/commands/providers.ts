@@ -93,7 +93,9 @@ export function redactBaseUrlForDisplay(raw: string): string {
     if (u.hash) { u.hash = ''; scrubbed.push('fragment'); }
     return scrubbed.length ? `${u.toString()} (${scrubbed.join('/')} redacted)` : raw;
   } catch {
-    return raw;
+    // An unparseable configured URL still prints nothing of itself — a
+    // credential-looking substring must never reach the display.
+    return '(invalid URL — value redacted)';
   }
 }
 
@@ -155,7 +157,13 @@ export function formatEnvOutput(
     } else {
       lines.push('  Resolution scope: file plane, env vars, built-in defaults — DB-plane `provider_base_urls.*` overrides are not read here.');
     }
-    lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists — verify via \`gbrain config get provider_base_urls.${recipe.id}\`) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
+    if (recipe.tier === 'native') {
+      // Native providers never read the DB plane (mount safety), so the
+      // override hint only names the env var and the file-plane key.
+      lines.push(`  Override: ${PROVIDERS_BASE_URL_ENVS[recipe.id] ?? 'the provider base-url env var'} env var, or a file-plane \`provider_base_urls.${recipe.id}\` value.`);
+    } else {
+      lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists — verify via \`gbrain config get provider_base_urls.${recipe.id}\`) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
+    }
   }
   if (recipe.auth_env?.setup_url) {
     lines.push('');
