@@ -10,6 +10,26 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.9] - 2026-10-01
+
+**New `embedding_query_prefix`: instruction-style embedding models finally get their query instruction.**
+
+Asymmetric embedding models — Qwen3-Embedding (0.6B/4B/8B), e5/BGE, INSTRUCTOR, gte-Qwen — ask for queries in an instructed form (`Instruct: {task}\nQuery:{query}`) while documents go in plain. On OpenAI-compatible servers (llama-server, OVMS, vLLM, Ollama) gbrain had no way to tell the two apart: `inputType` is translated only for Voyage and NVIDIA, so queries reached the model identical to documents and the measured retrieval loss (the reporter measured keyword-list recall moving 19→31/40 top-3 hits on Qwen3-Embedding-0.6B) had no fix. Set `embedding_query_prefix` once — file-plane `~/.gbrain/config.json`, `GBRAIN_EMBEDDING_QUERY_PREFIX`, or `gbrain config set embedding_query_prefix` — and `embedQuery()` prepends it to query text only; documents are never touched. No re-embedding of existing documents is needed; the semantic query cache keys on the produced embedding, so a changed prefix self-invalidates old rows.
+
+### To take advantage of 0.60.10.9
+
+```bash
+gbrain config set embedding_query_prefix 'Instruct: Given a query, retrieve relevant passages\nQuery:'
+```
+
+for Qwen3-Embedding-style models (or `query: ` for e5/BGE conventions). Brains on symmetric models (OpenAI, Voyage, Gemini) need nothing — the key defaults to empty.
+
+### For contributors
+
+- `embedding_query_prefix` is a `GBrainConfig` key with the full three-plane fold: file, `GBRAIN_EMBEDDING_QUERY_PREFIX`, and the DB-plane merge in `loadConfigWithEngine` (env/file still wins over DB, same precedence as `embedding_multimodal_model`).
+- `buildGatewayConfig` carries it into `AIGatewayConfig` and `configureGateway` preserves it; `embedQuery()` (src/core/ai/gateway.ts) reads it once per call — `embed()` for documents is untouched.
+- `test/ai/embedQuery.test.ts` pins prefix-on-query / none-on-document at the transport boundary and the unset back-compat path; `config-db-plane-round-trips.test.ts` covers the DB merge + file-beats-DB precedence.
+- Refs #5691.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
