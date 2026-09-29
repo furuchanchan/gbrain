@@ -82,6 +82,21 @@ const PROVIDERS_BASE_URL_ENVS: Record<string, string> = {
 
 export interface ResolvedBaseUrl { url: string; source: string; }
 
+// Base URLs may carry credentials (userinfo, ?key=...). The resolved value
+// stays untouched for logic; only the displayed form is scrubbed.
+export function redactBaseUrlForDisplay(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const scrubbed: string[] = [];
+    if (u.username || u.password) { u.username = ''; u.password = ''; scrubbed.push('userinfo'); }
+    if (u.search) { u.search = ''; scrubbed.push('query'); }
+    if (u.hash) { u.hash = ''; scrubbed.push('fragment'); }
+    return scrubbed.length ? `${u.toString()} (${scrubbed.join('/')} redacted)` : raw;
+  } catch {
+    return raw;
+  }
+}
+
 export function resolveRecipeBaseUrl(
   recipe: Recipe,
   env: NodeJS.ProcessEnv = process.env,
@@ -134,7 +149,7 @@ export function formatEnvOutput(
   const resolved = resolveRecipeBaseUrl(recipe, env, fileCfg, dbUrls);
   if (resolved) {
     lines.push('');
-    lines.push(`Base URL: ${resolved.url}  (${resolved.source})`);
+    lines.push(`Base URL: ${redactBaseUrlForDisplay(resolved.url)}  (${resolved.source})`);
     if (dbUrls !== undefined) {
       lines.push('  Resolution scope: file plane, DB plane, env vars, built-in defaults.');
     } else {
