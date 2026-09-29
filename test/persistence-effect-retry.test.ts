@@ -168,6 +168,40 @@ for (const kind of testBackends()) {
         { engine: engine.kind })).toMatchObject({ action: 'reconciled', state: 'committed', attempts: 5 });
     });
 
+    check('#5734 a superseded obligation settles only once the current revision is complete', async () => {
+      // Newer revision whose vectors are complete — the reporter's state after
+      // `gbrain embed --stale` recovered from a provider outage.
+      const f = await fixture();
+      await engine.putPage('page', { type: 'note', title: 'New revision', compiled_truth: 'Changed' }, { sourceId: f.sourceId });
+      const prepared = (await readProjectionSnapshot(engine, 'page', f.sourceId, { allowUnsealed: true }))!;
+      await installPageProjection(engine, prepared, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Changed' }], { seal: true });
+      const sealed = (await readProjectionSnapshot(engine, 'page', f.sourceId))!;
+      expect(await installPageEmbeddings(engine, sealed, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Changed',
+        embedding: new Float32Array(1536).fill(0.25), model }], signature)).toBe(true);
+      expect(await retry(f, true)).toMatchObject({ action: 'would_supersede', state: 'failed' });
+      expect(await retry(f)).toMatchObject({ action: 'superseded', state: 'committed', attempts: 5 });
+      expect(await effect(f.effectId)).toMatchObject({ state: 'committed', outcome: { embedding: 'superseded', reason: 'revision_changed' } });
+      let calls = 0;
+      await runPersistenceEffects(engine, config, { hostId: localHostId(), limit: 1, embedding: { signature, model,
+        embed: async () => { calls++; return []; } } });
+      expect(calls).toBe(0);
+
+      // A deleted page leaves nothing embeddable — the obligation is vacuous.
+      const gone = await fixture();
+      await engine.softDeletePage('page', { sourceId: gone.sourceId });
+      expect(await retry(gone)).toMatchObject({ action: 'superseded', state: 'committed' });
+      expect(await effect(gone.effectId)).toMatchObject({ outcome: { embedding: 'superseded', reason: 'page_deleted' } });
+
+      // A newer revision that is NOT fully embedded still refuses — settling
+      // it would hide live embedding debt from every supported surface.
+      const stale = await fixture();
+      await engine.putPage('page', { type: 'note', title: 'Unembedded revision', compiled_truth: 'Newest' }, { sourceId: stale.sourceId });
+      const stalePrepared = (await readProjectionSnapshot(engine, 'page', stale.sourceId, { allowUnsealed: true }))!;
+      await installPageProjection(engine, stalePrepared, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Newest' }], { seal: true });
+      await expect(retry(stale)).rejects.toMatchObject({ code: 'revision_conflict' });
+      expect(await effect(stale.effectId)).toMatchObject({ state: 'failed' });
+    });
+
     check('selected DB disable blocks preview and approval with an enabled file but permits free reconciliation', async () => {
       const f = await fixture();
       const before = await effect(f.effectId);

@@ -143,10 +143,12 @@ export async function retryEmbeddingEffect(engine: BrainEngine, sourceId: string
     const snapshot = await selectedEffectPage(tx, effect);
     const scanning = targetedWithdrawalEffect(effect) || effect.data.source_scan === true;
     const scanComplete = scanning && !snapshot;
-    if (!scanComplete && (!snapshot || !scanning &&
-      (snapshot.page.deleted_at || snapshot.revision !== effect.revision || snapshot.page.id !== effect.data.page_id))) {
-      throw new OperationError('revision_conflict', 'The original embedding obligation is superseded; inspect the current page instead.');
-    }
+    // The effect worker (embedPage) settles a superseded obligation outright;
+    // the explicit retry keeps the refusal whenever newer content still has
+    // unembedded chunks, so live embedding debt keeps surfacing instead of
+    // being settled away silently.
+    const superseded = !scanComplete && !scanning &&
+      (!snapshot || !!snapshot.page.deleted_at || snapshot.revision !== effect.revision || snapshot.page.id !== effect.data.page_id);
     if (snapshot) {
       await authorizeWrite(tx, request.authority, request.operation, snapshot.page.slug, true);
       await authorizeWrite(tx, authority, request.operation, snapshot.page.slug, true);
@@ -160,6 +162,38 @@ export async function retryEmbeddingEffect(engine: BrainEngine, sourceId: string
       throw new OperationError('effect_not_failed', 'Only a failed, non-running embedding effect can be explicitly retried.');
     }
     if (effect.execution_token !== null) throw new OperationError('write_claim_lost', 'A failed effect still has an execution claim; inspect it before retrying.');
+    if (superseded) {
+      // Nothing embeddable remains when the page is deleted or gone. A live
+      // newer revision settles only once its own vectors are complete — the
+      // same completeness the worker's reconcile path verifies — otherwise
+      // the conflict report keeps naming live debt for the operator.
+      const vacuous = !snapshot || !!snapshot.page.deleted_at;
+      const settleSignature = !vacuous
+        ? (policy === 'mounted_database' ? await mountedEmbeddingSignature(tx) : configuredSignature) : null;
+      let settled = vacuous;
+      if (!settled && settleSignature) {
+        try {
+          settled = (await readEmbeddingEffectProjection(tx, effect, snapshot!, hostId, settleSignature)).pending.length === 0;
+        } catch (error) {
+          // An unready current projection means completeness is unverifiable;
+          // fall through to the conflict report rather than error-class it.
+          if (!(error instanceof OperationError && error.code === 'projection_pending')) throw error;
+        }
+      }
+      if (!settled) {
+        throw new OperationError('revision_conflict', 'The original embedding obligation is superseded and the current revision is not fully embedded; inspect the current page instead.');
+      }
+      if (dryRun) return { ...receipt, state: 'failed', action: 'would_supersede',
+        next_action: 'Run the same command without --dry-run to settle this superseded obligation; no provider work is scheduled.' };
+      const [updated] = await tx.executeRaw<{ state: string }>(`UPDATE persistence_effects SET state='committed',
+        outcome=$4::text::jsonb,error_code=NULL,claim_expires_at=NULL,next_attempt_at=now(),updated_at=now()
+        WHERE id=$1 AND state='failed' AND execution_token IS NULL AND recovery IS NULL AND attempts=$2 AND source_incarnation=$3::uuid RETURNING state`,
+      [effect.id, effect.attempts, effect.source_incarnation,
+        JSON.stringify({ embedding: 'superseded', reason: vacuous ? 'page_deleted' : 'revision_changed' })]);
+      if (!updated) throw new OperationError('write_claim_lost', 'The embedding obligation changed during retry approval.');
+      return { ...receipt, state: updated.state, action: 'superseded',
+        next_action: 'The current revision already owns the vectors; no provider work was scheduled.' };
+    }
     const signature = policy === 'mounted_database' && !scanComplete ? await mountedEmbeddingSignature(tx) : configuredSignature;
     if (!signature && !scanComplete) return { ...receipt, state: 'failed', action: 'blocked', reason: 'embedding_unconfigured', next_action: 'Configure embeddings, then inspect this request again.' };
     const pending = scanComplete || snapshot?.page.deleted_at ? [] : (await readEmbeddingEffectProjection(tx, effect, snapshot!, hostId, signature!)).pending;
