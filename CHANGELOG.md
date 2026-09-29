@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.18.3] - 2026-09-29
+
+**`gbrain providers env` now shows the resolved base URL with its plane, and consults the DB-plane `provider_base_urls.*` overrides that `gbrain config set` writes.**
+
+The Mistral EU-endpoint opt-in (#5302) had no visible verification path: `providers env` printed only env vars, so an operator could not tell whether the recipe was pointing at the EU API or the global default, and a `provider_base_urls.mistral` override written through the documented `gbrain config set` path was never shown. The command now prints the resolved `Base URL:` with provenance (`file plane` / `db plane` / `env var` / `recipe default`), names the resolution scope it actually consulted, and — when a brain is reachable — probes the DB plane for openai-compat recipes so a DB-plane override is reported as the effective URL. Native providers still never read the DB plane (mount safety); the probe is openai-compat only, and every probe failure folds to not-connected so the command still works pre-init and offline. Credentials embedded in a configured URL (userinfo, query string, fragment) are scrubbed from the display, and an unparseable configured URL prints a fixed redacted marker rather than its contents; the resolved value itself is untouched. The Mistral EU recipe note now names both verification paths.
+
+### To take advantage of 0.59.18.3
+
+After `gbrain config set provider_base_urls.mistral https://api.eu.mistral.ai/v1`, verify with `gbrain providers env mistral` — the `Base URL:` line reports the DB-plane override with its provenance.
+
+### For contributors
+
+- New tests in `test/providers.test.ts`: per-plane provenance, file > DB > env precedence, an empty-but-consulted DB plane, native recipes ignoring an attacker DB URL, credential redaction for userinfo/query/fragment, the unparseable-URL redacted marker, the native override hint naming only env/file knobs, and a real `PGLiteEngine` round-trip through `probeProviderBaseUrlDbPlane`.
+- Refs #5302.
+
 ## [0.59.18.0] - 2026-09-29
 
 **Dream no longer keeps made-up quotes, wrong-speaker quotes or invented numbers as memory, and `gbrain eval compare` computes the statistics it claims.**
