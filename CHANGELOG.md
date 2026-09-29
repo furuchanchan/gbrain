@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.6] - 2026-10-01
+
+**Grounding now recognizes the stock transcript renderer's `[user]` / `[assistant]` role boundaries, so quote attribution can no longer bleed a prose speaker across a real turn edge.**
+
+The grounding verifier's `parseSpeakerTurns` understood `**Name** (ts):`, `role (tN):`, and `Name:` anchors but not the standalone `[user]` / `[assistant]` boundary lines the stock Claude Code transcript renderer emits — so every stock-format transcript silently had *no* turn structure. A repeated `Name:` label inside an earlier assistant turn became the recorded speaker for a later user's quote, and verification reported no speaker mismatch (the misattributed `grounding.quotes[].speaker` was only noticed on a live synthesis). Standalone `[role]` lines — `user`/`human`/`me`, `assistant`/`ai`/`bot`, `system` — are now hard turn boundaries: they bound nested `Name:` labels, feed `speakerAt` attribution, and gate `verifyBody` speaker checks on stock transcripts for the first time. Non-role bracket lines (`[todo]`, inline `[user]` inside prose) are unaffected.
+
+### To take advantage of 0.60.10.6
+
+Nothing to enable — synthesis verification applies the boundaries automatically. Pages written under older versions keep their recorded speaker attribution; correct an affected page with a revision-bound `put_page` if needed.
+
+### For contributors
+
+- `parseSpeakerTurns` (src/core/cycle/synthesize-verify.ts) accepts a standalone bracket line as a turn only when the bracketed word is a role alias, stores the canonical role key, and treats the whole line as the label so the turn's words begin on the next line. Turn lookup is unchanged — each turn still ends where the next anchor begins, so bracket edges also bound named `Label:` turns.
+- `cycle-synthesize-verify.test.ts` gained two checks: the reporter's fixture end-to-end (user quote attributes to `user`, a `ReviewerBot` attribution quarantines as `speaker_mismatch`), and the role-only gate for standalone brackets.
+- Refs #5717.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
