@@ -24,6 +24,8 @@ import { join, relative, sep } from 'node:path';
 import type { BrainEngine, TakeBatchInput } from '../engine.ts';
 import { parseTakesFence, TAKES_FENCE_BEGIN, type ParsedTake } from '../takes-fence.ts';
 import { walkMarkdownFiles } from '../../commands/extract.ts';
+import { managedPersistenceEnabled } from '../persistence/ownership.ts';
+import { withCoordinatedWrite } from '../persistence/context.ts';
 
 export interface ExtractTakesOpts {
   /** Brain repo root. Required for source='fs'. */
@@ -220,37 +222,53 @@ export async function extractTakesFromDb(
   const refs = (await engine.listAllPageRefs()).filter(ref => !slugFilter || slugFilter.has(ref.slug));
   const buffer: TakeBatchInput[] = [];
 
-  for (const { slug, source_id } of refs) {
-    result.pagesScanned++;
-    const page = await engine.getPage(slug, { sourceId: source_id });
-    if (!page) continue;
-    const body = `${page.compiled_truth ?? ''}\n${page.timeline ?? ''}`;
-    const { takes, warnings } = parseTakesFence(body);
-    if (warnings.length) {
-      for (const w of warnings) {
-        result.warnings.push(`${slug}: ${w}`);
-        if (w.startsWith('TAKES_HOLDER_INVALID')) {
-          // DB-source path: no on-disk file path, use slug as the failedFiles
-          // identifier. recordSyncFailures' dedup-by-(path, commit, error)
-          // works the same against slug-shaped paths.
-          result.failedFiles.push({ path: slug, error: w });
+  const run = async (db: BrainEngine) => {
+    for (const { slug, source_id } of refs) {
+      result.pagesScanned++;
+      const page = await db.getPage(slug, { sourceId: source_id });
+      if (!page) continue;
+      const body = `${page.compiled_truth ?? ''}\n${page.timeline ?? ''}`;
+      const { takes, warnings } = parseTakesFence(body);
+      if (warnings.length) {
+        for (const w of warnings) {
+          result.warnings.push(`${slug}: ${w}`);
+          if (w.startsWith('TAKES_HOLDER_INVALID')) {
+            // DB-source path: no on-disk file path, use slug as the failedFiles
+            // identifier. recordSyncFailures' dedup-by-(path, commit, error)
+            // works the same against slug-shaped paths.
+            result.failedFiles.push({ path: slug, error: w });
+          }
         }
       }
-    }
-    await pruneRemovedTakes(engine, page.id, body, takes, warnings, dryRun);
-    if (takes.length === 0) continue;
+      await pruneRemovedTakes(db, page.id, body, takes, warnings, dryRun);
+      if (takes.length === 0) continue;
 
-    if (opts.rebuild && !dryRun) {
-      await engine.executeRaw(`DELETE FROM takes WHERE page_id = $1`, [page.id]);
-    }
+      if (opts.rebuild && !dryRun) {
+        await db.executeRaw(`DELETE FROM takes WHERE page_id = $1`, [page.id]);
+      }
 
-    result.pagesWithTakes++;
-    for (const t of takes) {
-      buffer.push(parsedTakeToBatchInput(page.id, t));
-      if (buffer.length >= BATCH_SIZE) await flushBatch(engine, buffer, result, dryRun);
+      result.pagesWithTakes++;
+      for (const t of takes) {
+        buffer.push(parsedTakeToBatchInput(page.id, t));
+        if (buffer.length >= BATCH_SIZE) await flushBatch(db, buffer, result, dryRun);
+      }
     }
+    await flushBatch(db, buffer, result, dryRun);
+  };
+
+  // On a managed brain `takes` carries the managed_writer_guard: the derived
+  // index may only be written under the coordinator capability. The backfill
+  // is itself a maintenance writer (the v0.28.0 orchestrator calls this and
+  // wedged the whole migration chain on a managed brain — #5728), so it runs
+  // inside one coordinated transaction covering exactly the enumerated
+  // sources. Unmanaged brains keep the unguarded path; the guard is a no-op
+  // there anyway.
+  const sourceIds = [...new Set(refs.map(ref => ref.source_id))];
+  if (!dryRun && sourceIds.length > 0 && await managedPersistenceEnabled(engine)) {
+    await engine.transaction(tx => withCoordinatedWrite(tx, sourceIds, () => run(tx)));
+  } else {
+    await run(engine);
   }
-  await flushBatch(engine, buffer, result, dryRun);
   return result;
 }
 
