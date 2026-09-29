@@ -162,6 +162,15 @@ describe('resolved base URL surface (#5302)', () => {
     expect(out).not.toContain('recipe default');
   });
 
+  test('displayed base URL never carries userinfo/query credentials', () => {
+    const out = formatEnvOutput(mistral(), {}, {
+      provider_base_urls: { mistral: 'https://u1:sekret@api.eu.mistral.ai/v1?api_key=k3y#frag' },
+    });
+    expect(out).not.toContain('sekret');
+    expect(out).not.toContain('k3y');
+    expect(out).toContain('Base URL: https://api.eu.mistral.ai/v1');
+  });
+
   test('a known *_BASE_URL env var resolves for openai-compat when no config override', () => {
     const ollama = getRecipe('ollama')!;
     const out = formatEnvOutput(ollama, { OLLAMA_BASE_URL: 'http://host:11434/v1' });
