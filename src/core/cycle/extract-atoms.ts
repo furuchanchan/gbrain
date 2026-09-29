@@ -180,7 +180,7 @@ async function resolveExtractableTypes(): Promise<string[]> {
 }
 
 export interface ExtractAtomsOpts {
-  _managedRetry?: { requestId: string; retryId: string };
+  _managedRetry?: { requestId: string; retryId: string; supersede?: boolean };
   brainDir?: string;
   sourceId?: string;
   dryRun?: boolean;

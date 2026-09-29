@@ -3074,7 +3074,7 @@ export async function registerBuiltinHandlers(
     if (job.data.retryRequestId !== undefined) {
       if (typeof job.data.retryRequestId !== 'string' || typeof job.data.sourceId !== 'string') throw new Error('Atom retry requires sourceId and retryRequestId strings.');
       const { retryManagedAtomBatch } = await import('../core/persistence/atom-retry.ts');
-      return retryManagedAtomBatch(engine, job.data.sourceId, job.data.retryRequestId, `job:${job.id}`);
+      return retryManagedAtomBatch(engine, job.data.sourceId, job.data.retryRequestId, `job:${job.id}`, { supersede: job.data.supersede === true });
     }
     const { formatDrainProviderFailure, runExtractAtomsDrainForSource } =
       await import('../core/cycle/extract-atoms-drain.ts');

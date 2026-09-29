@@ -32,7 +32,7 @@ export interface ManagedAtomSession {
   authority: WriteAuthority;
   binding: WorktreeBinding | null;
   config: GBrainConfig;
-  retry?: { runKey: string; checkpointKey: string; expectedCheckpoint: unknown; rows: WriteRequest[]; origin: AtomOrigin };
+  retry?: { runKey: string; checkpointKey: string; expectedCheckpoint: unknown; rows: WriteRequest[]; origin: AtomOrigin; supersede?: boolean };
 }
 export interface AtomIntent extends Record<string, unknown> {
   kind: 'managed_atom_page' | 'managed_atom_complete';
@@ -47,7 +47,7 @@ export interface AtomIntent extends Record<string, unknown> {
   expectedCheckpoint?: unknown;
 }
 
-export async function managedAtomSession(engine: BrainEngine, sourceId: string, retry?: { requestId: string; retryId: string }): Promise<ManagedAtomSession | null> {
+export async function managedAtomSession(engine: BrainEngine, sourceId: string, retry?: { requestId: string; retryId: string; supersede?: boolean }): Promise<ManagedAtomSession | null> {
   if (!(await managedPersistenceEnabled(engine))) return null;
   assertPersistenceAccepting(engine);
   const caller = currentSubmissionAuthority();
@@ -101,7 +101,7 @@ export async function managedAtomSession(engine: BrainEngine, sourceId: string, 
     const checkpointKey = p.checkpointKey ?? p.runKey;
     const [checkpoint] = await engine.executeRaw<{ completed_keys: unknown }>("SELECT completed_keys FROM op_checkpoints WHERE op='managed-atoms' AND fingerprint=$1", [checkpointKey]);
     session.retry = { runKey: digest([checkpointKey, prior.id, retry.retryId]), checkpointKey,
-      expectedCheckpoint: checkpoint?.completed_keys ?? null, rows, origin: p.origin };
+      expectedCheckpoint: checkpoint?.completed_keys ?? null, rows, origin: p.origin, supersede: retry.supersede === true };
   }
   return session;
 }
@@ -121,9 +121,29 @@ export async function readAtomOrigin(engine: BrainEngine, session: ManagedAtomSe
     revision: snapshot.revision, visibility: effectiveVisibility({ kind: 'page', page: snapshot.page }) };
 }
 
+// #5699: a revision-only page move leaves the accepted input byte-identical
+// but shifts the origin digest (revision is a field), wedging the failed
+// batch — the normal drain replays the failed checkpoint (its run key has
+// no revision) while this equality refuses the supported retry. An explicit
+// supersede re-anchors the accepted snapshot to the current one; every other
+// field must still match — a content change is a different batch, not a
+// supersede. Returns true when the origin was re-anchored.
+export function assertRetryOriginCurrent(retry: { origin: AtomOrigin; supersede?: boolean }, current: AtomOrigin, message: string): void {
+  if (digest(current) === digest(retry.origin)) return;
+  const inputStable = retry.origin.kind === current.kind && retry.origin.locator === current.locator
+    && retry.origin.contentHash === current.contentHash && retry.origin.textHash === current.textHash
+    && retry.origin.pageId === current.pageId;
+  if (retry.supersede === true && inputStable) {
+    retry.origin = current;
+    return;
+  }
+  throw new OperationError('source_changed', message,
+    inputStable ? 'Only the page revision moved — rerun with "supersede": true to re-anchor the retry on the current snapshot.' : undefined);
+}
+
 function runKey(session: ManagedAtomSession, origin: AtomOrigin): string {
   if (session.retry) {
-    if (digest(session.retry.origin) !== digest(origin)) throw new OperationError('source_changed', 'The atom retry input no longer matches its accepted source snapshot.');
+    assertRetryOriginCurrent(session.retry, origin, 'The atom retry input no longer matches its accepted source snapshot.');
     return session.retry.runKey;
   }
   return digest(['managed-atoms-v1', session.incarnation, origin.kind, origin.locator, origin.pageId, origin.contentHash]);

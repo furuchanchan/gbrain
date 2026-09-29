@@ -1,15 +1,14 @@
 import { readFileSync } from 'node:fs';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
-import { managedAtomSession, publishManagedAtoms, readAtomOrigin, resumeManagedAtoms, type AtomIntent } from './atom-maintenance.ts';
-import { digest } from './digest.ts';
+import { assertRetryOriginCurrent, managedAtomSession, publishManagedAtoms, readAtomOrigin, resumeManagedAtoms, type AtomIntent } from './atom-maintenance.ts';
 import { isWriteReceipt } from './types.ts';
 
-export async function retryManagedAtomBatch(engine: BrainEngine, sourceId: string, requestId: string, retryId: string): Promise<Record<string, unknown>> {
+export async function retryManagedAtomBatch(engine: BrainEngine, sourceId: string, requestId: string, retryId: string, opts?: { supersede?: boolean }): Promise<Record<string, unknown>> {
   const { withRefreshingLock } = await import('../db-lock.ts');
   const { cycleLockIdFor } = await import('../cycle.ts');
   return withRefreshingLock(engine, cycleLockIdFor(sourceId), async () => {
-    const session = await managedAtomSession(engine, sourceId, { requestId, retryId });
+    const session = await managedAtomSession(engine, sourceId, { requestId, retryId, supersede: opts?.supersede });
     if (!session?.retry) throw new OperationError('invalid_params', 'Explicit atom retry requires a managed source.');
     const retry = session.retry;
     const origin = retry.origin;
@@ -17,7 +16,7 @@ export async function retryManagedAtomBatch(engine: BrainEngine, sourceId: strin
       ? { kind: 'page' as const, slug: origin.locator, content: (await engine.readPageSnapshot(origin.locator, { sourceId }))?.page.compiled_truth ?? '', contentHash: origin.contentHash }
       : { kind: 'transcript' as const, filePath: origin.locator, content: readFileSync(origin.locator, 'utf8'), contentHash: origin.contentHash };
     const current = await readAtomOrigin(engine, session, item);
-    if (digest(current) !== digest(origin)) throw new OperationError('source_changed', 'The original atom input changed; this retry cannot reuse it.');
+    assertRetryOriginCurrent(retry, current, 'The original atom input changed; this retry cannot reuse it.');
     if (await resumeManagedAtoms(engine, session, current)) return { status: 'completed', replayed: true, model_rerun: false };
     const checkpoint = retry.expectedCheckpoint as Array<{ failure?: string }> | null;
     if (checkpoint && !checkpoint[0]?.failure) return { status: 'completed', replayed: true, model_rerun: false };
@@ -41,7 +40,7 @@ export async function retryManagedAtomBatch(engine: BrainEngine, sourceId: strin
     }
     if (!retry.rows.some(row => row.outcome?.failure)) throw new OperationError('invalid_params', 'This failed batch has no malformed extraction to retry.');
     const { runPhaseExtractAtoms } = await import('../cycle/extract-atoms.ts');
-    const result = await runPhaseExtractAtoms(engine, { sourceId, _managedRetry: { requestId, retryId },
+    const result = await runPhaseExtractAtoms(engine, { sourceId, _managedRetry: { requestId, retryId, supersede: opts?.supersede },
       _pages: item.kind === 'page' ? [item] : [], _transcripts: item.kind === 'transcript' ? [item] : [] });
     if (result.status !== 'ok') {
       const receipts = Array.isArray(result.details?.write_requests) ? result.details.write_requests.filter(isWriteReceipt) : [];
