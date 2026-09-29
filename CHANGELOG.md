@@ -10,6 +10,24 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.2] - 2026-09-30
+
+**`gbrain sources remove` now deletes the source's claim row too, and the sync claim probe only counts bindings for the source's current incarnation — re-adding a source under a removed id no longer wedges `gbrain sync` with `writer_coordinator_required`.**
+
+`persistence_source_bindings` has no foreign key to `sources`, so removing a claimed source left its claim row behind. Two things then went wrong: the claim probe in `resolveSyncPersistenceMode` matched bindings by `source_id` alone — not incarnation — so a brand-new source reusing the id read as claimed and every sync refused with `writer_coordinator_required`; and since `source_id` is the bindings table's primary key, the orphan row would also have stopped the new source from ever getting a binding of its own. The managed source-lifecycle remove path already cleaned its binding up; the plain `sources remove` path did not.
+
+Both halves of the issue's suggested fix are in: `runRemove` deletes the binding inside the same transaction as the source row (fixes the cause), and the claim probe now matches `source_incarnation = sources.incarnation` (brains already carrying orphaned or stale-incarnation rows stop being counted as claimed). A binding for the source's current incarnation still claims — the refusal is preserved exactly where it's real.
+
+### To take advantage of 0.60.10.2
+
+Nothing to do. Sources removed after this release leave no claim residue, and brains that already have orphaned binding rows unblock on the next sync without hand-editing the DB.
+
+### For contributors
+
+- `runRemove` (`src/commands/sources.ts`) runs `DELETE FROM persistence_source_bindings WHERE source_id = $1` inside the removal transaction.
+- `resolveSyncPersistenceMode` (`src/core/persistence/sync-authority.ts`) probes `EXISTS(... AND b.source_incarnation = s.incarnation)`.
+- New suite `test/sources-remove-binding.test.ts` (4 tests): remove cleans the binding row; stale-incarnation binding does not claim; current-incarnation binding still claims; remove + re-add under the same id syncs clean.
+- Refs #5732.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**

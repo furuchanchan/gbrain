@@ -829,6 +829,10 @@ async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
         );
         if (Number(rows[0]?.n ?? 0) > 0) throw new SourceReferencedError();
       }
+      // The bindings table has no FK to sources — without this a removed
+      // source leaves its claim row behind, and any later source reusing the
+      // id reads as claimed to resolveSyncPersistenceMode (#5732).
+      await tx.executeRaw(`DELETE FROM persistence_source_bindings WHERE source_id = $1`, [id]);
       await tx.executeRaw(`DELETE FROM sources WHERE id = $1`, [id]);
     });
   } catch (e) {
