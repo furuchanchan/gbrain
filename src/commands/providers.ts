@@ -9,7 +9,8 @@ import { listRecipes, getRecipe } from '../core/ai/recipes/index.ts';
 import { configureGateway, embedOne, isAvailable as gwIsAvailable, chat as gwChat } from '../core/ai/gateway.ts';
 import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 import { probeOllama, probeLMStudio } from '../core/ai/probes.ts';
-import { loadConfig, type GBrainConfig } from '../core/config.ts';
+import { loadConfig, toEngineConfig, type GBrainConfig } from '../core/config.ts';
+import type { BrainEngine } from '../core/engine.ts';
 import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
 import { lookupEmbeddingPrice } from '../core/embedding-pricing.ts';
 import type { Recipe } from '../core/ai/types.ts';
@@ -50,19 +51,23 @@ export function envReady(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
- * #5302: resolve the base URL a recipe lands on across file/env/default
- * planes, with provenance — until now there was no non-destructive way to
- * see it (a broken-override negative test was the only check). DB-plane
- * overrides are not read by this command.
+ * #5302: resolve the base URL a recipe lands on, with provenance — until
+ * now there was no non-destructive way to see it (a broken-override
+ * negative test was the only check).
  *
  * Resolution mirrors the real paths:
- *  - openai-compat recipes: `provider_base_urls.<id>` (file plane; a
- *    DB-plane value set via `gbrain config set` applies at runtime when no
- *    file-plane value exists) > known `*_BASE_URL` env vars (the set
- *    buildGatewayConfig folds into base_urls) > `recipe.base_url_default`.
+ *  - openai-compat recipes: `provider_base_urls.<id>` file plane > the same
+ *    key on the DB plane (a `gbrain config set` value applies at runtime
+ *    when no file-plane value exists; both planes beat env because
+ *    buildGatewayConfig folds env urls UNDER cfg.base_urls) > known
+ *    `*_BASE_URL` env vars > `recipe.base_url_default`. The DB value is
+ *    reported only when `dbUrls` was actually consulted (engine reachable);
+ *    pass `undefined` when it was not.
  *  - native recipes (anthropic/openai): env `*_BASE_URL` > file-plane
  *    `provider_base_urls.<id>` — the SDK path folds the file value into env
- *    only when env is empty (foldNativeBaseUrlsFromFilePlane).
+ *    only when env is empty (foldNativeBaseUrlsFromFilePlane). The DB plane
+ *    is deliberately NEVER applied to natives (mount safety), so dbUrls is
+ *    ignored here.
  */
 const PROVIDERS_BASE_URL_ENVS: Record<string, string> = {
   'llama-server': 'LLAMA_SERVER_BASE_URL',
@@ -81,6 +86,7 @@ export function resolveRecipeBaseUrl(
   recipe: Recipe,
   env: NodeJS.ProcessEnv = process.env,
   fileCfg: Pick<GBrainConfig, 'provider_base_urls'> | null = null,
+  dbUrls: Record<string, string> | null | undefined = undefined,
 ): ResolvedBaseUrl | null {
   const fileUrl = fileCfg?.provider_base_urls?.[recipe.id];
   const envKey = PROVIDERS_BASE_URL_ENVS[recipe.id];
@@ -91,6 +97,8 @@ export function resolveRecipeBaseUrl(
       ? { url: envUrl!.trim(), source: `${envKey} env var` }
       : { url: fileUrl!.trim(), source: `provider_base_urls.${recipe.id} (file plane)` };
   }
+  const dbUrl = dbUrls?.[recipe.id];
+  if (!native && dbUrl?.trim()) return { url: dbUrl.trim(), source: `provider_base_urls.${recipe.id} (db plane)` };
   if (!native && envUrl?.trim()) return { url: envUrl!.trim(), source: `${envKey} env var` };
   if (native && fileUrl?.trim()) return { url: fileUrl!.trim(), source: `provider_base_urls.${recipe.id} (file plane)` };
   if (recipe.base_url_default) return { url: recipe.base_url_default, source: 'recipe default' };
@@ -101,6 +109,7 @@ export function formatEnvOutput(
   recipe: Recipe,
   env: NodeJS.ProcessEnv = process.env,
   fileCfg: Pick<GBrainConfig, 'provider_base_urls'> | null = null,
+  dbUrls: Record<string, string> | null | undefined = undefined,
 ): string {
   const lines: string[] = [];
   lines.push(`${recipe.name} (${recipe.id})`);
@@ -122,11 +131,15 @@ export function formatEnvOutput(
       lines.push(`  ${k.padEnd(32)} ${env[k] ? '✓ set' : '✗ not set'}`);
     }
   }
-  const resolved = resolveRecipeBaseUrl(recipe, env, fileCfg);
+  const resolved = resolveRecipeBaseUrl(recipe, env, fileCfg, dbUrls);
   if (resolved) {
     lines.push('');
     lines.push(`Base URL: ${resolved.url}  (${resolved.source})`);
-    lines.push('  Resolution scope: file plane, env vars, built-in defaults — DB-plane `provider_base_urls.*` overrides are not read here.');
+    if (dbUrls !== undefined) {
+      lines.push('  Resolution scope: file plane, DB plane, env vars, built-in defaults.');
+    } else {
+      lines.push('  Resolution scope: file plane, env vars, built-in defaults — DB-plane `provider_base_urls.*` overrides are not read here.');
+    }
     lines.push(`  Override: \`gbrain config set provider_base_urls.${recipe.id} <url>\` (DB plane; applies when no file-plane value exists — verify via \`gbrain config get provider_base_urls.${recipe.id}\`) or ${recipe.id.toUpperCase().replace(/-/g, '_')}_BASE_URL env where supported.`);
   }
   if (recipe.auth_env?.setup_url) {
@@ -351,7 +364,46 @@ async function runTest(args: string[]): Promise<void> {
   }
 }
 
-function runEnv(args: string[]): void {
+/**
+ * #5302: best-effort DB-plane read for `providers env`. When a brain is
+ * configured and reachable, returns the `provider_base_urls.<id>` value the
+ * gateway would merge at runtime; `connected: false` (or a thrown connect,
+ * folded to it) keeps the file/env/default-only note. Never exits, never
+ * prints — callers decide how much to disclose.
+ */
+export async function probeProviderBaseUrlDbPlane(
+  recipeId: string,
+  deps: {
+    connect?: () => Promise<Pick<BrainEngine, 'getConfig' | 'disconnect'> | null>;
+  } = {},
+): Promise<{ connected: boolean; url?: string }> {
+  const connect =
+    deps.connect ??
+    (async () => {
+      const fileCfg = loadConfig();
+      if (!fileCfg) return null;
+      const { createEngine } = await import('../core/engine-factory.ts');
+      const cfg = toEngineConfig(fileCfg);
+      const engine = await createEngine(cfg);
+      await engine.connect(cfg);
+      return engine;
+    });
+  try {
+    const engine = await connect();
+    if (!engine) return { connected: false };
+    try {
+      const raw = await engine.getConfig(`provider_base_urls.${recipeId}`);
+      const url = raw?.trim();
+      return { connected: true, ...(url ? { url } : {}) };
+    } finally {
+      await engine.disconnect().catch(() => {});
+    }
+  } catch {
+    return { connected: false };
+  }
+}
+
+async function runEnv(args: string[]): Promise<void> {
   const id = args[0];
   if (!id) {
     console.error('Usage: gbrain providers env <id>');
@@ -365,7 +417,14 @@ function runEnv(args: string[]): void {
   // File-plane config feeds the resolved-base-URL line; absent pre-init.
   let fileCfg: ReturnType<typeof loadConfig> | null = null;
   try { fileCfg = loadConfig(); } catch { fileCfg = null; }
-  console.log(formatEnvOutput(recipe, process.env, fileCfg));
+  // Natives deliberately never read the DB plane (mount safety — see
+  // resolveRecipeBaseUrl), so probing it for them would only mislead.
+  let dbUrls: Record<string, string> | null | undefined;
+  if (recipe.tier !== 'native') {
+    const probe = await probeProviderBaseUrlDbPlane(recipe.id);
+    if (probe.connected) dbUrls = probe.url ? { [recipe.id]: probe.url } : {};
+  }
+  console.log(formatEnvOutput(recipe, process.env, fileCfg, dbUrls));
 }
 
 async function runExplain(args: string[]): Promise<void> {

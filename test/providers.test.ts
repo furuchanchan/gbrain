@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { formatRecipeTable, formatEnvOutput, envReady } from '../src/commands/providers.ts';
+import { formatRecipeTable, formatEnvOutput, envReady, probeProviderBaseUrlDbPlane } from '../src/commands/providers.ts';
 import { listRecipes, getRecipe } from '../src/core/ai/recipes/index.ts';
 import type { Recipe } from '../src/core/ai/types.ts';
 
@@ -188,4 +188,100 @@ describe('resolved base URL surface (#5302)', () => {
     });
     expect(out2).toContain('Base URL: https://file.example/v1  (provider_base_urls.anthropic (file plane))');
   });
+
+  test('DB-plane provider_base_urls resolves for openai-compat when consulted', () => {
+    const out = formatEnvOutput(mistral(), {}, null, {
+      mistral: 'https://api.eu.mistral.ai/v1',
+    });
+    expect(out).toContain('Base URL: https://api.eu.mistral.ai/v1  (provider_base_urls.mistral (db plane))');
+    expect(out).toContain('file plane, DB plane, env vars, built-in defaults');
+    expect(out).not.toContain('are not read here');
+    expect(out).not.toContain('recipe default');
+  });
+
+  test('file plane beats DB plane for openai-compat', () => {
+    const out = formatEnvOutput(mistral(), {}, {
+      provider_base_urls: { mistral: 'https://file.example/v1' },
+    }, {
+      mistral: 'https://api.eu.mistral.ai/v1',
+    });
+    expect(out).toContain('Base URL: https://file.example/v1  (provider_base_urls.mistral (file plane))');
+  });
+
+  test('DB plane beats env for openai-compat (merged urls fold over env)', () => {
+    const ollama = getRecipe('ollama')!;
+    const out = formatEnvOutput(ollama, { OLLAMA_BASE_URL: 'http://host:11434/v1' }, null, {
+      ollama: 'http://db:11434/v1',
+    });
+    expect(out).toContain('Base URL: http://db:11434/v1  (provider_base_urls.ollama (db plane))');
+  });
+
+  test('an empty consulted DB plane widens the scope line without inventing a value', () => {
+    const out = formatEnvOutput(mistral(), {}, null, {});
+    expect(out).toContain('Base URL: https://api.mistral.ai/v1  (recipe default)');
+    expect(out).toContain('file plane, DB plane, env vars, built-in defaults');
+  });
+
+  test('native recipes ignore the DB plane even when consulted', () => {
+    const anthropic = getRecipe('anthropic')!;
+    const out = formatEnvOutput(anthropic, { ANTHROPIC_BASE_URL: 'https://proxy.example/v1' }, null, {
+      anthropic: 'https://attacker.example/v1',
+    });
+    expect(out).toContain('Base URL: https://proxy.example/v1  (ANTHROPIC_BASE_URL env var)');
+    expect(out).not.toContain('attacker.example');
+  });
+});
+
+describe('probeProviderBaseUrlDbPlane (#5302)', () => {
+  const fakeEngine = (v: string | null) => ({
+    getConfig: async (_key: string) => v,
+    disconnect: async () => {},
+  });
+
+  test('returns the DB value when the engine is reachable', async () => {
+    const probe = await probeProviderBaseUrlDbPlane('mistral', {
+      connect: async () => fakeEngine('https://api.eu.mistral.ai/v1'),
+    });
+    expect(probe).toEqual({ connected: true, url: 'https://api.eu.mistral.ai/v1' });
+  });
+
+  test('connected with no DB row reports consulted-but-empty', async () => {
+    const probe = await probeProviderBaseUrlDbPlane('mistral', {
+      connect: async () => fakeEngine(null),
+    });
+    expect(probe).toEqual({ connected: true });
+  });
+
+  test('connect failure folds to not-connected (never throws)', async () => {
+    const probe = await probeProviderBaseUrlDbPlane('mistral', {
+      connect: async () => { throw new Error('ECONNREFUSED'); },
+    });
+    expect(probe).toEqual({ connected: false });
+  });
+
+  test('getConfig failure still disconnects and reports not-connected', async () => {
+    let disconnected = false;
+    const probe = await probeProviderBaseUrlDbPlane('mistral', {
+      connect: async () => ({
+        getConfig: async () => { throw new Error('relation "config" does not exist'); },
+        disconnect: async () => { disconnected = true; },
+      }),
+    });
+    expect(probe).toEqual({ connected: false });
+    expect(disconnected).toBe(true);
+  });
+
+  test('real PGLite engine round-trips provider_base_urls.mistral', async () => {
+    const { PGLiteEngine } = await import('../src/core/pglite-engine.ts');
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    try {
+      await engine.setConfig('provider_base_urls.mistral', 'https://api.eu.mistral.ai/v1');
+      const probe = await probeProviderBaseUrlDbPlane('mistral', { connect: async () => engine });
+      expect(probe).toEqual({ connected: true, url: 'https://api.eu.mistral.ai/v1' });
+    } finally {
+      await engine.disconnect();
+    }
+  }, 60_000);
 });
