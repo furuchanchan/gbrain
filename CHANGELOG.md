@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.8] - 2026-10-01
+
+**Chat transcripts are wrapped as data before extraction — the model no longer continues the conversation.**
+
+When `extract_atoms` sent a stored chat transcript to the model, the page body arrived as a bare conversation — so instead of emitting the requested JSON array, the model simply replied as the next turn (`Assistant: looking at the file you sent to validate the structure…`). Every page like this failed 3/3 runs on both Haiku and Sonnet before an operator caught it. The prompt now wraps the body in `<transcript>` tags and explicitly instructs the model that the content is DATA to analyze, not a conversation to continue — the exact framing the reporter verified across both models. The wrapped body is byte-identical to the previous cut, so quote provenance (`locateQuote`) is unchanged.
+
+### To take advantage of 0.60.10.8
+
+Nothing to do — the next `extract_atoms` run (or `gbrain doctor --remediate`) picks up the wrapped prompt automatically. Pages that tombstoned on earlier versions re-extract normally on retry.
+
+### For contributors
+
+- `runPhaseExtractAtoms` (src/core/cycle/extract-atoms.ts) wraps `promptContent` in `<transcript>` + a DATA-only trailer when calling `chat()`. `promptContent` itself is unchanged, so `locateQuote` quote provenance is unaffected.
+- `extract-atoms-failure-classes.test.ts` gains a regression: a `Human:/Assistant:` transcript page produces a `<transcript>`-wrapped prompt with the data-analysis instruction, and the model-visible cut is byte-identical to before.
+- Two prompt-shape pins in `extract-atoms-page-discovery.test.ts` and one in `extract-atoms-failure-classes.test.ts` now assert the wrapped form (truncation semantics unchanged — the cut still applies to the body inside the wrapper).
+- Refs #5705.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
