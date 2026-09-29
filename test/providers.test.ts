@@ -5,7 +5,7 @@
  * gateway / loadConfig; E2E exercises those.
  */
 
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { formatRecipeTable, formatEnvOutput, envReady, probeProviderBaseUrlDbPlane } from '../src/commands/providers.ts';
 import { listRecipes, getRecipe } from '../src/core/ai/recipes/index.ts';
 import type { Recipe } from '../src/core/ai/types.ts';
@@ -271,17 +271,25 @@ describe('probeProviderBaseUrlDbPlane (#5302)', () => {
     expect(disconnected).toBe(true);
   });
 
-  test('real PGLite engine round-trips provider_base_urls.mistral', async () => {
+});
+
+describe('probeProviderBaseUrlDbPlane against a real PGLite engine', () => {
+  let engine: import('../src/core/pglite-engine.ts').PGLiteEngine;
+
+  beforeAll(async () => {
     const { PGLiteEngine } = await import('../src/core/pglite-engine.ts');
-    const engine = new PGLiteEngine();
+    engine = new PGLiteEngine();
     await engine.connect({});
     await engine.initSchema();
-    try {
-      await engine.setConfig('provider_base_urls.mistral', 'https://api.eu.mistral.ai/v1');
-      const probe = await probeProviderBaseUrlDbPlane('mistral', { connect: async () => engine });
-      expect(probe).toEqual({ connected: true, url: 'https://api.eu.mistral.ai/v1' });
-    } finally {
-      await engine.disconnect();
-    }
   }, 60_000);
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  test('round-trips provider_base_urls.mistral', async () => {
+    await engine.setConfig('provider_base_urls.mistral', 'https://api.eu.mistral.ai/v1');
+    const probe = await probeProviderBaseUrlDbPlane('mistral', { connect: async () => engine });
+    expect(probe).toEqual({ connected: true, url: 'https://api.eu.mistral.ai/v1' });
+  });
 });
