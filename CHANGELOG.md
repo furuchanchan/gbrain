@@ -10,6 +10,23 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.18.2] - 2026-09-29
+
+**`gbrain upgrade` no longer calls a landed swap "failed" when `bun install` times out, and a second `apply-migrations` refuses while another run holds the brain (Postgres).**
+
+On a bun-link install, `gbrain upgrade` ran `git pull` and `bun install` under one 120-second window and reported "Auto-upgrade failed" whenever either overran. When the postinstall `apply-migrations` child outlived the window, the swap had already landed, the child kept running detached, and the printed advice invited a second `apply-migrations` in parallel — two orchestrators then admitted duplicate write requests for the same pages (a bun-link user reported 176).
+
+`git pull` and `bun install` now fail separately, and a `bun install` failure checks the checkout's version before reporting: when the swap already landed, the output says so and warns that postinstall migrations may still be running instead of claiming the upgrade failed. On Postgres, a mutating `apply-migrations` run now takes the pooler-safe `gbrain-apply-migrations` row in `gbrain_cycle_locks` (the same primitive the cycle locks use; `pg_advisory_lock` does not survive PgBouncer) — a second runner is refused with the holder's pid, host and lock-lapse time rather than running in parallel, and a crashed run frees the lock when its TTL lapses. `gbrain apply-migrations --list` reports the in-flight holder so the upgrade guide's "if schema work did not complete" check can distinguish a still-running postinstall from a run that never finished. PGLite brains already serialize writers on their single-writer lock and are unchanged.
+
+### To take advantage of 0.59.18.2
+
+Run `gbrain upgrade`. If an upgrade ever reports `bun install` did not finish, check `gbrain apply-migrations --list` (or `pgrep -fl apply-migrations`) for an in-flight run before re-running `gbrain apply-migrations --yes`.
+
+### For contributors
+
+- New tests: `test/apply-migrations-runner-lock.test.ts`, `test/upgrade-timeout-messaging.serial.test.ts`.
+- Refs #5693.
+
 ## [0.59.18.0] - 2026-09-29
 
 **Dream no longer keeps made-up quotes, wrong-speaker quotes or invented numbers as memory, and `gbrain eval compare` computes the statistics it claims.**
