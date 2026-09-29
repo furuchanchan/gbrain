@@ -302,6 +302,7 @@ const ROLE_MENTION: Record<string, string> = {
 };
 const BOLD_ANCHOR_RE = /^[ \t]*\*\*([^*\n]{1,60}?)\*\*(?:[ \t]*\([^)\n]{0,40}\))?[ \t]*:/;
 const PLAIN_ANCHOR_RE = /^[ \t]*(?:\[[^\]\n]{1,40}\][ \t]*)?([A-Za-z][A-Za-z0-9.'_-]*(?: [A-Za-z][A-Za-z0-9.'_-]*){0,3})(?:[ \t]*\([^)\n]{0,40}\))?[ \t]*:(?=[ \t]|\r?$)/;
+const BRACKET_ROLE_RE = /^[ \t]*\[([A-Za-z][A-Za-z0-9._-]*)\][ \t]*$/;
 
 /** Canonical speaker identity: role labels fold to their role, names to lowercase. */
 export function speakerKey(label: string): string {
@@ -311,9 +312,12 @@ export function speakerKey(label: string): string {
 
 /**
  * Speaker turns from line-start anchors. Bold anchors (the transcript
- * renderer's format) always count; plain `Label:` anchors count when the
- * label is a role word or opens at least two lines, so a prose line such as
- * `Note: ...` is not mistaken for a speaker.
+ * renderer's format) always count; so do standalone `[role]` lines, the
+ * stock Claude Code renderer's role boundary — a hard turn edge, so a
+ * `Name:` label inside one role's prose can never bleed across the next
+ * role boundary. Plain `Label:` anchors count when the label is a role
+ * word or opens at least two lines, so a prose line such as `Note: ...`
+ * is not mistaken for a speaker.
  */
 export function parseSpeakerTurns(content: string): SpeakerTurn[] {
   const turns: SpeakerTurn[] = [];
@@ -325,6 +329,12 @@ export function parseSpeakerTurns(content: string): SpeakerTurn[] {
     if (bold) {
       turns.push({ labelStart: offset, labelEnd: offset + bold[0].length, speaker: bold[1].trim() });
     } else {
+      const bracket = BRACKET_ROLE_RE.exec(line);
+      if (bracket && ROLE_ALIASES[bracket[1].toLowerCase()]) {
+        turns.push({ labelStart: offset, labelEnd: offset + line.length, speaker: speakerKey(bracket[1]) });
+        offset += line.length + 1;
+        continue;
+      }
       const p = PLAIN_ANCHOR_RE.exec(line);
       if (p) {
         const speaker = p[1].trim();

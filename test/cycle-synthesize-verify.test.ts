@@ -14,6 +14,8 @@ import {
   groundQuote,
   verifyBody,
   groundSource,
+  speakerAt,
+  parseSpeakerTurns,
   unsupportedNumericClaims,
   verifyAndRepairDreamPages,
   readVerifyEpoch,
@@ -271,6 +273,33 @@ describe('speaker provenance (write-path audit C-6)', () => {
     expect(r.body).toBe('The assistant said "The team agreed the mechanical checker beats an LLM judge."');
     expect(r.quarantined).toEqual([expect.objectContaining({ reason: 'speaker_mismatch' })]);
     expect(r.provenance[0].speaker).toBe('assistant');
+  });
+
+  test('bracket role turns: a prose speaker label cannot bleed past a stock [user] boundary (#5717)', () => {
+    const transcript = [
+      '[user]',
+      'Please review the build.',
+      '',
+      '[assistant]',
+      'ReviewerBot: first status.',
+      'ReviewerBot: second status.',
+      '',
+      '[user]',
+      'Do not create handoffs unless I ask.',
+    ].join('\n');
+    const src = groundSource('/t/bracket.txt', transcript);
+    expect(src.turns.map(t => t.speaker)).toEqual(['user', 'assistant', 'ReviewerBot', 'ReviewerBot', 'user']);
+    expect(speakerAt(src.turns, transcript.indexOf('Do not create'))).toBe('user');
+    const good = verifyBody('The user said "Do not create handoffs unless I ask."', [src]);
+    expect(good.quarantined).toHaveLength(0);
+    expect(good.provenance[0].speaker).toBe('user');
+    const bad = verifyBody('ReviewerBot said "Do not create handoffs unless I ask."', [src]);
+    expect(bad.quarantined.map(q => q.reason)).toContain('speaker_mismatch');
+  });
+
+  test('bracket role turns: only role words count as standalone boundaries', () => {
+    const turns = parseSpeakerTurns('Intro.\n\n[todo]\n\nNot a turn.\n\n[human]\nNow user speaks.\n\n[system]\nSystem line.');
+    expect(turns.map(t => t.speaker)).toEqual(['user', 'system']);
   });
 
   test('named speakers: labels that open two or more lines count; prose labels do not', () => {
