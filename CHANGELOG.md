@@ -10,6 +10,24 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.1] - 2026-09-30
+
+**Connector-managed sources no longer mint refused autopilot `sync` jobs every freshness cycle, and `gbrain sources set-path <id> --clear` is the supported repair for a stale connector `local_path`.**
+
+A connector-managed source (Google/GitHub account import, `config.kind`) legitimately carries a `local_path` — its connector-managed root, verified by the connector binding. The autopilot freshness loop iterated every source with a `local_path` and submitted a legacy `sync` job carrying it as `repoPath`, which `assertManagedFilesystemWrite` refuses — so every affected brain minted a refused job each cycle, and the only way out was editing the DB by hand (forbidden by the topology docs) or repointing to an unrelated directory. The freshness loop now skips connector-managed sources entirely — their sync already flows through the managed `connector-sync` job, so nothing is lost. Sources with `syncEnabled = false` were always skipped and still are.
+
+For the stale `local_path` itself, `gbrain sources set-path <id> --clear` (alias `--null`) resets it to NULL — the issue's option 1. It is restricted to connector-managed sources (a filesystem source's `local_path` is its write-through identity and can only be repointed) and refused while a `persistence_source_bindings` row for the source's current incarnation still verifies the canonical root against that path (exit 7) — a stale-incarnation binding no longer verifies anything, so reborn connector sources clear fine.
+
+### To take advantage of 0.60.10.1
+
+Nothing to do for the refused-job churn — the next autopilot cycle simply stops submitting legacy `sync` jobs for connector sources. If a connector source still carries a stale `local_path`, run `gbrain sources set-path <id> --clear` once, then `gbrain doctor` to confirm.
+
+### For contributors
+
+- `sourceIsConnectorManaged(config)` in `src/core/sources-load.ts` is the shared `config.kind ∈ {google, github}` predicate; the autopilot freshness loop uses it, alongside the existing `isSyncDisabledConfig` gate.
+- `set-path --clear` is enforced in `src/commands/sources-set-path.ts`: connector-kind only, `persistence_source_bindings` incarnation check, exit codes 2 (usage) / 4 (not found) / 6 (not connector-managed) / 7 (binding active).
+- New suite `test/sources-set-path-clear.test.ts` (8 tests): predicate coverage, happy-path clear for both flags, filesystem refusal, active-binding refusal, stale-incarnation clear, not-found, and arg validation.
+- Refs #5673.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**

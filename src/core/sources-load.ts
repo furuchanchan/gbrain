@@ -157,6 +157,18 @@ export function sourceConfigHasRemoteUrl(config: unknown): boolean {
   return typeof remoteUrl === 'string' && remoteUrl.trim().length > 0;
 }
 
+/**
+ * True iff the source is connector-managed (Google/GitHub account import).
+ * Connector sources can carry a local_path — their connector-managed root —
+ * but managed writes flow through the connector-sync job and the connector
+ * binding, never a legacy repoPath `sync` job (assertManagedFilesystemWrite
+ * refuses those), so legacy filesystem paths never see connector sync.
+ */
+export function sourceIsConnectorManaged(config: unknown): boolean {
+  const kind = parseSourceConfig(config).kind;
+  return kind === 'google' || kind === 'github';
+}
+
 function sourceHasRecoverableManagedClone(config: unknown): boolean {
   const cfg = parseSourceConfig(config);
   const remoteUrl = cfg.remote_url;
