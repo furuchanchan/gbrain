@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## 0.60.10.11
+
+### Fixed
+
+- Managed atom extraction: a failed batch could no longer be retried after a
+  revision-only source change — the drain replayed the failed checkpoint while
+  `jobs submit extract-atoms-drain` with `retryRequestId` refused the shifted
+  input digest. The retry now accepts `"supersede": true`, which re-anchors the
+  accepted source snapshot on the current one when every input field except the
+  page revision is identical, with the normal authority and revision checks
+  unchanged. (#5699)
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
