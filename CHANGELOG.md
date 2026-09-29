@@ -10,6 +10,25 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.10] - 2026-10-01
+
+**`get_page include_timeline: true` — the structured timeline store is readable without a second call.**
+
+`add_timeline_entry` and auto_timeline write only the `timeline_entries` table and never touch the `pages.timeline` column — which is populated solely by markdown import / put_page's `<!-- timeline -->` sentinel section. So `get_page` reported `timeline: ""` for a page `get_timeline` showed had entries, and no parameter could include them. `get_page` now accepts `include_timeline: true`, which adds a `timeline_entries` field carrying the resolved page's structured entries — same shape and same untrusted-reader privacy filtering as `get_timeline`, scoped to the page's own source so a same-slug page in another source doesn't union its entries in. Default stays `false` so the most-called read op doesn't pay for a second store's rows most callers don't need. The `get_page` description now states plainly that `timeline` is only the markdown sentinel section and points at `get_timeline`.
+
+### To take advantage of 0.60.10.10
+
+MCP/CLI callers that previously issued a follow-up `get_timeline` after every `get_page` can fold it into one call:
+
+```json
+{ "name": "get_page", "arguments": { "slug": "notes/example", "include_timeline": true } }
+```
+
+### For contributors
+
+- `src/core/ops/pages.ts` — `include_timeline` param; the return object gains `timeline_entries` via `ctx.engine.getTimeline(page.slug, { sourceId: page.source_id, excludePrivate })` — scalar sourceId (not the caller's grant) so same-slug cross-source pages don't union.
+- `test/get-page-include-timeline-5709.test.ts` (new) pins: default off / sentinel column verbatim, get_timeline shape + order, and the cross-source non-union.
+- Refs #5709.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
