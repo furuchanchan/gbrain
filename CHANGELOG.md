@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.4] - 2026-10-01
+
+**Managed page writes no longer expire extractor-sourced facts on pages without a `## Facts` fence.**
+
+The canonical projection's fence reconcile expired every `row_num`-bearing fact not present in the incoming fence. Conversation pages carry no facts fence, so the incoming set is empty and any managed write — `sources reconcile … --apply`, `add_timeline_entry`, any coordinator `put_page` — expired that page's extractor facts (a reporter lost 20,593 of 20,820 active facts across a reconcile + timeline pass). The reconcile now scopes expiry to fence-owned rows, `COALESCE(source,'') NOT LIKE 'cli:%'`, mirroring the `excludeSourcePrefixes: ['cli:']` guard `deleteFactsForPage` already applies on the wipe path. Fence-removal semantics are unchanged: a row dropped from a real fence still expires, and NULL/empty-source rows stay fence-owned by convention.
+
+### To take advantage of 0.60.10.4
+
+Nothing to do: the next managed write leaves `cli:`-origin facts alone. Rows expired by earlier versions retain `expired_at` — re-running `gbrain extract-conversation-facts` on affected pages re-extracts them.
+
+### For contributors
+
+- The fix is one predicate in `prepareCanonicalProjections` (`src/core/persistence/canonical-projections.ts`); the comment documents the fence-ownership convention from #1928.
+- New suite `test/canonical-projection-cli-facts.test.ts` (2 tests): cli:-origin facts survive a fenceless-page write while fence-owned/empty-source rows still expire; a dropped real fence row still expires.
+- Refs #5731.
+
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**
