@@ -204,6 +204,19 @@ describe('model 404 provenance (#5304)', () => {
     expect((enriched as { fix?: string }).fix).toContain('gbrain config set models.tier.reasoning');
   });
 
+  test('file pin provenance names the DB-plane override, not a config set on the pin key', async () => {
+    writeFileConfig({ chat_model: 'openai:gpt-5.2' });
+    configureGateway({ chat_model: 'openai:gpt-5.2', env: { OPENAI_API_KEY: 'sk-test' } });
+    await reconfigureGatewayWithEngine(stub as never);
+    const { enrichModelNotFoundError } = await import('../src/core/ai/model-provenance.ts');
+    const { normalizeAIError } = await import('../src/core/ai/errors.ts');
+    const raw404 = { name: 'AI_APICallError', status: 404, message: 'model gone' };
+    const fix = (enrichModelNotFoundError(normalizeAIError(raw404, 'chat'), 'chat') as { fix?: string }).fix;
+    expect(fix).toContain('Selected via chat_model in config.json');
+    expect(fix).toContain('gbrain config set models.chat <provider>:<model>');
+    expect(fix).not.toContain('gbrain config set chat_model');
+  });
+
   test('enriched fix names keys only, never config or env values', async () => {
     writeFileConfig({});
     configureGateway({ env: { ANTHROPIC_API_KEY: 'sk-ant-secret-canary' } });

@@ -54,7 +54,12 @@ export function enrichModelNotFoundError(
   const tier: ModelTier = surface === 'expansion' ? 'utility' : 'reasoning';
   const p = surface ? _modelProvenance[surface] : undefined;
   let suffix: string;
-  if (p?.key && !p.key.includes(' ') && !p.key.startsWith('env:')) {
+  if (p?.source === 'file_pin' && p.key) {
+    // A file pin lives in config.json; `gbrain config set <pin key>` writes
+    // the DB plane, which the pin does not read. Name the override that wins.
+    const dbKey = surface === 'expansion' ? 'models.expansion' : 'models.chat';
+    suffix = `Selected via ${p.key} in config.json (file plane). Fix: edit or remove that pin, or override it with gbrain config set ${dbKey} <provider>:<model>.`;
+  } else if (p?.key && !p.key.includes(' ') && !p.key.startsWith('env:')) {
     suffix = `Selected via ${p.key}. Fix: gbrain config set ${p.key} <provider>:<model> (or clear the key to fall back to the tier default).`;
   } else if (p?.key?.startsWith('env:')) {
     suffix = `Selected via ${p.key} — update or unset that variable, or pin models.tier.${tier} via gbrain config set.`;
