@@ -1703,13 +1703,14 @@ export class PGLiteEngine implements BrainEngine {
   // last checkpoint crosses the automatic threshold mid-flush, Postgres runs
   // CreateCheckPoint inline from XLogWrite, hits a buffer already marked
   // BM_IO_IN_PROGRESS, and spins in WaitIO forever (100% CPU, blocked event
-  // loop). Pre-empt the automatic trigger: every N committed transactions,
-  // issue a top-level CHECKPOINT when WAL distance exceeds GBRAIN_PG_CHECKPOINT_MB.
-  private _pgCommits = 0;
+  // loop). Pre-empt the automatic trigger: after EVERY committed transaction
+  // measure WAL distance and issue a top-level CHECKPOINT once it exceeds
+  // GBRAIN_PG_CHECKPOINT_MB, so a crossed threshold never survives into the
+  // next transaction's flush path. The probe is one sub-millisecond catalog
+  // read per commit (pg_control_checkpoint), cheap enough to run unthrottled.
   private _pgCkptBusy = false;
   private async _pgCheckpointIfNeeded(): Promise<void> {
     if (this._chunkWritesInTransaction || this._pgCkptBusy || !this._db) return;
-    if (++this._pgCommits % 25 !== 0) return;
     const limitMb = Number(process.env.GBRAIN_PG_CHECKPOINT_MB ?? '256');
     if (!(limitMb > 0)) return;
     this._pgCkptBusy = true;
