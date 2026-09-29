@@ -10,6 +10,24 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.3] - 2026-09-30
+
+**Pages written by the Dream patterns phase now carry the `dream_generated` identity marker, so marker-keyed guards treat them as dream output instead of user-authored content.**
+
+The patterns phase publishes through child `brain_put_page` calls, which never stamped `dream_generated` — the synthesize phase's post-step stamps it, so only pattern pages slipped through as unmarked dream output. Every consumer that keys on the marker then misclassified them: transcript-discovery's self-consumption guard could feed them back as transcripts, source-boost didn't demote them in search, and the extract-atoms/salience `dream_generated` filters included them as ordinary content. (0.60.5 fixed the concrete re-ingestion loop by excluding the patterns directory during discovery — the missing marker still broke demotion and every other filter.)
+
+After the child commits, the phase now stamps `dream_generated: true` plus `dream_cycle_date` / `dream_created_cycle_date` on each page it wrote — resolved from the child's `brain_put_page` tool-execution rows, the same provenance set the reverse-write uses, on both managed and unmanaged publish paths. An existing stamp's first date is preserved, so re-runs and pages already stamped by synthesize keep their original cycle date.
+
+### To take advantage of 0.60.10.3
+
+Nothing to do: the next `gbrain dream` patterns phase stamps its new pages. Pattern pages written before this release stay unmarked until a page update re-runs the stamp.
+
+### For contributors
+
+- `stampPatternPagesDreamGenerated` in `src/core/cycle/patterns.ts` does the batched frontmatter merge (`jsonb_build_object`, no `JSON.stringify` into `::jsonb`); exported via `__testing`.
+- The stamp runs between `collectChildPutPageSlugs` and `verifyMaintenanceOutputs`/`reverseWriteRefs`, so both publish paths re-read the stamped row.
+- New suite `test/patterns-dream-stamp.test.ts` (4 tests): marker + both dates stamped; first-date preservation; soft-deleted/unlisted pages untouched; other frontmatter keys survive.
+- Refs #5733.
 ## [0.60.10.0] - 2026-09-29
 
 **Local PGLite brains now commit writes about 3.7× faster, with the same durability.**

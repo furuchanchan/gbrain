@@ -255,9 +255,10 @@ export async function runPhasePatterns(
     const renewPrivateQueueLease = queue.makeThrottledLeaseRenewer(
       childQueueName, privateQueueOwnerToken, opts.yieldDuringPhase,
     );
+    const cycleDate = opts.cycleDate ?? await resolveCycleDate(engine);
     const data: SubagentHandlerData = {
       prompt: buildPatternsPrompt(reflections, config.minEvidence, config.sourceSlugPrefix, config.outputSlugPrefix,
-        opts.cycleDate ?? await resolveCycleDate(engine)),
+        cycleDate),
       model: config.model,
       max_turns: 30,
       // #4217/CDX-12: a patterns child whose every put_page failed must
@@ -359,6 +360,13 @@ export async function runPhasePatterns(
     // the reverse-write below dual-writes files).
     throwIfAborted(opts.signal, '[dream] patterns output');
     const writtenRefs = await collectChildPutPageSlugs(engine, [job.id], cycleSourceId);
+
+    // #5733: stamp the dream-output identity the synthesize post-step already
+    // stamps — child put_page calls carry none, so marker-keyed guards
+    // (transcript-discovery self-consumption, source-boost demotion,
+    // extract-atoms/salience filters) treated pattern pages as user content.
+    throwIfAborted(opts.signal, '[dream] patterns stamp');
+    await stampPatternPagesDreamGenerated(engine, writtenRefs, cycleDate);
 
     // Reverse-write to fs.
     const reverseWriteCount = maintenance ? await verifyMaintenanceOutputs(engine, maintenance, writtenRefs)
@@ -639,6 +647,38 @@ async function collectChildPutPageSlugs(
     .map(slug => ({ slug, source_id: sourceId }));
 }
 
+/**
+ * #5733: stamp `dream_generated` (+ dream cycle dates) on every page the
+ * patterns child published through `brain_put_page` — the same identity
+ * marker synthesize's post-step stamps, so marker-keyed consumers treat
+ * pattern output as dream output. An existing stamp's first date is
+ * preserved (idempotent re-runs don't rewrite the cycle date).
+ */
+async function stampPatternPagesDreamGenerated(
+  engine: BrainEngine,
+  refs: Array<{ slug: string; source_id: string }>,
+  cycleDate: string,
+): Promise<void> {
+  const slugsBySource = new Map<string, string[]>();
+  for (const { slug, source_id } of refs) {
+    const list = slugsBySource.get(source_id) ?? [];
+    list.push(slug);
+    slugsBySource.set(source_id, list);
+  }
+  for (const [sourceId, slugs] of slugsBySource) {
+    await engine.executeRaw(
+      `UPDATE pages SET frontmatter = frontmatter || jsonb_build_object(
+         'dream_generated', true,
+         'dream_cycle_date',
+           COALESCE(frontmatter->>'dream_created_cycle_date', frontmatter->>'dream_cycle_date', $2::text),
+         'dream_created_cycle_date',
+           COALESCE(frontmatter->>'dream_created_cycle_date', frontmatter->>'dream_cycle_date', $2::text))
+       WHERE source_id = $3 AND slug = ANY($1::text[]) AND deleted_at IS NULL`,
+      [slugs, cycleDate, sourceId],
+    );
+  }
+}
+
 // ── Reverse-write ────────────────────────────────────────────────────
 
 import { validateSourceId } from '../utils.ts';
@@ -734,5 +774,6 @@ function makeError(cls: string, code: string, message: string, hint?: string): P
 export const __testing = {
   gatherReflections,
   collectChildPutPageSlugs,
+  stampPatternPagesDreamGenerated,
   reverseWriteRefs,
 };
