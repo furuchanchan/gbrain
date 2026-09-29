@@ -1,5 +1,5 @@
 import type { BrainEngine } from './engine.ts';
-import { BudgetTracker, loadPricingOverrides } from './budget/budget-tracker.ts';
+import { BudgetExhausted, BudgetTracker, loadPricingOverrides } from './budget/budget-tracker.ts';
 import type { AIInvocation, AIInvocationPermit } from './ai/invocation-guard.ts';
 import { MIGRATION_STATE_KEY, readMigrationState, type EmbeddingMigrationPlan, type MigrationState } from './embedding-migration.ts';
 import type { DbLockHandle } from './db-lock.ts';
@@ -52,6 +52,9 @@ export async function authorizeMigrationBudget(engine: BrainEngine, plan: Embedd
     if (call.kind !== 'embedding' && call.kind !== 'rerank') throw new Error('Migration permits embedding and reranker probes only');
     if (call.model !== (call.kind === 'embedding' ? plan.to_model : rerankerModel)) throw new Error('Provider model differs from the authorized migration plan; no request dispatched');
     if (!Number.isSafeInteger(call.maxInputTokens) || call.maxInputTokens! <= 0) throw new Error('Provider request has no conservative input ceiling; no request dispatched');
+    const estimate = { modelId: call.model, kind: call.kind === 'embedding' ? 'embed' as const : 'rerank' as const,
+      estimatedInputTokens: call.maxInputTokens!, maxOutputTokens: 0 };
+    let debitedCall = 0;
     await engine.transaction(async tx => {
       await assertMigrationLeases(tx, locks);
       await tx.executeRaw('SELECT key FROM config WHERE key=$1 FOR UPDATE', [MIGRATION_STATE_KEY]);
@@ -60,14 +63,46 @@ export async function authorizeMigrationBudget(engine: BrainEngine, plan: Embedd
       if (![current.budget.max_cost_usd, current.budget.debited_usd].every(n => Number.isFinite(n) && n >= 0)
         || !Number.isSafeInteger(current.budget.requests) || current.budget.requests < 0) throw new Error('Migration authorization is corrupt; no request dispatched');
       const tracker = new BudgetTracker({ label: 'embedding-migration', maxCostUsd: Math.max(0, current.budget.max_cost_usd-current.budget.debited_usd), pricingOverrides });
-      const estimate = { modelId: call.model, kind: call.kind === 'embedding' ? 'embed' as const : 'rerank' as const,
-        estimatedInputTokens: call.maxInputTokens!, maxOutputTokens: 0 };
-      tracker.reserve(estimate);
+      try {
+        tracker.reserve(estimate);
+      } catch (error) {
+        // #5680: this tracker's cap is the *remaining* authorization, so its
+        // refusal text printed "--max-cost $0.00 / cumulative $0.0000" — read
+        // like a parse bug next to the operator's real cap. Report those.
+        if (error instanceof BudgetExhausted && error.reason === 'cost') {
+          const probe = new BudgetTracker({ label: 'embedding-migration', pricingOverrides });
+          probe.record({ modelId: call.model, kind: estimate.kind, inputTokens: call.maxInputTokens!, outputTokens: 0 });
+          throw new BudgetExhausted(
+            `embedding-migration: this request's ceiling $${probe.totalSpent.toFixed(4)} exceeds the remaining authorization ` +
+              `(--max-cost-usd $${current.budget.max_cost_usd.toFixed(4)} - debited $${current.budget.debited_usd.toFixed(4)})`,
+            { reason: 'cost', spent: current.budget.debited_usd, cap: current.budget.max_cost_usd, modelId: call.model });
+        }
+        throw error;
+      }
       tracker.record({ modelId: call.model, kind: estimate.kind, inputTokens: call.maxInputTokens!, outputTokens: 0 });
-      current.budget.debited_usd += tracker.totalSpent;
+      debitedCall = tracker.totalSpent;
+      current.budget.debited_usd += debitedCall;
       current.budget.requests++;
       await tx.setConfig(MIGRATION_STATE_KEY, JSON.stringify(current));
     });
-    return { settle: async () => {} };
+    // #5680: the ceiling debit holds only until the attempt reports usage —
+    // settle credits the difference so the cap tracks real spend. A null
+    // usage (ambiguous attempt) keeps the ceiling, per invokeAI's contract.
+    return { settle: async usage => {
+      if (!usage || !(debitedCall > 0)) return;
+      const actual = new BudgetTracker({ label: 'embedding-migration', pricingOverrides });
+      actual.record({ modelId: call.model, kind: estimate.kind,
+        inputTokens: usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0), outputTokens: usage.outputTokens ?? 0 });
+      const credit = debitedCall - actual.totalSpent;
+      if (!(credit > 0)) return;
+      await engine.transaction(async tx => {
+        await assertMigrationLeases(tx, locks);
+        await tx.executeRaw('SELECT key FROM config WHERE key=$1 FOR UPDATE', [MIGRATION_STATE_KEY]);
+        const current = (await readMigrationState(tx)).state;
+        if (!current?.budget || current.to_model !== plan.to_model || current.to_dims !== plan.to_dims) return;
+        current.budget.debited_usd = Math.max(0, current.budget.debited_usd - credit);
+        await tx.setConfig(MIGRATION_STATE_KEY, JSON.stringify(current));
+      });
+    } };
   };
 }
