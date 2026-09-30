@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, test, expect } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import { authorizeMigrationBudget } from '../src/core/embedding-migration-budget.ts';
+import { BudgetExhausted } from '../src/core/budget/budget-tracker.ts';
 import { MIGRATION_STATE_KEY } from '../src/core/embedding-migration.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 
@@ -57,14 +58,35 @@ test('migration budget keeps the ceiling debit on an ambiguous attempt (#5680)',
 test('migration budget refusal reports the operator cap, not the remainder (#5680)', async () => {
   const debit = await authorizeMigrationBudget(engine, PLAN, 0.003);
   const first = await debit(CALL);
-  await first.settle({ inputTokens: 5_000, outputTokens: 0 }); // settles to $0.0001 — remaining $0.0029 < $0.002 ceiling? no: $0.0029 > $0.002 → admit
+  await first.settle({ inputTokens: 5_000, outputTokens: 0 }); // settles to $0.0001 — remaining $0.0029 > $0.002 ceiling → admit
   const second = await debit(CALL);
   await second.settle({ inputTokens: 5_000, outputTokens: 0 }); // debited $0.0002, remaining $0.0028
   const third = await debit(CALL); // ceiling $0.002 fits $0.0028 → admit
-  await third.settle({ inputTokens: 140_000, outputTokens: 0 }); // actual over ceiling → ceiling debit kept: debited $0.0022, remaining $0.0008
+  await third.settle({ inputTokens: 140_000, outputTokens: 0 }); // actual $0.0028 > $0.002 ceiling → overage debited: $0.0030 at cap
+  expect((await debited())!.debited_usd).toBeCloseTo(0.003, 6);
   let refusal: unknown;
   try { await debit(CALL); } catch (error) { refusal = error; }
   expect((refusal as Error).message).toContain('--max-cost-usd $0.0030');
-  expect((refusal as Error).message).toContain('debited $0.0022');
+  expect((refusal as Error).message).toContain('debited $0.0030');
   expect((refusal as Error).message).not.toContain('--max-cost $0.00');
+});
+
+// An attempt whose real usage exceeds its ceiling (the OpenAI recipe's
+// documented ~150k actual on a 100k estimate) must push the overage into the
+// durable debit — not silently keep the ceiling — and when cumulative actual
+// crosses the cap, the debit commits BEFORE the exhaustion signal so a
+// rollback can never erase spend that already happened.
+test('migration budget settle debits over-cap actuals before refusing further dispatch (#5680)', async () => {
+  const debit = await authorizeMigrationBudget(engine, PLAN, 0.0025);
+  const permit = await debit(CALL); // debited $0.002, remaining $0.0005
+  expect((await debited())!.debited_usd).toBeCloseTo(0.002, 6);
+  let thrown: unknown;
+  try { await permit.settle({ inputTokens: 150_000, outputTokens: 0 }); } catch (error) { thrown = error; }
+  expect(thrown).toBeInstanceOf(BudgetExhausted);
+  // The $0.003 actual debit committed before the signal was raised.
+  expect((await debited())!.debited_usd).toBeCloseTo(0.003, 6);
+  // The exhausted durable state blocks any subsequent dispatch.
+  let refusal: unknown;
+  try { await debit(CALL); } catch (error) { refusal = error; }
+  expect(refusal).toBeInstanceOf(BudgetExhausted);
 });

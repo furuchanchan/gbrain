@@ -86,23 +86,40 @@ export async function authorizeMigrationBudget(engine: BrainEngine, plan: Embedd
       await tx.setConfig(MIGRATION_STATE_KEY, JSON.stringify(current));
     });
     // #5680: the ceiling debit holds only until the attempt reports usage —
-    // settle credits the difference so the cap tracks real spend. A null
+    // settle reconciles it to real spend so the cap tracks actuals. A null
     // usage (ambiguous attempt) keeps the ceiling, per invokeAI's contract.
     return { settle: async usage => {
       if (!usage || !(debitedCall > 0)) return;
       const actual = new BudgetTracker({ label: 'embedding-migration', pricingOverrides });
       actual.record({ modelId: call.model, kind: estimate.kind,
         inputTokens: usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0), outputTokens: usage.outputTokens ?? 0 });
-      const credit = debitedCall - actual.totalSpent;
-      if (!(credit > 0)) return;
+      const delta = actual.totalSpent - debitedCall;
+      if (delta === 0) return;
+      let exhausted: BudgetExhausted | undefined;
       await engine.transaction(async tx => {
         await assertMigrationLeases(tx, locks);
         await tx.executeRaw('SELECT key FROM config WHERE key=$1 FOR UPDATE', [MIGRATION_STATE_KEY]);
         const current = (await readMigrationState(tx)).state;
         if (!current?.budget || current.to_model !== plan.to_model || current.to_dims !== plan.to_dims) return;
-        current.budget.debited_usd = Math.max(0, current.budget.debited_usd - credit);
+        // Signed delta: under-run credits authorization back, over-run
+        // debits the real spend — an underestimate (a 100k-token ceiling
+        // that actually cost 150k) must not silently under-account.
+        current.budget.debited_usd = Math.max(0, current.budget.debited_usd + delta);
         await tx.setConfig(MIGRATION_STATE_KEY, JSON.stringify(current));
+        // 1e-9 epsilon: float addition can land a hair above an exactly-at-
+        // cap total (0.0001+0.0001+0.0028 ≈ 0.003000000000000001) — real
+        // overage means actual spend crossed the authorization.
+        if (current.budget.debited_usd - current.budget.max_cost_usd > 1e-9) {
+          exhausted = new BudgetExhausted(
+            `embedding-migration: settled actual spend pushed debited $${current.budget.debited_usd.toFixed(4)} past ` +
+              `--max-cost-usd $${current.budget.max_cost_usd.toFixed(4)}; no further requests dispatched`,
+            { reason: 'cost', spent: current.budget.debited_usd, cap: current.budget.max_cost_usd, modelId: call.model });
+        }
       });
+      // Thrown only after the debit commits — a rollback must not erase
+      // real spend — and the exhausted durable state refuses the next
+      // authorization, so dispatch stops here.
+      if (exhausted) throw exhausted;
     } };
   };
 }
