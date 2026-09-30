@@ -1,29 +1,45 @@
 /**
- * gbrain sources set-path <id> --clear|--null (#5673)
+ * gbrain sources set-path <id> --clear|--null + autopilot connector skip (#5673)
  *
- * Supported repair for a connector-managed source stranded with a
- * local_path nothing owns. Validates:
+ * Connector-managed sources (config.kind google/github) legitimately carry a
+ * local_path nothing owns — their connector-managed root. The autopilot
+ * freshness loop submitted a legacy `sync` job for every source with a
+ * local_path, which assertManagedFilesystemWrite always refuses, minting a
+ * refused job per connector source per cycle; and there was no supported way
+ * back to NULL short of editing the DB by hand.
+ *
+ * Validates:
+ *   - The freshness dispatch loop skips connector-managed sources (wiring
+ *     assertion — the loop lives inside the runAutopilot daemon, so this pins
+ *     the guard the way autopilot-fanout-wiring.test.ts pins dispatchPerSource).
  *   - Happy path: an unbound connector source's local_path clears to NULL.
  *   - Filesystem sources are refused (exit 6): their local_path is the
  *     write-through identity, repoint-only.
  *   - A source whose current incarnation still has a connector binding is
  *     refused (exit 7): the binding verifies its canonical root against
- *     local_path.
+ *     local_path. A stale-incarnation binding clears fine.
  *   - Unknown source → exit 4; --clear plus a path argument → exit 2.
- *   - sourceIsConnectorManaged covers google/github kinds on object and
- *     string configs and stays false for filesystem sources.
  *
- * Modeled on test/sources-set-path.test.ts (same runSources dispatch,
- * same process.exit stub).
+ * Discrimination: every assertion is executable against the pre-fix tree —
+ * imports resolve (runSources / PGLiteEngine predate the fix), so on old code
+ * each test runs and fails on its EXPECT, not on module load. `--clear`
+ * through the old runSetPath was treated as the <path> argument → exit 5
+ * (nonexistent dir), never touching local_path.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { runSources } from '../src/commands/sources.ts';
-import { sourceIsConnectorManaged } from '../src/core/sources-load.ts';
 
-describe('gbrain sources set-path --clear', () => {
+const AUTOPILOT_SRC = readFileSync(
+  join(import.meta.dir, '..', 'src', 'commands', 'autopilot.ts'),
+  'utf8',
+);
+
+describe('gbrain sources set-path --clear (#5673)', () => {
   let engine: PGLiteEngine;
   let origExit: typeof process.exit;
   let exitCode: number | null;
@@ -78,35 +94,58 @@ describe('gbrain sources set-path --clear', () => {
     );
   }
 
-  test('sourceIsConnectorManaged recognizes connector kinds and rejects filesystem configs', () => {
-    expect(sourceIsConnectorManaged({ kind: 'google' })).toBe(true);
-    expect(sourceIsConnectorManaged({ kind: 'github' })).toBe(true);
-    expect(sourceIsConnectorManaged(JSON.stringify({ kind: 'google' }))).toBe(true);
-    expect(sourceIsConnectorManaged({})).toBe(false);
-    expect(sourceIsConnectorManaged({ kind: 'filesystem' })).toBe(false);
-    expect(sourceIsConnectorManaged(null)).toBe(false);
+  /** Every set-path call goes through the exit stub; a rejected command
+   *  throws __test_exit_N__. Callers assert exitCode / the DB state. */
+  async function trySetPath(args: string[]): Promise<void> {
+    try {
+      await runSources(engine, ['set-path', ...args]);
+    } catch (err) {
+      if (!(err as Error).message.startsWith('__test_exit_')) throw err;
+    }
+  }
+
+  test('autopilot freshness loop skips connector-managed sources (wiring)', () => {
+    // The loop is inside the runAutopilot daemon — same wiring-assertion
+    // convention as autopilot-fanout-wiring.test.ts. The guard must sit
+    // inside the freshness `sync` dispatch (before queue.add('sync', …)),
+    // next to the existing isSyncDisabledConfig gate.
+    expect(AUTOPILOT_SRC).toMatch(/sourceIsConnectorManaged\(src\.config\)\) continue/);
   });
 
-  test('happy path: clears an unbound connector source local_path to NULL', async () => {
+  test('connector-kind predicate classifies google/github and rejects filesystem', async () => {
+    // Resolved at call time so the suite still LOADS on a pre-fix tree —
+    // the export is absent there and every assertion below fails by value.
+    const mod = await import('../src/core/sources-load.ts');
+    const isConnectorManaged = (mod as Record<string, unknown>)
+      .sourceIsConnectorManaged as ((c: unknown) => boolean) | undefined;
+    expect(isConnectorManaged?.({ kind: 'google' })).toBe(true);
+    expect(isConnectorManaged?.({ kind: 'github' })).toBe(true);
+    expect(isConnectorManaged?.(JSON.stringify({ kind: 'google' }))).toBe(true);
+    expect(isConnectorManaged?.({})).toBe(false);
+    expect(isConnectorManaged?.({ kind: 'filesystem' })).toBe(false);
+    expect(isConnectorManaged?.(null)).toBe(false);
+  });
+
+  test('happy path: --clear NULLs an unbound connector source local_path', async () => {
     await insertConnectorSource('gconn', 'google');
     expect(await readLocalPath('gconn')).toBe('/nonexistent/connector-root');
-    await runSources(engine, ['set-path', 'gconn', '--clear']);
+    await trySetPath(['gconn', '--clear']);
+    // Pre-fix: '--clear' was taken as <path>, exited 5 on the nonexistent
+    // dir, and local_path stayed untouched — the stranded-root bug.
+    expect(exitCode).toBeNull();
     expect(await readLocalPath('gconn')).toBeNull();
   });
 
   test('happy path: --null alias clears the same way', async () => {
     await insertConnectorSource('ghconn', 'github');
-    await runSources(engine, ['set-path', 'ghconn', '--null']);
+    await trySetPath(['ghconn', '--null']);
+    expect(exitCode).toBeNull();
     expect(await readLocalPath('ghconn')).toBeNull();
   });
 
   test('rejection: filesystem source → exit 6 (repoint-only, never cleared)', async () => {
     const before = await readLocalPath('default');
-    try {
-      await runSources(engine, ['set-path', 'default', '--clear']);
-    } catch (err) {
-      expect((err as Error).message).toContain('__test_exit_6__');
-    }
+    await trySetPath(['default', '--clear']);
     expect(exitCode).toBe(6);
     expect(await readLocalPath('default')).toBe(before); // no mutation
   });
@@ -114,11 +153,7 @@ describe('gbrain sources set-path --clear', () => {
   test('rejection: connector source with an incarnation-matched binding → exit 7', async () => {
     const incarnation = await insertConnectorSource('boundconn', 'google');
     await bindSource('boundconn', incarnation);
-    try {
-      await runSources(engine, ['set-path', 'boundconn', '--clear']);
-    } catch (err) {
-      expect((err as Error).message).toContain('__test_exit_7__');
-    }
+    await trySetPath(['boundconn', '--clear']);
     expect(exitCode).toBe(7);
     expect(await readLocalPath('boundconn')).toBe('/nonexistent/connector-root');
   });
@@ -130,26 +165,19 @@ describe('gbrain sources set-path --clear', () => {
     await bindSource('rebornconn', staleIncarnation);
     // A stale-incarnation binding no longer verifies this source's root —
     // checkedConnectorBinding would reject it as source_changed anyway.
-    await runSources(engine, ['set-path', 'rebornconn', '--clear']);
+    await trySetPath(['rebornconn', '--clear']);
+    expect(exitCode).toBeNull();
     expect(await readLocalPath('rebornconn')).toBeNull();
   });
 
   test('rejection: unknown source → exit 4 (loud, never a silent 0-row UPDATE)', async () => {
-    try {
-      await runSources(engine, ['set-path', 'nonexistent-connector', '--clear']);
-    } catch (err) {
-      expect((err as Error).message).toContain('__test_exit_4__');
-    }
+    await trySetPath(['nonexistent-connector', '--clear']);
     expect(exitCode).toBe(4);
   });
 
   test('rejection: --clear with a path argument → exit 2 (usage)', async () => {
     await insertConnectorSource('argconn', 'google');
-    try {
-      await runSources(engine, ['set-path', 'argconn', '/tmp/wherever', '--clear']);
-    } catch (err) {
-      expect((err as Error).message).toContain('__test_exit_2__');
-    }
+    await trySetPath(['argconn', '/tmp/wherever', '--clear']);
     expect(exitCode).toBe(2);
     expect(await readLocalPath('argconn')).toBe('/nonexistent/connector-root');
   });
