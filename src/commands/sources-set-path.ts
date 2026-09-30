@@ -72,7 +72,18 @@ export async function runSetPath(engine: BrainEngine, rawArgs: string[]): Promis
     const bound = await engine.executeRaw(
       `SELECT 1 FROM persistence_source_bindings WHERE source_id = $1 AND source_incarnation = $2 LIMIT 1`,
       [id, connectorSource.incarnation],
-    ).catch(() => [] as { '?column?': number }[]);
+    ).catch((err: unknown) => {
+      // Only an absent bindings table means "no binding" — a non-persistence
+      // install never created it (42P01 / PGLite's equivalent, same pattern
+      // as ops/contract.ts's telemetry probe). Any other error (connection
+      // drop, permission, syntax) must propagate: swallowing it would clear
+      // a source the table would have shown as still bound.
+      const msg = String((err as Error)?.message ?? err);
+      if (/relation .* does not exist|no such table/i.test(msg)) {
+        return [] as { '?column?': number }[];
+      }
+      throw err;
+    });
     if (bound.length > 0) {
       console.error(`Error: source "${id}" has a connector binding for its current incarnation —`);
       console.error('  the binding verifies its canonical root against local_path. Release or repair');

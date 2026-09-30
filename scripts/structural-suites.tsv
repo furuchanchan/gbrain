@@ -283,7 +283,7 @@ test/skillpack-scaffold.test.ts	runScaffold — happy path	3	readFileSync
 test/skillpack-scrub-legacy.test.ts	runScrubLegacy	8	readFileSync
 test/skillpack-writer-guard.test.ts	(file-level)	6	readFileSync
 test/snapshot-shape-guard.test.ts	(file-level)	10	readFileSync
-test/sources-set-path-clear.test.ts	gbrain sources set-path --clear (#5673)	9	readFileSync
+test/sources-set-path-clear.test.ts	gbrain sources set-path --clear (#5673)	11	readFileSync
 test/sources-webhook.test.ts	Webhook sync job extraction contract	1	readFileSync
 test/spend-off-switch.test.ts	reindex / onboard off-switch dispatch (regression guards)	3	bun-file
 test/supervisor.test.ts	recovery hook timeout bound (structural)	1	readFileSync

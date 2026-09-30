@@ -27,13 +27,17 @@
  * (nonexistent dir), never touching local_path.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { runSources } from '../src/commands/sources.ts';
 
+// The freshness dispatch loop lives inside the runAutopilot daemon loop, so
+// the connector-skip guard is pinned as a wiring assertion (same convention
+// as autopilot-fanout-wiring.test.ts pinning dispatchPerSource).
+// test-reads-source-ok[structural]: the loop cannot be executed in a unit test.
 const AUTOPILOT_SRC = readFileSync(
   join(import.meta.dir, '..', 'src', 'commands', 'autopilot.ts'),
   'utf8',
@@ -45,6 +49,7 @@ describe('gbrain sources set-path --clear (#5673)', () => {
   let exitCode: number | null;
 
   beforeAll(async () => {
+    origExit = process.exit; // capture the REAL exit once — restoring a stale stub leaks it across suites
     engine = new PGLiteEngine();
     await engine.connect({});
     await engine.initSchema();
@@ -52,17 +57,19 @@ describe('gbrain sources set-path --clear (#5673)', () => {
 
   afterAll(async () => {
     await engine.disconnect();
-    process.exit = origExit;
   });
 
   beforeEach(async () => {
     await resetPgliteState(engine);
     exitCode = null;
-    origExit = process.exit;
     (process as unknown as { exit: (n: number) => never }).exit = ((n: number) => {
       exitCode = n;
       throw new Error(`__test_exit_${n}__`);
     }) as never;
+  });
+
+  afterEach(() => {
+    process.exit = origExit;
   });
 
   async function readLocalPath(id: string): Promise<string | null> {
@@ -173,6 +180,47 @@ describe('gbrain sources set-path --clear (#5673)', () => {
   test('rejection: unknown source → exit 4 (loud, never a silent 0-row UPDATE)', async () => {
     await trySetPath(['nonexistent-connector', '--clear']);
     expect(exitCode).toBe(4);
+  });
+
+  test('binding lookup: absent-table error still counts as unbound', async () => {
+    // Non-persistence installs never create persistence_source_bindings —
+    // the lookup must treat THAT error as "no binding" and clear.
+    await insertConnectorSource('notblconn', 'google');
+    const orig = engine.executeRaw.bind(engine);
+    engine.executeRaw = (async (sql: string, params?: unknown[]) => {
+      if (sql.includes('persistence_source_bindings')) {
+        throw new Error('relation "persistence_source_bindings" does not exist');
+      }
+      return orig(sql, params);
+    }) as typeof engine.executeRaw;
+    try {
+      await trySetPath(['notblconn', '--clear']);
+    } finally {
+      engine.executeRaw = orig;
+    }
+    expect(exitCode).toBeNull();
+    expect(await readLocalPath('notblconn')).toBeNull();
+  });
+
+  test('binding lookup: any OTHER error fails loud — never silently permits clearing a bound source', async () => {
+    await insertConnectorSource('errconn', 'google');
+    const orig = engine.executeRaw.bind(engine);
+    engine.executeRaw = (async (sql: string, params?: unknown[]) => {
+      if (sql.includes('persistence_source_bindings')) {
+        throw new Error('simulated connection reset');
+      }
+      return orig(sql, params);
+    }) as typeof engine.executeRaw;
+    let threw: Error | null = null;
+    try {
+      await trySetPath(['errconn', '--clear']);
+    } catch (err) {
+      threw = err as Error;
+    } finally {
+      engine.executeRaw = orig;
+    }
+    expect(threw?.message).toContain('simulated connection reset');
+    expect(await readLocalPath('errconn')).toBe('/nonexistent/connector-root');
   });
 
   test('rejection: --clear with a path argument → exit 2 (usage)', async () => {
