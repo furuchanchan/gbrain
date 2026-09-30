@@ -10,6 +10,13 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.14] - 2026-09-30
+
+### Fixed
+
+- `migrate-embeddings --apply --max-cost-usd` settle now persists the signed actual-minus-reserved delta, not just credits. An attempt whose real usage exceeds its ceiling (a ~150k-token actual on a 100k estimate, as the provider recipe documents) previously kept only the ceiling debit, silently under-accounting spend the cap was meant to bound. The overage is now committed under the migration-state row lock, and when cumulative actual crosses `--max-cost-usd` the debit commits before `BudgetExhausted` is raised — a rollback can never erase spend that already happened — so no further request is dispatched (#5680).
+## [0.60.10.12] - 2026-09-29
+
 ### Fixed
 
 - `migrate-embeddings --apply --max-cost-usd`: each request was debited at its `maxInputTokens` ceiling and the debit was never settled to measured usage, so the durable cap treated the conservative ceiling as spent and runs authorized near the plan's printed estimate ran dry at ~2% (#5680). Debits now settle to reported usage (ambiguous attempts keep the ceiling), and the refusal reports the operator's cap instead of the per-call tracker remnant.
