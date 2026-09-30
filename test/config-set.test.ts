@@ -29,6 +29,14 @@ describe('KNOWN_CONFIG_KEYS', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('provider_chat_options');
   });
 
+  // #5691: embedding_query_prefix is a documented DB-plane key — the
+  // CHANGELOG and migration guide tell operators `gbrain config set
+  // embedding_query_prefix ...`. Unregistered, that exact command died on
+  // "Unknown config key" even though three planes folded the value.
+  test('contains embedding_query_prefix (the key the docs tell operators to set)', () => {
+    expect(KNOWN_CONFIG_KEYS).toContain('embedding_query_prefix');
+  });
+
   test('contains the search-mode keys (v0.32.3)', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('search.mode');
     expect(KNOWN_CONFIG_KEYS).toContain('search.cache.enabled');
@@ -493,5 +501,58 @@ describe('#2753 — doctor and the subagent worker share one truthiness set', ()
     for (const v of [null, undefined, '', '   ', 'false', '0', 'no', 'off', 'maybe', 1, true, {}]) {
       expect(isConfigTruthy(v)).toBe(false);
     }
+  });
+});
+
+describe('#5691 — `config set embedding_query_prefix` reaches the DB plane', () => {
+  function setStubEngine(): { engine: BrainEngine; setCalls: Array<[string, string]> } {
+    const setCalls: Array<[string, string]> = [];
+    const engine = {
+      getConfig: async () => null,
+      setConfig: async (key: string, value: string) => { setCalls.push([key, value]); },
+    } as unknown as BrainEngine;
+    return { engine, setCalls };
+  }
+
+  async function runConfigCapture(
+    engine: BrainEngine,
+    args: string[],
+  ): Promise<{ logs: string[]; errs: string[]; exit: number | null }> {
+    const logs: string[] = [];
+    const errs: string[] = [];
+    let exit: number | null = null;
+    const logSpy = spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    const errSpy = spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errs.push(a.join(' ')); });
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      exit = code ?? 0;
+      throw new Error(`EXIT:${code}`);
+    }) as never);
+    try {
+      await runConfig(engine, args);
+    } catch (e) {
+      if (!(e as Error).message.startsWith('EXIT:')) throw e;
+    } finally {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+    return { logs, errs, exit };
+  }
+
+  // Drives the documented command end to end: the CHANGELOG/migration guide
+  // tells operators `gbrain config set embedding_query_prefix` — the key must
+  // clear the unknown-key gate and land on the DB plane with its bytes intact.
+  // A single-quoted shell `\n` stores a literal backslash-n; the model card's
+  // instruction needs a real newline, so the stored value is asserted to
+  // carry an actual 0x0A byte.
+  test('config set writes the documented key, real newline bytes intact', async () => {
+    const { engine, setCalls } = setStubEngine();
+    const prefix = 'Instruct: Given a query, retrieve relevant passages\nQuery: ';
+    const { errs, exit } = await runConfigCapture(engine, ['set', 'embedding_query_prefix', prefix]);
+    expect(exit).toBeNull();
+    expect(errs.join('\n')).not.toContain('Unknown config key');
+    expect(errs.join('\n')).not.toContain('Nothing in gbrain reads this');
+    expect(setCalls).toEqual([['embedding_query_prefix', prefix]]);
+    expect(setCalls[0]![1].includes('\n')).toBe(true);
   });
 });

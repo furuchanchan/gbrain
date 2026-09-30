@@ -1251,6 +1251,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'eval.scrub_pii',
   'embedding_multimodal',
   'embedding_multimodal_model',
+  // #5691: instruction-style embedding query prefix (Qwen3-Embedding/e5/BGE),
+  // DB-plane merged in loadConfigWithEngine — the docs send operators to
+  // `config set` for it.
+  'embedding_query_prefix',
   'embedding_image_ocr',
   'embedding_image_ocr_model',
   'embedding_columns',

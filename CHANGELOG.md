@@ -19,7 +19,7 @@ Asymmetric embedding models — Qwen3-Embedding (0.6B/4B/8B), e5/BGE, INSTRUCTOR
 ### To take advantage of 0.60.10.9
 
 ```bash
-gbrain config set embedding_query_prefix 'Instruct: Given a query, retrieve relevant passages\nQuery:'
+gbrain config set embedding_query_prefix $'Instruct: Given a query, retrieve relevant passages\nQuery:'
 ```
 
 for Qwen3-Embedding-style models (or `query: ` for e5/BGE conventions). Brains on symmetric models (OpenAI, Voyage, Gemini) need nothing — the key defaults to empty.
