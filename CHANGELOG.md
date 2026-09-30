@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.15] - 2026-09-30
+
+### Fixed
+
+- Documentation follow-up for #5680: the migration note referenced a `--apply` flag that does not exist (the command applies unless `--dry-run`) and used the reporter's `migrate-embeddings` spelling. All references now use the canonical `gbrain migrate embeddings --max-cost-usd <USD>` form, verified by the #3502 docs-commands CI guard.
 ## [0.60.10.14] - 2026-09-30
 
 ### Fixed
