@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.10.15] - 2026-09-30
+
+### Fixed
+
+- `gbrain config set embedding_query_prefix` was rejected with "Unknown config key" — the key was folded on all three config planes and documented in the v0.60.10.9 guide, but absent from `KNOWN_CONFIG_KEYS`. The key is now registered, and the documented shell examples use ANSI-C `$'…'` quoting so the instruction's newline is stored as a real newline byte rather than a literal backslash-n (#5691).
 ## [0.60.10.9] - 2026-10-01
 
 **New `embedding_query_prefix`: instruction-style embedding models finally get their query instruction.**
