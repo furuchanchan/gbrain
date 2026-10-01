@@ -307,6 +307,36 @@ describe('embed --stale chunkless-page safety net (end-to-end)', () => {
     expect(chunks[0].chunk_text).toBe('concurrently-written chunk');
   });
 
+  test('a page whose projection snapshot is null mid-sweep is a counted failure, not silent success (#5804)', async () => {
+    // Sealed page with NULL-embedding chunks → listed stale → the run-level
+    // gate passes it (nothing to repair). Unsealing between the gate and the
+    // per-page read made readProjectionSnapshot return null, which the stale
+    // sweep used to drop silently: `Embedded 0 chunks`, exit 0.
+    const slug = 'sealed/goes-null';
+    await engine.putPage(slug, { type: 'note', title: 'Goes null', compiled_truth: 'hello world' });
+    await installFixtureChunks(engine, slug, [
+      { chunk_index: 0, chunk_text: 'hello world', chunk_source: 'compiled_truth' },
+    ]);
+
+    let unsealed = false;
+    const result = await runEmbedCore(engine, {
+      stale: true, quiet: true,
+      // assertOwned runs inside the sweep's per-page transaction BEFORE the
+      // snapshot read — injecting here reproduces the mid-run unseal exactly.
+      assertOwned: async tx => {
+        if (unsealed || !tx) return;
+        await tx.executeRaw(
+          `UPDATE pages SET text_projection_revision = '00000000-0000-0000-0000-000000000000'::uuid WHERE slug = $1`, [slug]);
+        unsealed = true;
+      },
+    });
+
+    expect(unsealed).toBe(true);
+    expect(result.embedded).toBe(0);
+    expect(result.failures).toBe(1);
+    expect(result.failure_samples.join('\n')).toContain(slug);
+  });
+
   test('late chunkless healing preserves a projection completed after its guarded capture', async () => {
     const slug = 'stub/late-heal';
     await engine.putPage(slug, { type: 'note', title: 'Late heal', compiled_truth: 'First sentence. Second sentence.' });

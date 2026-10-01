@@ -1989,7 +1989,11 @@ async function embedAllStale(
           // NORMAL post-model-migration path, so raw-text embedding here
           // quietly converted whole corpora to the unwrapped convention.
           const prepared = await observed(pacer, () => readProjectionSnapshot(engine, slug, keySourceId, { requireLiveSource: true }));
-          if (!prepared) return;
+          if (!prepared) {
+            // #5804: symmetric with embedOnePage — a null snapshot is a counted failure, not a silent "Embedded 0 chunks" success.
+            recordFailure(result, stale.length, slug, EMBED_UNAVAILABLE_MESSAGE);
+            return;
+          }
           const selected = new Map(stale.map(c => [c.chunk_index, c]));
           const existing = prepared.chunks;
           stale = existing.filter(c => selected.get(c.chunk_index)?.chunk_text === c.chunk_text)
