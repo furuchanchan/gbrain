@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, test } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
-import { retryStates, retryEdits, exerciseAtomRetryFence, exerciseAtomRetrySourceIsolation, atomWriteThroughValues, atomOwnerStates, exerciseAtomWriteThroughPolicy, atomDisabledAuthorityCases, exerciseAtomDisabledAuthority } from './helpers/managed-atom-regressions.ts';
+import { retryStates, retryEdits, exerciseAtomRetryFence, exerciseAtomRetrySourceIsolation, exerciseAtomRetirement, atomWriteThroughValues, atomOwnerStates, exerciseAtomWriteThroughPolicy, atomDisabledAuthorityCases, exerciseAtomDisabledAuthority } from './helpers/managed-atom-regressions.ts';
 
 let engine: PGLiteEngine;
 beforeAll(async () => {
@@ -15,6 +15,8 @@ beforeEach(async () => { await resetPgliteState(engine); });
 afterAll(async () => { await engine.disconnect(); resetGateway(); });
 
 test('atom retry fault stays scoped while an older source retry drains', () => exerciseAtomRetrySourceIsolation(engine), 60_000);
+
+test('managed re-extraction retires unreproduced atoms in the same durable batch (#5770)', () => exerciseAtomRetirement(engine), 60_000);
 
 for (const state of retryStates) for (const edit of retryEdits) {
   test(`atom retry ${state} preserves reviewed target ${edit}`, () => exerciseAtomRetryFence(engine, state, edit), 60_000);

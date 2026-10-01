@@ -43,6 +43,7 @@ export interface AtomIntent extends Record<string, unknown> {
   content?: string;
   children?: string[];
   links?: LinkBatchInput[];
+  retire?: boolean;
   failure?: string;
   checkpointKey?: string;
   expectedCheckpoint?: unknown;
@@ -222,6 +223,30 @@ export async function publishManagedAtoms(engine: BrainEngine, session: ManagedA
       ...(session.retry ? { checkpointKey: session.retry.checkpointKey, expectedCheckpoint: session.retry.expectedCheckpoint } : {}),
       ...(target.revision ? { expected_revision: target.revision } : {}), content: atom.content, links: atom.links } as AtomIntent });
   }
+  // #5770: a completed extraction must retire the managed atoms an earlier
+  // extraction of this origin produced and this one did not — otherwise stale
+  // atoms stay active in search forever. Retirements ride the same durable
+  // batch (same runKey, same children list), so the completion checkpoint
+  // advances only after replacements AND retirements commit. A failed
+  // extraction (`failure` set) retires nothing.
+  if (!failure) {
+    const originKey = origin.kind === 'page' ? 'source_slug' : 'source_path';
+    const stale = await engine.executeRaw<{ slug: string }>(
+      `SELECT slug FROM pages
+        WHERE source_id=$1 AND type='atom' AND deleted_at IS NULL
+          AND COALESCE(frontmatter->>'managed_extraction','') = 'true'
+          AND frontmatter->>'${originKey}' = $2
+          AND NOT (slug = ANY($3::text[]))`,
+      [session.sourceId, origin.locator, inputs.map(input => input.slug)]);
+    for (const { slug } of stale) {
+      await authorizeWrite(engine, session.authority, 'put_page', slug);
+      const snapshot = await engine.readPageSnapshot(slug, { sourceId: session.sourceId, includeDeleted: true });
+      if (!snapshot || snapshot.page.deleted_at || snapshot.page.type !== 'atom') continue;
+      inputs.push({ slug, pageId: snapshot.page.id, intent: { kind: 'managed_atom_page', runKey: key, origin, retire: true,
+        ...(session.retry ? { checkpointKey: session.retry.checkpointKey, expectedCheckpoint: session.retry.expectedCheckpoint } : {}),
+        ...(snapshot.revision ? { expected_revision: snapshot.revision } : {}) } as AtomIntent });
+    }
+  }
   const rows = await engine.transaction(async tx => {
     const children: string[] = [];
     const accepted: WriteRequest[] = [];
@@ -280,7 +305,8 @@ export async function prepareManagedAtomMutation(engine: BrainEngine, row: Write
       const children = p.children ?? [];
       const committed = await tx.executeRaw<{ id: string }>(`SELECT r.id FROM persistence_requests r
         JOIN pages atom ON atom.source_id=r.source_id AND atom.slug=r.slug
-          AND atom.knowledge_revision::text=r.outcome->>'revision' AND atom.deleted_at IS NULL AND atom.type='atom'
+          AND atom.knowledge_revision::text=r.outcome->>'revision' AND atom.type='atom'
+          AND (atom.deleted_at IS NULL OR r.intent->>'retire'='true')
         WHERE r.id=ANY($1::uuid[]) AND r.source_incarnation=$2::uuid
         AND r.state='committed' AND COALESCE(r.intent->>'runKey',r.outcome->>'atom_run_key')=$3
         AND COALESCE(r.intent->>'kind',r.outcome->>'atom_kind')='managed_atom_page'`, [children, row.source_incarnation, p.runKey]);
@@ -304,6 +330,26 @@ export async function prepareManagedAtomMutation(engine: BrainEngine, row: Write
         if (!advanced.length) throw new OperationError('revision_conflict', 'The reviewed atom retry checkpoint changed.');
       }
       return { status: p.failure ? 'failed' : 'completed', atoms: children.length, ...(p.failure ? { failure: p.failure } : {}) };
+    } };
+  }
+  if (p.retire === true) {
+    // #5770: batch-side retirement — soft-deletes the admitted stale atom under
+    // revision CAS. The coordinator re-reads this page's revision at publish
+    // and compares it to observedRevision, so capture it here; the inner CAS
+    // then checks the admission-time revision specifically.
+    const retiredSnapshot = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
+    return { observedRevision: retiredSnapshot?.revision ?? null, additionalPageKeys: [{ sourceId: row.source_id, slug: row.slug }, ...additionalPageKeys], validate: async tx => {
+      await validate(tx);
+      await authorizeWrite(tx, row.authority, 'put_page', row.slug);
+      const snapshot = await tx.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
+      if (!snapshot || snapshot.page.id !== row.page_id || snapshot.page.type !== 'atom' ||
+          (snapshot.page.deleted_at == null && p.expected_revision !== undefined && snapshot.revision !== p.expected_revision)) {
+        throw new OperationError('page_identity_changed', 'The atom retirement target changed before publication.');
+      }
+    }, apply: async tx => {
+      await tx.softDeletePage(row.slug, { sourceId: row.source_id });
+      const snapshot = await tx.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
+      return { status: 'retired', revision: snapshot?.revision ?? null, atom_run_key: p.runKey, atom_kind: p.kind };
     } };
   }
   await authorizeWrite(engine, row.authority, 'put_page', row.slug);

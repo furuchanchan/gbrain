@@ -22,7 +22,7 @@ export async function retryManagedAtomBatch(engine: BrainEngine, sourceId: strin
     if (await resumeManagedAtoms(engine, session, current)) return { status: 'completed', replayed: true, model_rerun: false };
     const checkpoint = retry.expectedCheckpoint as Array<{ failure?: string }> | null;
     if (checkpoint && !checkpoint[0]?.failure) return { status: 'completed', replayed: true, model_rerun: false };
-    const saved = retry.rows.filter(row => row.intent?.kind === 'managed_atom_page');
+    const saved = retry.rows.filter(row => row.intent?.kind === 'managed_atom_page' && row.intent?.retire !== true);
     if (saved.length) {
       const atoms: Parameters<typeof publishManagedAtoms>[3] = [];
       for (const row of saved) {

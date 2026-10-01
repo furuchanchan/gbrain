@@ -21,6 +21,55 @@ import { exerciseManagedAtomAuthority } from './managed-atoms-contract.ts';
 export const retryStates = ['failed', 'conflict', 'committed'] as const;
 export const retryEdits = ['unchanged', 'before_retry', 'after_validation', 'before_admission', 'after_admission'] as const;
 
+export async function exerciseAtomRetirement(engine: BrainEngine): Promise<void> {
+  const home = mkdtempSync(join(tmpdir(), 'gbrain-atom-retire-'));
+  const sourceId = 'retire-stale';
+  try {
+    await withEnv({ GBRAIN_HOME: home }, async () => {
+      await disposePersistenceConsumer(engine);
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+      await engine.executeRaw('INSERT INTO sources(id,name) VALUES($1,$1)', [sourceId]);
+      const pageSlug = 'notes/2026-01-01-example';
+      await engine.putPage(pageSlug, { type: 'source', title: 'Example', compiled_truth: 'A private project record. '.repeat(40), frontmatter: { visibility: 'private' } }, { sourceId });
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+      const slugOf = (title: string) => `atoms/2026-01-01/${title.toLowerCase().replaceAll(' ', '-')}-${sha256(`${pageSlug}\0${title}`).slice(0, 8)}`;
+      const chatFor = (titles: string[]) => async (): Promise<ChatResult> => ({
+        text: JSON.stringify(titles.map(title => ({ title, atom_type: 'insight', body: `Use ${title.toLowerCase()} to guide the project.` }))),
+        blocks: [], stopReason: 'end', usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 }, model: 'anthropic:claude-haiku-4-5', providerId: 'anthropic' });
+      const extract = async (titles: string[]) => {
+        const page = (await engine.getPage(pageSlug, { sourceId }))!;
+        return runPhaseExtractAtoms(engine, { sourceId, _chat: chatFor(titles), _transcripts: [],
+          _pages: [{ slug: page.slug, content: page.compiled_truth, contentHash: page.content_hash! }] });
+      };
+      expect((await extract(['Measured progress', 'Explicit ownership'])).status).toBe('ok');
+      const staleSlug = slugOf('Measured progress'), keptSlug = slugOf('Explicit ownership'), changedSlug = slugOf('Measured outcome');
+      // Edit the source page so the next extraction carries a new run key, and
+      // change one atom title: the old slug is no longer reproduced.
+      const page1 = (await engine.getPage(pageSlug, { sourceId }))!;
+      await engine.transaction(tx => withCoordinatedWrite(tx, [sourceId], async () => {
+        // Fresh PageInput — a spread of the stored page would carry its
+        // content_hash, which putPage trusts over the edited compiled_truth.
+        await tx.putPage(pageSlug, { type: page1.type, title: page1.title,
+          compiled_truth: page1.compiled_truth + 'Edited.', frontmatter: { visibility: 'private' } }, { sourceId });
+      }));
+      expect((await extract(['Measured outcome', 'Explicit ownership'])).status).toBe('ok');
+      expect((await engine.readPageSnapshot(staleSlug, { sourceId, includeDeleted: true }))?.page.deleted_at).not.toBeNull();
+      expect((await engine.readPageSnapshot(keptSlug, { sourceId, includeDeleted: true }))?.page.deleted_at).toBeNull();
+      expect((await engine.readPageSnapshot(changedSlug, { sourceId, includeDeleted: true }))?.page.deleted_at).toBeNull();
+      // The retirement rode the same durable batch: one committed retire write.
+      expect(await engine.executeRaw("SELECT state FROM persistence_requests WHERE source_id=$1 AND intent->>'retire'='true'", [sourceId]))
+        .toEqual([{ state: 'committed' }]);
+      const live = await engine.executeRaw<{ slug: string }>("SELECT slug FROM pages WHERE source_id=$1 AND type='atom' AND deleted_at IS NULL ORDER BY slug", [sourceId]);
+      expect(live.map(row => row.slug)).toEqual([changedSlug, keptSlug].sort());
+      // A no-change third extraction reproduces the same set and retires nothing.
+      expect((await extract(['Measured outcome', 'Explicit ownership'])).status).toBe('ok');
+      expect(await engine.executeRaw("SELECT count(*)::int AS n FROM persistence_requests WHERE source_id=$1 AND intent->>'retire'='true'", [sourceId])).toEqual([{ n: 1 }]);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 export async function exerciseAtomRetrySourceIsolation(engine: BrainEngine): Promise<void> {
   const priorSource = 'fence-committed-before-admission';
   let phase: 'hold' | 'drain' | 'done' = 'hold';
