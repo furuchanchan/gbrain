@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.25.8] - 2026-10-01
+
+### Fixed
+
+- Managed Git sync: a diff entry whose pinned commit is already superseded by the current page no longer records `source_changed` (`pinned_git_worktree_conflict`) and blocks the run. A coordinated write publishes its page bytes to the working tree before its commit lands; a sync enumerated in that window pins the earlier commit while the working tree already holds the current page. The entry now skips as a no-op — working-tree bytes that match neither the pinned commit nor the page still fail as before. (#5777)
 ## [0.60.25.0] - 2026-10-01
 
 **CI now runs on Bun 1.4.2, so contributors stop seeing random test hangs.**
