@@ -95,6 +95,7 @@ src/core/persistence/semantic-pages.ts	1	coordinator	Publication is transaction-
 src/core/pglite-engine.ts	31	engine_guard	Canonical table SQL trigger requires coordinator capability; legacy calls fail before canonical DB publication.
 src/core/pglite-schema.ts	1	schema	Schema installation and forward-reference DDL; coordinated activation quiesces canonical writers.
 src/core/postgres-engine.ts	31	engine_guard	Canonical table SQL trigger requires coordinator capability; legacy calls fail before canonical DB publication.
+src/core/repair/expired-facts.ts	1	engine_guard	Canonical table SQL trigger requires coordinator capability; the facts UPDATE runs inside withCoordinatedWrite's gbrain.write_sources grant on managed brains and takes the sources FOR UPDATE lock the withdrawal writer holds.
 src/core/schema-pack/mutate.ts	0	filesystem_guard	The shared manifest write primitive checks its root before atomic replacement.
 src/core/schema-pack/page-to-alias.ts	2	engine_guard	Canonical table SQL trigger requires coordinator capability; legacy calls fail before canonical DB publication.
 src/core/schema-pack/page-to-link.ts	1	engine_guard	Canonical table SQL trigger requires coordinator capability; legacy calls fail before canonical DB publication.
