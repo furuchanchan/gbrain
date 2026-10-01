@@ -15,7 +15,7 @@ import { prepareCanonicalProjections } from './canonical-projections.ts';
 import { digest, sha256 } from './digest.ts';
 import { preserveProtectedTakes } from './protected-takes.ts';
 import { getWorktreeBinding } from './ownership.ts';
-import { assertConfiguredSyncRoot, assertSyncEntryOrigin, syncGit, syncRawHash, type SyncRename } from './sync-discovery.ts';
+import { assertConfiguredSyncRoot, assertSyncEntryOrigin, readSyncFile, syncGit, syncRawHash, type SyncRename } from './sync-discovery.ts';
 import { assertSyncPageOrigin, sameSyncOrigin, syncOriginPath, syncOriginScope, type SyncOriginScope } from './sync-origin.ts';
 import { assertManagedSyncActive, validateSyncAuthority, type SyncAuthority, type SyncProcessingOptions } from './sync-authority.ts';
 import type { PreparedContentImport } from './prepared-import.ts';
@@ -200,7 +200,17 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
     throw new OperationError('invalid_params', frontmatterSlugConflictMessage(p.sourcePath, parsedInput.slug, expectedSlug));
   }
   if (!p.companyApproval && base && !p.lineEndingOnly && p.rawHash !== sha256(p.content) && !sameCanonicalImport(base, parsedInput)) {
-    throw new OperationError('source_changed', 'Newer working-tree bytes and the current page disagree with this pinned Git import.');
+    // #5777: the pinned commit can be superseded by the page itself — a
+    // coordinated write publishes to the working tree before its commit lands,
+    // so a diff enumerated in between pins the earlier commit while the file
+    // already holds the current page. Nothing to import or protect: skip.
+    // Working-tree bytes matching neither the commit nor the page still fail.
+    const workingBytes = readSyncFile(root, p.path);
+    const workingIsPage = workingBytes !== null && workingBytes.equals(Buffer.from(workingBytes.toString('utf8'))) &&
+      sameCanonicalImport(base, parseMarkdown(workingBytes.toString('utf8'), row.slug, { activePack }));
+    if (renamed || !workingIsPage) throw new OperationError('source_changed', 'Newer working-tree bytes and the current page disagree with this pinned Git import.');
+    return { observedRevision: snapshot?.revision ?? null, contentUnchanged: true, noop: true, validate,
+      apply: async () => ({ status: 'skipped', slug: row.slug, source_id: row.source_id, noop: true, imported_file: true }) };
   }
   let importContent = p.content;
   if (row.authority.remote) {

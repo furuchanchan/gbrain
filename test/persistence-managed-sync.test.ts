@@ -324,6 +324,26 @@ test.each([false, true])('managed terminal receipts survive a missing ledger and
     }
   }), 120_000);
 
+test('a diff entry whose pinned commit the page already supersedes skips as a no-op (#5777)', async () =>
+  withEnv({ GBRAIN_HOME: home, GBRAIN_SYNC_FAILURES_DIR: home }, async () => {
+    for (const engine of engines) {
+      const a = 'An original observation about the example system.\n';
+      const f = await fixture(engine, { 'notes/example.md': a });
+      await performManagedSync(engine, { sourceId: f.id, noPull: true });
+      const path = join(f.root, 'notes/example.md');
+      writeFileSync(path, 'A superseded committed observation about the example system.\n');
+      const target = commit(f.root);
+      // Coordinated-write window: working tree already holds the page's own
+      // bytes while HEAD still points at the superseded commit.
+      writeFileSync(path, a);
+      const result = await performManagedSync(engine, { sourceId: f.id, noPull: true });
+      expect(result.status).toBe('synced');
+      expect(loadSyncFailures().filter(row => row.source_id === f.id)).toHaveLength(0);
+      expect((await engine.getPage('notes/example', { sourceId: f.id }))?.compiled_truth).toContain('original observation');
+      expect((await engine.executeRaw<{ last_commit: string }>('SELECT last_commit FROM sources WHERE id=$1', [f.id]))[0].last_commit).toBe(target);
+    }
+  }), 120_000);
+
 test('pending durable sync retries keep the same request ID and do not claim committed imports', async () =>
   withEnv({ GBRAIN_HOME: home, GBRAIN_SYNC_FAILURES_DIR: home }, async () => {
     for (const engine of engines) {
