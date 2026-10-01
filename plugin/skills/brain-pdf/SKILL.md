@@ -83,10 +83,19 @@ else
   gbrain get "$SLUG" > "$RAW"   # prints the page as markdown with frontmatter
 fi
 
-# 3. Strip YAML frontmatter — sed: skip the opening '---' through the
-#    closing '---' (lines 1..N), then keep everything after.
+# 3. Strip YAML frontmatter — POSIX awk: when line 1 is '---', drop lines
+#    through the closing '---', else keep the whole file. (The previous
+#    GNU-only sed expression errors on macOS/BSD sed and produced an EMPTY
+#    file that rendered a blank PDF with exit 0.)
 CLEAN=$(mktemp /tmp/brain-page-clean-XXXXXX.md)
-sed '1{/^---$/!q}; /^---$/,/^---$/d' "$RAW" > "$CLEAN"
+awk 'NR==1 { if ($0 == "---") infm = 1; else print; next }
+     infm && /^---$/ { infm = 0; next }
+     !infm { print }' "$RAW" > "$CLEAN"
+# A cleaned file must be non-empty — never render a blank PDF as success.
+if [ ! -s "$CLEAN" ]; then
+  echo "error: frontmatter strip produced an empty file — check $RAW" >&2
+  exit 1
+fi
 
 # 4. Render. NO --cover, NO --toc by default — they look corporate
 #    and waste space. Add them only if explicitly requested.

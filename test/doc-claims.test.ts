@@ -39,6 +39,7 @@ const RETRACTED: Claim[] = [
   { claim: 'No manual `add_link` calls needed for ordinary page writes', why: '#4679: HTTP writers need a host sweep or explicit add_link' },
   { claim: 'nobody else ships together', why: 'exclusivity claim retracted from the primary docs' },
   { claim: 'keychain and survives', why: '#4741: the empty-dir hermetic config does not keep the macOS keychain login across logout' },
+  { claim: /sed '1\{\/\^---\$\/!q\}/, why: '#5772: GNU-only sed frontmatter strip errors on macOS BSD sed and left an empty cleaned file that rendered a blank PDF with exit 0 (owner: skills/brain-pdf/SKILL.md)' },
 ];
 
 const files = execFileSync('git', ['ls-files', '-z', '*.md'], { cwd: ROOT, encoding: 'utf8' })
