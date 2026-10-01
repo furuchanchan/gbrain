@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.25.6] - 2026-10-01
+
+### Fixed
+
+- `brain-pdf` skill: the YAML-frontmatter strip no longer uses a GNU-only `sed` expression that errors on macOS/BSD sed and produced an empty cleaned file (rendering a blank PDF with exit 0). The strip is now a POSIX `awk` one-liner, and the cleaned file is checked non-empty before rendering (#5772).
 ## [0.60.25.0] - 2026-10-01
 
 **CI now runs on Bun 1.4.2, so contributors stop seeing random test hangs.**
