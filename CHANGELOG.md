@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.25.5] - 2026-10-01
+
+### Fixed
+
+- Skill publication (`shared-skills`) no longer fails with `storage_error` for every file inside a subfolder on Windows — `readBundleFile` now validates unsafe characters per path segment instead of over the whole relative path, so the platform separator `\` is allowed between segments while backslashes, slashes, control characters and colons inside a segment are still rejected (#5776).
 ## [0.60.25.0] - 2026-10-01
 
 **CI now runs on Bun 1.4.2, so contributors stop seeing random test hangs.**
