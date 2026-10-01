@@ -10,9 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.25.2] - 2026-10-01
+
 ### Fixed
 
-- **`gbrain repair expired-facts` restores facts the fenceless-page projection wrongly expired.** A managed page write on a page with no `## Facts` fence stamped `expired_at` (and cleared `row_num`) on every `cli:`-sourced fact — conversation-extracted facts silently dropped out of memory (#5731, remaining scope after the v0.60.11.0 write fix). `gbrain repair expired-facts` previews each candidate and `--apply` clears `expired_at`. Facts you actually withdrew are kept: the repair checks every candidate against the durable `fact_withdrawals` record, and a supersession or `valid_until` expiry keeps its `row_num`, which the bug never had. Bookkeeping only — no page write and no journal admission.
+- **`gbrain repair expired-facts` restores facts the fenceless-page projection wrongly expired.** A managed page write on a page with no `## Facts` fence stamped `expired_at` (and cleared `row_num`) on every `cli:extract-conversation-facts` row — conversation-extracted facts silently dropped out of memory (#5731, remaining scope after the v0.60.11.0 write fix). `gbrain repair expired-facts` previews each candidate and `--apply` clears `expired_at`. Two legitimate expiry paths are kept: a fact an explicit `forget` still covers via its durable `fact_withdrawals` row, and a fact carrying `superseded_by` — a DB-only supersession can share the bug's `expired_at` + cleared `row_num` signature, so `superseded_by`, not `row_num`, is the discriminator. Apply rechecks each item inside a transaction holding the same `sources FOR UPDATE` lock a `forget` takes, so a withdrawal committed after preview still wins; on managed-persistence brains the restore runs under the canonical `gbrain.write_sources` grant. Bookkeeping only — no page write and no journal admission.
 ## [0.60.25.0] - 2026-10-01
 
 **CI now runs on Bun 1.4.2, so contributors stop seeing random test hangs.**
