@@ -18,12 +18,20 @@ function unsafe(): OperationError {
   return new OperationError('storage_error', 'Skill publication requires bounded regular files without aliases, links, or special files.');
 }
 
+// Every separator-delimited segment must be free of separators, control
+// characters and colons — the check is per segment because `sep` itself is a
+// legal separator *between* segments (Windows `\` would otherwise reject every
+// nested path).
+export function hasUnsafeBundlePathSegment(relPath: string, pathSep: string): boolean {
+  return relPath.split(pathSep).some(part => /[\\/\x00-\x1f:]/.test(part));
+}
+
 export function readBundleFile(path: string, root: string): { bytes: Buffer; mode: number } | null {
   if (!path.isWellFormed() || path !== path.normalize('NFC')) throw unsafe();
   const rel = relative(root, path);
   if (!isAbsolute(path) || path !== resolve(path) || !rel || isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..'
     || !rel.isWellFormed() || rel !== rel.normalize('NFC')
-    || rel.split(sep).length > BUNDLE_FILE_LIMITS.depth || /[\\\x00-\x1f:]/.test(rel)) throw unsafe();
+    || rel.split(sep).length > BUNDLE_FILE_LIMITS.depth || hasUnsafeBundlePathSegment(rel, sep)) throw unsafe();
   if (realpathSync(root) !== root || !lstatSync(root).isDirectory()) throw unsafe();
   const parts = rel.split(sep);
   let current = root;
