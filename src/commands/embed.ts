@@ -1990,8 +1990,11 @@ async function embedAllStale(
           // quietly converted whole corpora to the unwrapped convention.
           const prepared = await observed(pacer, () => readProjectionSnapshot(engine, slug, keySourceId, { requireLiveSource: true }));
           if (!prepared) {
-            // #5804: symmetric with embedOnePage — a null snapshot is a counted failure, not a silent "Embedded 0 chunks" success.
-            recordFailure(result, stale.length, slug, EMBED_UNAVAILABLE_MESSAGE);
+            // #5804: symmetric with embedOnePage — a null snapshot is a counted failure, not a silent
+            // "Embedded 0 chunks" success; an archived source is a legitimate skip, not a failure.
+            const live = await observed(pacer, () => engine.executeRaw(
+              'SELECT 1 FROM sources WHERE id = $1 AND NOT archived', [keySourceId]));
+            if (live.length > 0) recordFailure(result, stale.length, slug, EMBED_UNAVAILABLE_MESSAGE);
             return;
           }
           const selected = new Map(stale.map(c => [c.chunk_index, c]));
