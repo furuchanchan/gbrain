@@ -68,7 +68,7 @@ gbrain repair --all --apply                    # every kind in order
 any other option the table below does not list, including `--max-usd`: a
 refused run changes nothing. To cap paid embedding work, run the repairs
 through `gbrain doctor --remediate --yes --include-repairs --max-usd <n>`. `--all`
-runs `timeline`, then `visibility`, then `safe-chunks`, then `contextual-mode`, then `connector-checkpoints`, then `request-indexes`, then `connector-fences`, then `orphan-bindings`, then `embedding-effects`, and stops at the
+runs `timeline`, then `visibility`, then `safe-chunks`, then `contextual-mode`, then `connector-checkpoints`, then `request-indexes`, then `connector-fences`, then `orphan-bindings`, then `embedding-effects`, then `expired-facts`, and stops at the
 first kind that stops.
 
 Each item is re-checked against the page's current state just before it is
@@ -102,6 +102,7 @@ should also check `results[].complete`.
 | `orphan-bindings` | `orphan_persistence_bindings` | Deletes persistence source bindings whose source was removed, or that belong to an earlier incarnation of a source re-added under the same id. Releases before this one left the binding behind on `gbrain sources remove` and `gbrain sources purge`, so the re-added source read as claimed and every `gbrain sync --source <id>` failed with `writer_coordinator_required`. Bookkeeping only: no journal admission, no page or file changes, and it runs brain-wide (`--source` does not narrow it). See [orphan bindings](#orphan-bindings). | A binding that a queued, running or recovering write request of the same source incarnation still references. |
 | `embedding-effects` | `stale_embedding_effects` | Settles stale queued and failed embedding effects of committed writes, which block receipt compaction and activation: `reconciled` when current vectors pass the effect verifier, `superseded` when the page was deleted or a newer revision owns its own effect, `retry_queued` for the owner (paid; a used-up retry allowance gets one new bounded cycle per explicit apply). See [stale queued embedding effects](#stale-queued-embedding-effects). | `blocked` effects, counted by reason (`owner_unavailable`, `embedding_disabled`, `embedding_unconfigured`, `projection_pending`, `no_replacement_obligation`). |
 | `safe-chunks` | `safe_index_pending` (also `contextual_retrieval_coverage`, `details.unsealed_pages`) | Rebuilds the chunks of markdown and code pages indexed before the safe-chunk fence, which remote and MCP search withhold. It rebuilds projections only: no page write, no new page version and no request ID. Vectors whose embedding input did not change are kept; the rest are embedded unless you pass `--no-embed` or no embedding model is configured. | `code_without_source_path`: code pages with no recorded file to re-chunk. `unsupported_page_kind`: other page kinds, such as images. Their importer re-seals them. |
+| `expired-facts` | none | Re-activates `cli:`-sourced facts the canonical projection wrongly expired before the fenceless-page fix: a page with no `## Facts` fence was treated as an empty fence, so every extractor row was stamped `expired_at` with `row_num = NULL`. The rows are damage, not intent — `cli:` facts are never fence-owned — so the repair clears `expired_at` again. Bookkeeping only: no page write, no journal admission. See [expired conversation facts](#expired-facts). | `withdrawn_kept`: facts an explicit `forget` still covers via its durable `fact_withdrawals` row. `superseded_kept`: facts superseded in place, which kept their `row_num`. |
 | `contextual-mode` | `contextual_retrieval_coverage` (pages with no recorded mode) | Stamps the contextual retrieval mode on markdown pages imported without one (for example by a large `--no-embed` sync or a connector source before this release), exactly as a fresh import of the page would: the page, source and brain settings decide, and the per-chunk synopsis tier lands at the free title tier. It rebuilds projections only: no page write, no new page version and no request ID. A page whose stored vectors already match the stamped convention keeps them and queues no re-embedding; a page whose embedding input changes has only those vectors cleared and is re-embedded once, unless you pass `--no-embed`. | `unsealed_projection`: pages whose chunks lag their text; `gbrain embed --stale` or `safe-chunks` seals them first, and the next run stamps them. `embed_skip`: pages marked to skip embedding keep their stored vectors and are not stamped. |
 
 Timeline rows that an earlier version of a page produced and its current text
@@ -237,6 +238,28 @@ gbrain doctor                            # orphan_persistence_bindings is ok
 Do not delete binding rows by hand: the repair rechecks, in the same
 statement, that the binding is still orphaned and that no pending write
 request uses it.
+
+<a id="expired-facts"></a>
+### Expired conversation facts
+
+**Say to your agent:** *"Facts extracted from my chats vanished after a page
+write — restore them."*
+
+Before the fenceless-page fix, writing a managed page that had no `## Facts`
+fence expired every `cli:`-sourced fact on it — the projection treated the
+missing fence as an empty one. The facts are still in the table, stamped
+`expired_at` with `row_num` cleared. Preview, then apply after you agree:
+
+```bash
+gbrain repair expired-facts            # lists each fact it would re-activate
+gbrain repair expired-facts --apply    # clears expired_at on them
+```
+
+A fact you actually forgot stays gone: `gbrain forget` leaves a durable
+`fact_withdrawals` record, and the repair checks every candidate against it —
+plus a supersession or a `valid_until` that set the expiry keeps its
+`row_num`, which the bug never had. Restored `row_num` values cannot be
+rebuilt; the facts return to active memory with provenance intact.
 
 ## Resume
 

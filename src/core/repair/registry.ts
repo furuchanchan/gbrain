@@ -25,6 +25,7 @@ import { requestIndexesRepair } from './request-indexes.ts';
 import { connectorFencesRepair } from './connector-fences.ts';
 import { orphanBindingsRepair } from './orphan-bindings.ts';
 import { embeddingEffectsRepair } from './embedding-effects.ts';
+import { expiredFactsRepair } from './expired-facts.ts';
 
 export interface RepairKindSpec {
   kind: RepairKind;
@@ -82,6 +83,12 @@ const SPECS: Record<RepairKind, Omit<RepairKindSpec, 'kind'>> = {
     summary: 'Settle stale queued or failed embedding effects of committed writes (#5629, #5734), which block receipt compaction and activation. '
       + 'Each effect is reconciled (current vectors pass the effect verifier), superseded (page deleted, or a newer revision owns its own effect), '
       + 'retry_queued for its owner (paid; a consumed retry allowance gets one new bounded cycle per explicit run) or blocked with the reason. Never drops an obligation.',
+  },
+  'expired-facts': {
+    handler: expiredFactsRepair, embeds: 'none', checks: [],
+    summary: 'Re-activate cli:-sourced facts the canonical projection wrongly expired before the fenceless-page fix (#5731). '
+      + 'A fact an explicit withdrawal still covers, or one superseded in place, is kept and counted. '
+      + 'Bookkeeping only; no page write and no journal admission.',
   },
 };
 
