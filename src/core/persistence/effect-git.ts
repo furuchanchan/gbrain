@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { execFileBounded, isDurabilityHardenedAsync } from '../brain-repo-durability.ts';
+import { GIT_REPO_ISOLATION } from '../git-remote.ts';
 import { OperationError } from '../ops/contract.ts';
 import { persistenceHome } from './identity.ts';
 import { nativeFileTarget } from './native-file-target.ts';
@@ -17,7 +18,7 @@ const LOCK_REFUSAL = /Unable to create '([\s\S]*)': File exists/;
 const canonical = (path: string) => { try { return join(realpathSync(dirname(path)), basename(path)); } catch { return path; } };
 
 const GIT_ENV = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never', GIT_GLOB_PATHSPECS: '0', GIT_NOGLOB_PATHSPECS: '0',
-  GIT_ICASE_PATHSPECS: '0', LC_ALL: 'C' };
+  GIT_ICASE_PATHSPECS: '0', LC_ALL: 'C', ...GIT_REPO_ISOLATION };
 
 async function run(root: string, hooks: string, args: string[], signal?: AbortSignal) {
   return execFileBounded('git', ['--literal-pathspecs', '-C', root, '-c', `core.hooksPath=${hooks}`, '-c', 'commit.gpgsign=false', ...args], {

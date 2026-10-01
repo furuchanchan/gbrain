@@ -10,6 +10,7 @@ import type { BrainEngine } from './engine.ts';
 import { resolveSlugForPath, DEFAULT_SOURCE_ID } from './sync.ts';
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
 import { hasUnresolvedDbOnlyDeclaration, loadStorageConfig } from './storage-config.ts';
+import { GIT_REPO_ISOLATION } from './git-remote.ts';
 
 /**
  * v0.32.7 CJK wave (codex post-merge F4): resolve a slug by `pages.source_path`
@@ -311,6 +312,7 @@ export function git(
     encoding: 'utf-8',
     timeout: timeoutMs,
     maxBuffer: 100 * 1024 * 1024,
+    env: { ...process.env, ...GIT_REPO_ISOLATION },
     ...(silenceStderr ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),
   }).trim();
 }
@@ -327,6 +329,7 @@ export function gitRawOutput(repoPath: string, args: string[]): string {
     encoding: 'utf-8',
     timeout: 30000,
     maxBuffer: 100 * 1024 * 1024,
+    env: { ...process.env, ...GIT_REPO_ISOLATION },
   });
 }
 
@@ -617,6 +620,7 @@ export function hasOriginRemote(repoPath: string): boolean {
       encoding: 'utf-8',
       timeout: 30000,
       stdio: ['ignore', 'ignore', 'ignore'],
+      env: { ...process.env, ...GIT_REPO_ISOLATION },
     });
     return true;
   } catch {

@@ -176,12 +176,28 @@ function gitErrorDetail(e: unknown): string {
  * Pure + platform-parameterized so the win32 shape is unit-testable on
  * POSIX CI (no Windows runner exists).
  */
+/**
+ * Repo-selection variables an outer git process can inject — every spawn
+ * below operates on the repository named by its explicit `-C <path>` or
+ * argument, and an ambient GIT_DIR & co. would silently redirect it to a
+ * different repository (#5794). An `undefined` value in the env object
+ * omits the variable from the child's environment entirely, so baking the
+ * set into GIT_ENV/GIT_ENV_AUTH isolates every spread at once; HOME, PATH,
+ * and credential helpers stay inherited.
+ */
+export const GIT_REPO_ISOLATION = {
+  GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_COMMON_DIR: undefined,
+  GIT_INDEX_FILE: undefined, GIT_OBJECT_DIRECTORY: undefined,
+  GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined, GIT_NAMESPACE: undefined,
+} as const;
+
 export function buildGitEnv(
   platform: NodeJS.Platform = process.platform,
-): Record<string, string> {
-  const env: Record<string, string> = {
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
     GIT_TERMINAL_PROMPT: '0',
     GCM_INTERACTIVE: 'never',
+    ...GIT_REPO_ISOLATION,
   };
   if (platform === 'win32') {
     env.SSH_ASKPASS_REQUIRE = 'never';
@@ -204,10 +220,11 @@ export const GIT_ENV = buildGitEnv();
  * askpass overrides but KEEP `GIT_TERMINAL_PROMPT=0` so a *missing* credential
  * fails fast instead of hanging a non-interactive cron forever.
  */
-export const GIT_ENV_AUTH = {
+export const GIT_ENV_AUTH: Record<string, string | undefined> = {
   GIT_TERMINAL_PROMPT: '0',
   GCM_INTERACTIVE: 'never',
-} as const;
+  ...GIT_REPO_ISOLATION,
+};
 
 /**
  * Clone a remote git repo with SSRF-defensive flags.
@@ -482,7 +499,7 @@ function runGit(
   subcommand: string,
   subArgs: readonly string[],
   op: GitOperationError['op'],
-  opts: { timeoutMs?: number; env?: Record<string, string> } = {},
+  opts: { timeoutMs?: number; env?: Record<string, string | undefined> } = {},
 ): string {
   try {
     const out = execFileSync(

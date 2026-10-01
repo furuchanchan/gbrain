@@ -190,6 +190,38 @@ test('remote-ref probe inherits HOME/PATH so credential helpers work, keeping th
   expect(envs[0].SSH_ASKPASS_REQUIRE).toBe('never');
 });
 
+test('an inherited GIT_DIR/GIT_WORK_TREE cannot redirect the local helper to a different repository (#5794)', async () => {
+  const { root } = await repository();
+  const decoy = await repository('decoy');
+  // Diverge the decoy so a wrong-repo verdict records a different head —
+  // identical fixture graphs would make the leak invisible.
+  git(decoy.root, 'commit', '--allow-empty', '-m', 'decoy divergence');
+  const saved: Record<string, string | undefined> = {};
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE']) {
+    saved[key] = process.env[key];
+  }
+  // Capture the real repo's head before poisoning — after the env vars are
+  // set, even this file's own git() helper resolves GIT_DIR first.
+  const expectedHead = git(root, 'rev-parse', 'HEAD');
+  try {
+    // Without isolation the ambient GIT_DIR points every `-C root` call at
+    // the decoy: remote/branch/head all read the wrong repo and the verdict
+    // records the decoy's commits.
+    process.env.GIT_DIR = join(decoy.root, '.git');
+    process.env.GIT_WORK_TREE = decoy.root;
+    const result = await computeBackupCoverage(engine([root]), verified);
+    expect(result.assets[0].verification?.state).toBe('verified');
+    expect(result.assets[0].verification?.local_commit).toBe(expectedHead);
+    expect(result.assets[0].verification?.remote_commit).toBe(expectedHead);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('timeouts spend a sweep-wide deadline, return no credentials, and never verify offline remotes', async () => {
   const roots = await Promise.all(Array.from({ length: 5 }, async (_, i) => (await repository(`offline-${i}`)).root));
   const timeouts: number[] = [];
