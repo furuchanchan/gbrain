@@ -168,6 +168,28 @@ test('remote-ref readback is capped, cached, and never performed for untrusted o
   } finally { probe.mockRestore(); }
 });
 
+test('remote-ref probe inherits HOME/PATH so credential helpers work, keeping the no-prompt overrides (#5794)', async () => {
+  const { root } = await repository();
+  const run = childProcess.execFile;
+  const envs: Record<string, string | undefined>[] = [];
+  const probe = spyOn(childProcess, 'execFile').mockImplementation(((file: string, args: string[], options: { env?: Record<string, string | undefined> }, callback: unknown) => {
+    if (args.includes('ls-remote')) envs.push(options?.env ?? {});
+    return (run as Function)(file, args, options, callback);
+  }) as typeof childProcess.execFile);
+  try {
+    await getBackupStatus(engine([root]), verified);
+  } finally { probe.mockRestore(); }
+  expect(envs).toHaveLength(1);
+  // Without process.env the subprocess had no HOME (~/.gitconfig credential
+  // helper unreadable) and no PATH — every private remote came back
+  // 'unavailable'. The strict no-prompt posture must survive the spread.
+  expect(envs[0].HOME).toBe(process.env.HOME);
+  expect(envs[0].PATH).toBe(process.env.PATH);
+  expect(envs[0].GIT_TERMINAL_PROMPT).toBe('0');
+  expect(envs[0].GIT_ASKPASS).toBe('');
+  expect(envs[0].SSH_ASKPASS_REQUIRE).toBe('never');
+});
+
 test('timeouts spend a sweep-wide deadline, return no credentials, and never verify offline remotes', async () => {
   const roots = await Promise.all(Array.from({ length: 5 }, async (_, i) => (await repository(`offline-${i}`)).root));
   const timeouts: number[] = [];
