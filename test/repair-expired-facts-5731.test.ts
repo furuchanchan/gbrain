@@ -58,6 +58,21 @@ const seed = async (row: { fact: string; expired: boolean; rowNum?: number | nul
 const expiredAt = async (id: number) =>
   (await engine.executeRaw<{ expired_at: string | null }>('SELECT expired_at::text FROM facts WHERE id=$1', [id]))[0]!.expired_at;
 
+/** Real DB-only supersession shape: expired + superseded_by, row_num cleared. */
+const seedSuperseded = async (entity: string) => {
+  const [replacement] = await engine.executeRaw<{ id: number }>(
+    `INSERT INTO facts (fact, kind, source, source_id, visibility, entity_slug)
+     VALUES ('replacement claim', 'fact', $1, 'default', 'private', $2) RETURNING id`,
+    [CLI_SOURCE, entity],
+  );
+  const [old] = await engine.executeRaw<{ id: number }>(
+    `INSERT INTO facts (fact, kind, source, source_id, visibility, entity_slug, expired_at, superseded_by, source_markdown_slug)
+     VALUES ('old claim', 'fact', $1, 'default', 'private', $2, now(), $3, 'meetings/example') RETURNING id`,
+    [CLI_SOURCE, entity, replacement.id],
+  );
+  return old.id;
+};
+
 describe('repair expired-facts (#5731)', () => {
   test('is registered with a projection-only, no-embed spec', async () => {
     expect(REPAIR_KINDS).toContain('expired-facts');
@@ -79,8 +94,10 @@ describe('repair expired-facts (#5731)', () => {
       `INSERT INTO fact_withdrawals (source_id, visibility, subject, fact_hash)
        VALUES ('default', 'private', '*', gbrain_fact_fingerprint('carol-example retracted claim'))`,
     );
-    // Superseded in place keeps row_num — a legitimate expiry, not the bug.
-    await seed({ fact: 'old claim about dave-example', expired: true, rowNum: 7, entity: 'dave-example' });
+    // DB-only supersession sets superseded_by and never touches row_num —
+    // the projection may already have cleared it, giving the bug's exact
+    // signature. superseded_by, not row_num, is the discriminator.
+    await seedSuperseded('dave-example');
     // Active cli fact and a fence-sourced expired fact are outside the kind.
     await seed({ fact: 'erin-example is active', expired: false });
     await seed({ fact: 'fence-owned row', expired: true, source: 'extract' });
@@ -102,7 +119,7 @@ describe('repair expired-facts (#5731)', () => {
   test('apply restores only the victims, idempotent on rerun', async () => {
     const all = await engine.executeRaw<{ id: number }>(
       `SELECT id FROM facts WHERE source LIKE 'cli:%' AND expired_at IS NOT NULL AND row_num IS NULL ORDER BY id`);
-    expect(all.map(r => r.id)).toHaveLength(3); // 2 victims + 1 withdrawn-covered
+    expect(all.map(r => r.id)).toHaveLength(4); // 2 victims + withdrawn-covered + superseded (same signature)
 
     const repair = await loadHandler();
     const result = await withEnv({ GBRAIN_HOME: scratch }, () => runRepair(ctx(false), repair!, scope, { apply: true }));
@@ -144,6 +161,48 @@ describe('repair expired-facts (#5731)', () => {
     expect(result.applied).toBe(0);
     expect(result.affected).toBe(0);
     expect(await expiredAt(victim)).not.toBeNull();
+  });
+
+  test('apply rechecks the predicate under the source lock and skips late supersessions/withdrawals', async () => {
+    await resetPgliteState(engine);
+    const repair = await loadHandler();
+    const supersededLate = await seed({ fact: 'ivan-example late superseded', expired: true, entity: 'ivan-example' });
+    const withdrawnLate = await seed({ fact: 'judy-example late withdrawn', expired: true, entity: 'judy-example' });
+    const plan = await repair!.plan(engine, scope, null);
+    const items = plan.items.map(item => ({ item, id: item.cursor.id }));
+    // Both facts gain a legitimate expiry marker after planning.
+    const [replacement] = await engine.executeRaw<{ id: number }>(
+      `INSERT INTO facts (fact, kind, source, source_id, visibility, entity_slug)
+       VALUES ('superseding claim', 'fact', $1, 'default', 'private', 'ivan-example') RETURNING id`, [CLI_SOURCE]);
+    await engine.executeRaw('UPDATE facts SET superseded_by = $1 WHERE id = $2', [replacement.id, supersededLate]);
+    await engine.executeRaw(
+      `INSERT INTO fact_withdrawals (source_id, visibility, subject, fact_hash)
+       VALUES ('default', 'private', 'judy-example', gbrain_fact_fingerprint('judy-example late withdrawn'))`);
+    for (const { item } of items) {
+      const outcome = await repair!.apply(ctx(false), item) as { applied: boolean; outcome: string };
+      expect(outcome.applied).toBe(false);
+      expect(outcome.outcome).toBe('settled');
+    }
+    expect(await expiredAt(supersededLate)).not.toBeNull();
+    expect(await expiredAt(withdrawnLate)).not.toBeNull();
+  });
+
+  test('managed persistence brain: apply enters the coordinated-write capability', async () => {
+    await resetPgliteState(engine);
+    const victim = await seed({ fact: 'henry-example joined acme-example', expired: true, entity: 'henry-example' });
+    // Arming the managed_writer_guard on `facts`: the issue environment.
+    await engine.executeRaw(`UPDATE persistence_brain SET enabled = true WHERE singleton = 1`);
+    try {
+      // The guard is armed: a bare UPDATE outside the write grant is refused.
+      await expect(engine.executeRaw(`UPDATE facts SET expired_at = NULL WHERE id = $1`, [victim]))
+        .rejects.toThrow(/writer_coordinator_required/i);
+      const repair = await loadHandler();
+      const result = await withEnv({ GBRAIN_HOME: scratch }, () => runRepair(ctx(false), repair!, scope, { apply: true }));
+      expect(result.applied).toBe(1);
+      expect(await expiredAt(victim)).toBeNull();
+    } finally {
+      await engine.executeRaw(`UPDATE persistence_brain SET enabled = false WHERE singleton = 1`);
+    }
   });
 
   test('only in-scope sources are repaired', async () => {
