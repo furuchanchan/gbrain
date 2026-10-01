@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.25.9] - 2026-10-01
+
+### Fixed
+
+- Managed atom extraction: a re-extraction that produces a different atom set now retires the managed atoms the earlier run created and this one did not. Previously an edited source page or transcript re-admitted its new atoms but the stale atoms stayed active in search forever, since only the completion checkpoint advanced. Retirements ride the same durable batch (same run key and children list) under a revision CAS, so the checkpoint advances only after replacements and retirements commit; a failed extraction retires nothing, and atom-retry rebuilds replacement rows only — the stale set is recomputed on every admission. (#5770)
 ## [0.60.25.0] - 2026-10-01
 
 **CI now runs on Bun 1.4.2, so contributors stop seeing random test hangs.**
