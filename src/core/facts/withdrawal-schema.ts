@@ -39,18 +39,18 @@ export const FACT_WITHDRAWAL_SCHEMA_STATEMENTS = [
     PRIMARY KEY (source_id, visibility, subject, fact_hash)
   )`,
   `CREATE OR REPLACE FUNCTION gbrain_fact_fingerprint_v1(claim TEXT) RETURNS TEXT
-    LANGUAGE SQL IMMUTABLE STRICT AS $fn$
+    LANGUAGE SQL IMMUTABLE STRICT SET search_path = pg_catalog, public AS $fn$
       SELECT encode(sha256(convert_to(regexp_replace(lower(btrim(claim)), '[[:space:]]+', ' ', 'g'), 'UTF8')), 'hex')
     $fn$`,
   `CREATE OR REPLACE FUNCTION gbrain_fact_normalize(claim TEXT) RETURNS TEXT
-    LANGUAGE SQL IMMUTABLE STRICT AS $fn$ SELECT ${NORMALIZE_CLAIM_SQL} $fn$`,
+    LANGUAGE SQL IMMUTABLE STRICT SET search_path = pg_catalog, public AS $fn$ SELECT ${NORMALIZE_CLAIM_SQL} $fn$`,
   // Inlined rather than calling gbrain_fact_normalize: index builds resolve
   // functions with a restricted search_path, so the index expression must
   // reference only built-ins.
   `CREATE OR REPLACE FUNCTION gbrain_fact_fingerprint(claim TEXT) RETURNS TEXT
-    LANGUAGE SQL IMMUTABLE STRICT AS $fn$ SELECT encode(sha256(convert_to(${NORMALIZE_CLAIM_SQL}, 'UTF8')), 'hex') $fn$`,
+    LANGUAGE SQL IMMUTABLE STRICT SET search_path = pg_catalog, public AS $fn$ SELECT encode(sha256(convert_to(${NORMALIZE_CLAIM_SQL}, 'UTF8')), 'hex') $fn$`,
   `CREATE OR REPLACE FUNCTION gbrain_preserve_fact_withdrawal() RETURNS trigger
-    LANGUAGE plpgsql AS $fn$
+    LANGUAGE plpgsql SET search_path = pg_catalog, public AS $fn$
     DECLARE withdrawn TIMESTAMPTZ;
     BEGIN
       IF NEW.expired_at IS NULL THEN
