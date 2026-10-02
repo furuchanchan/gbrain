@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.4] - 2026-10-02
+
+### Fixed
+
+- **`check-retired-phrases.sh` (#5810):** the retired-phrase table now loads with `IFS= read -r -d '' RETIRED <<'EOF'` instead of `$(cat <<'EOF' …)`. macOS ships `/bin/bash` 3.2, which quote-scans a heredoc inside `$(...)` and chokes on the table's apostrophe and odd backticks — `bun run verify` failed to parse on every Mac. The consuming loop is unchanged.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**
