@@ -117,6 +117,7 @@ import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, b
 import { privatePagesFilterFragment, privateSnapshotFilterFragment, privateLinkOriginFilterFragment, privateTimelineEventFilterFragment, privateProvenanceFilterFragment } from './search/private-visibility.ts';
 import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
+import { timelineScoreScopeForEngine, filterTimelineGradedRows } from './schema-pack/timeline-scope.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
 import { EMBED_SKIP_FILTER_FRAGMENT } from './embed-skip.ts';
 import { QUARANTINE_FILTER_FRAGMENT, quarantineFilterFragment } from './quarantine.ts';
@@ -3015,16 +3016,21 @@ export class PGLiteEngine implements BrainEngine {
       .filter(row => !shouldExcludeFromOrphanReporting(row.slug, orphanOverrides, { type: row.type }));
     const linkablePageCount = linkablePages.length;
     const orphanPages = linkablePages.filter(row => row.islanded).length;
-    const linkableTimelinePages = linkablePages.filter(row => row.has_timeline).length;
+    // #5828: the 15-point timeline component grades only entity/temporal-
+    // primitive types; undeclared types stay graded and a null scope (pack
+    // unresolvable) degrades to all-linkable rather than failing getHealth.
+    const timelineGradedPages = filterTimelineGradedRows(
+      linkablePages, await timelineScoreScopeForEngine(this, { sourceId: opts?.sourceId }));
+    const linkableTimelinePages = timelineGradedPages.filter(row => row.has_timeline).length;
     const deadLinks = Number(r.dead_links);
     const linkCount = Number(r.link_count);
 
     const linkDensity = pageCount > 0 ? Math.min(linkCount / pageCount, 1) : 0;
-    // linkablePageCount === 0 gets full marks for the orphan / timeline
-    // components (same vacuous-truth rule as the empty-brain fix below):
-    // an all-archive brain has no curated graph to penalize.
+    // Zero graded pages gets full marks for the timeline component (same
+    // vacuous-truth rule as the empty-brain fix below): an all-archive —
+    // or, after #5828, all-document — brain has no event graph to penalize.
     const timelineCoverageDensity =
-      linkablePageCount > 0 ? Math.min(linkableTimelinePages / linkablePageCount, 1) : 1;
+      timelineGradedPages.length > 0 ? Math.min(linkableTimelinePages / timelineGradedPages.length, 1) : 1;
     const noOrphans = linkablePageCount > 0 ? 1 - (orphanPages / linkablePageCount) : 1;
     const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
     // Bug 11 — per-component points. Sum equals brainScore by construction

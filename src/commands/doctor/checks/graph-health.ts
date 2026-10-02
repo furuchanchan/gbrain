@@ -102,7 +102,7 @@ async function runGraphCoverage(ctx: DoctorContext): Promise<Check[]> {
       const parts = [
         `embed ${health.embed_coverage_score}/35`,
         `links ${health.link_density_score}/25`,
-        `timeline density (all pages) ${health.timeline_coverage_score}/15`,
+        `timeline density (entity and event pages) ${health.timeline_coverage_score}/15`,
         `orphans ${health.no_orphans_score}/15`,
         `dead-links ${health.no_dead_links_score}/10`,
       ];
