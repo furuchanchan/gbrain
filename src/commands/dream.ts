@@ -98,6 +98,16 @@ interface DreamArgs {
    * skillopt, drift) — a no-op for phases that always run when named directly.
    */
   once: boolean;
+  /**
+   * #5756: print the effective extract_atoms system prompt and exit 0.
+   * `cycle.extract_atoms.prompt_file` lets an operator run a fidelity
+   * prompt on exact-wording pages (the built-in virality objective
+   * rewrites qualifiers into defects on statutes/contracts) — this flag
+   * is the verification surface: it prints which prompt the phase would
+   * send, so a local adaptation survives upgrades and can be confirmed
+   * without running the phase.
+   */
+  printExtractPrompt: boolean;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -308,6 +318,7 @@ function parseArgs(args: string[]): DreamArgs {
     drain,
     windowSeconds,
     once,
+    printExtractPrompt: args.includes('--print-extract-prompt'),
   };
 }
 
@@ -457,6 +468,13 @@ Options:
   --window <seconds>  Drain window, a hard deadline: no page or transcript
                       starts after it and the one in flight finishes, so a
                       run ends within one item of the window. Default 300.
+
+  --print-extract-prompt
+                      Print the effective extract_atoms system prompt and
+                      exit 0 — the file named by cycle.extract_atoms.prompt_file
+                      when configured, otherwise the built-in default. The
+                      source is reported on stderr. Use this to verify a
+                      local prompt adaptation after upgrades (#5756).
 
   --unsafe-bypass-dream-guard
                       Disable the self-consumption guard. Use only when you
@@ -841,6 +859,32 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
       }
     }
   }
+  // ─── #5756: print the effective extract_atoms prompt and exit ────────
+  if (opts.printExtractPrompt) {
+    if (engine === null) {
+      console.error(
+        'gbrain dream --print-extract-prompt requires a connected brain ' +
+        '(no engine available)',
+      );
+      process.exit(1);
+    }
+    const { resolveExtractAtomsPrompt } = await import(
+      '../core/cycle/extract-atoms-prompt.ts'
+    );
+    const resolved = await resolveExtractAtomsPrompt(engine, brainDir ?? undefined);
+    if (resolved.prompt === null) {
+      const { EXTRACT_PROMPT } = await import('../core/cycle/extract-atoms.ts');
+      console.log(EXTRACT_PROMPT);
+      process.stderr.write('[extract_atoms] prompt source: built-in default\n');
+    } else {
+      console.log(resolved.prompt);
+      process.stderr.write(
+        `[extract_atoms] prompt source: file ${resolved.path}\n`,
+      );
+    }
+    process.exit(0);
+  }
+
   // ─── issue #1678: bounded single-hold extract_atoms drain ──────────
   if (opts.drain) {
     if (engine === null) {

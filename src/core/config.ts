@@ -1375,6 +1375,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'cycle.extract_atoms.max_input_chars',
   'cycle.extract_atoms.max_output_tokens',
   'cycle.extract_atoms.pacing_ms',
+  // #5756: operator-supplied system prompt file (fidelity prompts on
+  // exact-wording pages — the built-in virality objective rewrites
+  // qualifiers into defects). gbrain dream --print-extract-prompt prints it.
+  'cycle.extract_atoms.prompt_file',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
   // #4152: preferred triage-model key (explicit pre-read in loadSynthConfig;

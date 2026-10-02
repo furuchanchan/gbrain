@@ -124,6 +124,7 @@ The release also absorbs 62 open community pull requests, each re-checked agains
 - **#5341** `check-backlinks fix` managed-worktree refusal.
 - **#5330** shared conversation-facts eligibility (`isConversationFactsEligiblePage` and its SQL twin in `src/core/facts/conversation-types.ts`).
 - **#5329** `chronicle_backfill` idempotency keys and paging, no schema change. The issue's other parts (a cadence gate, extraction idempotency for direct `chronicle_extract` runs, the no-sub-events page, the judge output cap) remain open.
+- **#5756** `cycle.extract_atoms.prompt_file` overrides the extract_atoms system prompt for pages where fidelity beats virality; `gbrain dream --print-extract-prompt` prints the effective prompt for upgrade-time verification.
 
 #### Memory capture (#5888, #5887)
 
