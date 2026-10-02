@@ -333,21 +333,27 @@ link_types:
     inference:
       page_type: image
 
+  # NER-only sketch regexes (#2117): markdown_links: false keeps them
+  # out of wikilink typing so the tuned in-code matchers win (#5882).
   - name: founded
     inference:
       regex: \b(founded|founder of|co-?founded|started)\b
+      markdown_links: false
 
   - name: invested_in
     inference:
       regex: \b(invested in|backed|seeded|funded|wrote a check)\b
+      markdown_links: false
 
   - name: advises
     inference:
       regex: \b(advises|advisor|advising|advisor to)\b
+      markdown_links: false
 
   - name: works_at
     inference:
       regex: \b(works? at|employed by|works? for|joined|hired by|ceo of|cto of|cmo of)\b
+      markdown_links: false
 
   - name: yc_partner
 

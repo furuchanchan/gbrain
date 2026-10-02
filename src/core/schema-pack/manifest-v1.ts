@@ -35,6 +35,11 @@ const LinkInferenceSchema = z.object({
   regex: z.string().optional(),
   page_type: z.string().optional(),
   target_type: z.string().optional(),
+  // Set false on NER-only sketch regexes (e.g. the shipped base packs'
+  // documentation patterns): markdown wikilink typing then ignores the
+  // rule and falls through to the tuned in-code matchers. Other
+  // consumers (extract-ner, extract evidence inference) still use it.
+  markdown_links: z.boolean().optional(),
 }).strict();
 
 const LinkTypeSchema = z.object({

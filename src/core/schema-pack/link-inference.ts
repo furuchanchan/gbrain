@@ -24,7 +24,12 @@
 //      pack link_type entry.
 //   2. Pack-declared regex matchers (in declaration order from the
 //      manifest; first match wins). Runs under PageRegexBudget for
-//      ReDoS protection.
+//      ReDoS protection. A rule may set `inference.markdown_links:
+//      false` to opt OUT of markdown wikilink typing (NER-only sketch
+//      regexes — the shipped base packs set this on their #2117
+//      documentation patterns so the tuned in-code matchers win,
+//      #5882); the flag does not gate this function itself — the
+//      markdown call site filters it.
 //   3. Fall-through to the caller's legacy `inferLinkType` for
 //      gbrain-base's production-quality matching of founded /
 //      invested_in / advises / works_at + page-role priors.

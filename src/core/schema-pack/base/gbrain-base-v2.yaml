@@ -362,22 +362,29 @@ link_types:
   # #2117 — NER inference regexes carried over verbatim from gbrain-base
   # (v1). Without them extract-ner has no patterns to match and returns
   # pack_unavailable, leaving the NER pipeline inert on this pack.
+  # markdown_links: false keeps these NER-only sketches out of wikilink
+  # typing so the tuned in-code matchers win — a bare 'started'/'joined'
+  # never mints founded/works_at edges (#5882).
   - name: founded
     inverse: founded_by
     inference:
       regex: \b(founded|founder of|co-?founded|started)\b
+      markdown_links: false
   - name: works_at
     inverse: employs
     inference:
       regex: \b(works? at|employed by|works? for|joined|hired by|ceo of|cto of|cmo of)\b
+      markdown_links: false
   - name: invested_in
     inverse: investor_of
     inference:
       regex: \b(invested in|backed|seeded|funded|wrote a check)\b
+      markdown_links: false
   - name: advises
     inverse: advised_by
     inference:
       regex: \b(advises|advisor|advising|advisor to)\b
+      markdown_links: false
   - name: sourced_from
   - name: derived_from
   - name: supersedes

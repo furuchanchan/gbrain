@@ -88,7 +88,10 @@ export { parseInlineCitationTimelineEntries, type InlineCitationTimelineCandidat
 // PRE-wave code after this date reads as fresh and won't re-extract until
 // the page is next edited; no fixed watermark can cover code that keeps
 // running past it.
-export const LINK_EXTRACTOR_VERSION_TS = '2026-10-01T00:00:00Z';
+// 2026-10-02: bumped for #5882 — pack `inference.markdown_links: false`
+// NER-only sketches + the meeting-page unbound-regex gate changed markdown
+// link typing, so mistyped founded/works_at edges retype on `extract --stale`.
+export const LINK_EXTRACTOR_VERSION_TS = '2026-10-02T00:00:00Z';
 
 // ─── Entity references ──────────────────────────────────────────
 
@@ -619,6 +622,27 @@ export interface PageLinksResult {
   attendanceComplete: boolean;
 }
 
+// #5882: two rules keep pack regexes honest on the markdown wikilink path.
+//   a) `inference.markdown_links: false` marks an NER-only sketch regex
+//      (the shipped base packs' documentation patterns for
+//      founded/works_at/invested_in/advises): it stays out of wikilink
+//      typing so the tuned in-code matchers decide — a bare
+//      'started'/'joined' no longer mints founded/works_at edges.
+//   b) On meeting pages only `page_type: 'meeting'`-bound rules may
+//      fire: an unbound pack regex never pre-empts the attendance
+//      prior (`meeting --works_at--> person` was the measured bug).
+// Other consumers (extract-ner, extract evidence inference) see the
+// unfiltered manifest.
+function linkPackForMarkdown(
+  pack: LinkExtractionPack, pageType: string,
+): Pick<LinkExtractionPack, 'link_types'> {
+  return {
+    link_types: pack.link_types.filter(lt =>
+      lt.inference?.markdown_links !== false
+      && (pageType !== 'meeting' || lt.inference?.page_type === 'meeting')),
+  };
+}
+
 /**
  * Extract all link candidates from a page.
  *
@@ -656,7 +680,8 @@ export async function extractPageLinks(
   // `link_types[].inference.regex` (e.g. parent_of) was silently ignored
   // here and every such edge landed as 'mentions'.
   const pack = opts.pack ?? null;
-  const packBudget = pack ? new PageRegexBudget() : undefined;
+  const linkPack = pack ? linkPackForMarkdown(pack, pageType as string) : null;
+  const packBudget = linkPack ? new PageRegexBudget() : undefined;
   const packOwnsAttendance = ownsAttendanceInference(pack);
   // Timeline / See-also links never receive the page-role prior — see
   // rolePriorSuppressedRanges (matched on the code-stripped content, so a
@@ -670,8 +695,8 @@ export async function extractPageLinks(
   const attendanceAmbiguous = new Set<number>();
   const typeFor = (ctx: string, targetSlug: string, idx?: number, sourceId?: string, bodyReference = true): Pick<LinkCandidate, 'linkType' | 'canonicalAttendance'> => {
     const targetType = opts.targetType?.(targetSlug, sourceId);
-    if (pack) {
-      const packVerb = inferLinkTypeFromPack(pack, pageType as string, ctx, packBudget, targetType);
+    if (linkPack) {
+      const packVerb = inferLinkTypeFromPack(linkPack, pageType as string, ctx, packBudget, targetType);
       if (packVerb && (packOwnsAttendance || packVerb !== 'attended' || pageType !== 'meeting')) {
         if (packVerb === 'attended' && pageType === 'meeting'
           && (opts.targetType ? targetType !== 'person' : !targetSlug.startsWith('people/'))) return { linkType: 'mentions' };

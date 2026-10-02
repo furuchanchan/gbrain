@@ -657,7 +657,7 @@ export async function removePrefixFromType(packName: string, typeName: string, p
 export interface AddLinkTypeOpts {
   name: string;
   inverse?: string;
-  inference?: { regex?: string; page_type?: string; target_type?: string };
+  inference?: { regex?: string; page_type?: string; target_type?: string; markdown_links?: boolean };
 }
 
 function buildAddLinkTypeMutator(opts: AddLinkTypeOpts): (m: SchemaPackManifest) => SchemaPackManifest {
@@ -802,7 +802,7 @@ function buildBatchMutator(
         mutate: buildAddLinkTypeMutator({
           name: m.name as string,
           inverse: m.inverse as string | undefined,
-          inference: m.inference as { regex?: string; page_type?: string; target_type?: string } | undefined,
+          inference: m.inference as { regex?: string; page_type?: string; target_type?: string; markdown_links?: boolean } | undefined,
         }),
         auditContext: { type: m.name as string },
       };
