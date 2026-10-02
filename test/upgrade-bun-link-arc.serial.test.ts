@@ -370,6 +370,38 @@ describe('runUpgrade — bun-link arc (real git vs local bare origin; bun/gbrain
     expect(state.last_upgrade.to).toBe(SHIM_NEW_VERSION);
     expect(readFileSync(join(fx.home, '.gbrain', 'just-upgraded-from'), 'utf-8').trim()).toBe(VERSION);
   }, 120_000);
+
+  test('incoming release Bun floor above the host runtime refuses the swap (#5855)', async () => {
+    // The reported failure: 0.60.27.0 raised MINIMUM_BUN_VERSION to 1.4.0 on a
+    // Bun 1.3.14 host; the swap's `gbrain --version` verify passed BY DESIGN
+    // (--version is exempt so older gbrain can confirm swaps) and the daemon
+    // then relaunched into a binary that refused every command. The floor is
+    // now read from FETCH_HEAD's package.json BEFORE the merge: the swap must
+    // not happen, the run must exit nonzero (autopilot records the target in
+    // failed_versions instead of relaunching into it), and the skip is
+    // recorded for doctor's self_upgrade_health.
+    const fx = buildFixture('floor');
+    const ahead2 = join(fx.root, 'ahead2');
+    git(['clone', '-q', fx.origin, ahead2]);
+    writeFileSync(join(ahead2, 'package.json'), JSON.stringify({ name: 'gbrain', engines: { bun: '>=99.0.0' } }));
+    git(['add', '-A'], ahead2);
+    git([...GIT_IDENTITY, 'commit', '-q', '-m', 'c3 raise bun floor'], ahead2);
+    git(['push', '-q', 'origin', 'HEAD'], ahead2);
+
+    const run = await spawnWithShims(fx, [fx.driver]);
+
+    // Refusal: nonzero exit so `upgrade --swap-only` marks the target failed.
+    expect(run.code).toBe(1);
+    expect(run.err).toContain('requires Bun >=99.0.0');
+    expect(run.err).toContain('bun upgrade');
+    // No bytes swapped — clone HEAD untouched, `bun install` never ran.
+    expect(git(['rev-parse', 'HEAD'], fx.clone).trim()).toBe(fx.cloneHeadBefore);
+    expect(argvLines(fx).some((l) => l.startsWith('bun install'))).toBe(false);
+    // Recorded reason (upgrade-errors.jsonl is what doctor reads).
+    const errs = readFileSync(join(fx.home, '.gbrain', 'upgrade-errors.jsonl'), 'utf-8')
+      .trim().split('\n').map((l) => JSON.parse(l) as { phase?: string; hint?: string });
+    expect(errs.some((e) => e.phase === 'bun-floor' && (e.hint ?? '').includes('bun upgrade'))).toBe(true);
+  }, 120_000);
 });
 
 // ── 3. runPostUpgrade checkpoint (spawned — runApplyMigrations owns exit(0)) ──

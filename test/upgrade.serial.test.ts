@@ -412,7 +412,7 @@ describe('runUpgrade target verification (#4366)', () => {
     }
   }, 60_000);
 
-  test('bun-link: case-insensitive .git/config marker; git pull + bun install run at the repo root without a shell', async () => {
+  test('bun-link: case-insensitive .git/config marker; git fetch+merge --ff-only + bun install run at the repo root without a shell', async () => {
     // The checkout path carries shell metacharacters: a template-string
     // execSync would run the `touch`; execFileSync passes it through intact.
     const marker = `INJECTED-${process.pid}-${Date.now()}`;
@@ -430,8 +430,13 @@ describe('runUpgrade target verification (#4366)', () => {
       const root = join(home, repoDir);
       expect(stdout).toContain('Detected install method: bun-link');
       const calls = readFileSync(join(home, 'calls.log'), 'utf-8').trim().split('\n');
-      expect(calls[0]!.split('|')[1]).toBe(`-C ${root} pull --ff-only`);
-      expect(calls[1]).toBe(`${realpathSync(root)}|install`);
+      // #5855: fetch -> read the incoming tree's Bun floor -> ff-only merge.
+      // The shim records every git call; the floor read prints nothing, so a
+      // missing FETCH_HEAD:package.json fails open to the swap.
+      expect(calls[0]!.split('|')[1]).toBe(`-C ${root} fetch`);
+      expect(calls[1]!.split('|')[1]).toBe(`-C ${root} show FETCH_HEAD:package.json`);
+      expect(calls[2]!.split('|')[1]).toBe(`-C ${root} merge --ff-only FETCH_HEAD`);
+      expect(calls[3]).toBe(`${realpathSync(root)}|install`);
       for (const dir of [home, repoRoot, join(root, 'src')]) {
         expect(existsSync(join(dir, marker))).toBe(false);
       }

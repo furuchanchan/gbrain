@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.2] - 2026-09-25
+
+### Fixed
+
+- **Self-upgrade no longer installs a release the host Bun cannot run (#5855).** `gbrain upgrade` previously swapped first and verified with `gbrain --version` — which answers exit 0 by design on an unsupported Bun so older gbrain can confirm swaps — so a release that raised `engines.bun`/`MINIMUM_BUN_VERSION` past the host's runtime installed successfully, then refused every command (autopilot's silent channel relaunched into it once a minute for hours). The incoming release's declared `engines.bun` is now checked BEFORE any bytes are swapped: bun-link reads it from `FETCH_HEAD`'s `package.json` after `git fetch` (exact incoming tree; `git pull --ff-only` is now `fetch` + `merge --ff-only FETCH_HEAD`), and the `bun` global path fetches `package.json` for the target tag (or master) from the same raw.githubusercontent host `check-update` already trusts. An unmet floor refuses with a printed `bun upgrade` hint, records `phase: 'bun-floor'` in `~/.gbrain/upgrade-errors.jsonl` (doctor `self_upgrade_health`), and exits nonzero so autopilot marks the target in `failed_versions` instead of relaunching into it. All floor reads fail open — an unreadable floor never blocks a legitimate upgrade; binary (own runtime) and clawhub (no fetchable floor) paths are unchanged.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

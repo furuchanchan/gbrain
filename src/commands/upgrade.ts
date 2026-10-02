@@ -27,6 +27,99 @@ export function assessUpgradeOutcome(
   return semverGt(t, o) ? 'mismatch' : 'ok';
 }
 
+// ── Incoming-release Bun floor (#5855) ─────────────────────────────────────
+
+/**
+ * A self-upgrade must not install a release the running Bun cannot start
+ * (#5855): the swap smoke check runs `gbrain --version`, which BY DESIGN
+ * answers exit 0 on an unsupported runtime so an older gbrain can confirm
+ * the swap — so a release that raised `engines.bun` / `MINIMUM_BUN_VERSION`
+ * past the host's Bun passed verification and then refused every command
+ * (autopilot relaunched into it once a minute for hours). The floor is
+ * checked against the INCOMING package's declared `engines.bun` before any
+ * bytes are swapped.
+ *
+ * All reads fail open (return null): a floor that cannot be determined must
+ * never block a legitimate upgrade — the post-swap smoke check still guards.
+ */
+
+/** Parse a package.json body into its `engines.bun` range spec, or null. */
+export function bunFloorFromPackageJson(body: string): string | null {
+  try {
+    const spec = (JSON.parse(body) as { engines?: { bun?: unknown } }).engines?.bun;
+    return typeof spec === 'string' && spec.trim() ? spec.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `host` satisfies the incoming release's Bun floor. null / empty /
+ * unparseable specs fail open (true); `Bun.semver.satisfies` handles range
+ * forms (`>=1.4.0`, `1.4.0`, `>=1.4.0 <2`).
+ */
+export function bunFloorSatisfied(
+  spec: string | null,
+  host: string = typeof Bun === 'undefined' ? '' : Bun.version,
+): boolean {
+  if (!spec) return true;
+  try {
+    if (!/^\d+\.\d+\.\d+$/.test(host)) return true; // can't judge a non-Bun host
+    return Bun.semver.satisfies(host, spec);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * bun-link path: read the floor straight out of the fetched tree (exact —
+ * no registry guesswork). Requires `git fetch` to have already run.
+ */
+export function readBunFloorFromFetchedRef(repoRoot: string): string | null {
+  try {
+    const body = execFileSync('git', ['-C', repoRoot, 'show', 'FETCH_HEAD:package.json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+    return bunFloorFromPackageJson(body);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * bun global path: the release train's source of truth is raw.githubusercontent
+ * (same host `check-update.ts` reads VERSION from), so the incoming package's
+ * package.json is fetchable without installing it.
+ */
+export async function fetchBunFloorFromGitHub(targetVersion?: string): Promise<string | null> {
+  try {
+    const ref = targetVersion ? `v${targetVersion.replace(/^v/, '')}` : 'master';
+    const res = await fetch(`https://raw.githubusercontent.com/${GBRAIN_GITHUB_REPO}/${ref}/package.json`, {
+      headers: { 'user-agent': 'gbrain-self-upgrade' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    return bunFloorFromPackageJson(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+/** Shared refusal: report, record for doctor, and exit nonzero so the
+ * autopilot channel marks the target in `failed_versions` instead of
+ * relaunching a daemon into a binary that cannot run a single command. */
+function refuseForBunFloor(spec: string, host: string, target: string | undefined, oldVersion: string): void {
+  const found = host ? `Bun ${host}` : 'no Bun runtime';
+  console.error(`Upgrade skipped: the incoming release requires Bun ${spec}, but this host runs ${found}.`);
+  console.error('Run `bun upgrade` first, then re-run `gbrain upgrade`.');
+  recordUpgradeError({
+    phase: 'bun-floor',
+    fromVersion: oldVersion,
+    toVersion: target ?? 'latest',
+    error: `incoming release requires Bun ${spec}; host runs ${found}`,
+    hint: 'Run `bun upgrade`, then re-run `gbrain upgrade`.',
+  });
+  setCliExitVerdict(1);
+}
+
 export async function runUpgrade(args: string[], opts: { targetVersion?: string } = {}) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: gbrain upgrade [--swap-only] [--no-autopilot-install]\n\nSelf-update the CLI.\n\nDetects install method (bun, binary, clawhub) and runs the appropriate update.\nAfter upgrading, shows what\'s new and offers to set up new features.\n\n--no-autopilot-install  Skip autopilot installation and service rewrites, including package postinstall.\n                       Also supported as GBRAIN_NO_AUTOPILOT_INSTALL=1.\n--swap-only  Perform ONLY the binary/source swap and skip post-upgrade\n             (migrations run on the next launch). Used by the autopilot\n             silent self-upgrade channel so the daemon can swap + relaunch\n             without a 30-min blocking post-upgrade inside its tick.');
@@ -56,7 +149,15 @@ export async function runUpgrade(args: string[], opts: { targetVersion?: string 
       }
       console.log(`Upgrading bun-link source clone at ${linkInfo.repoRoot}...`);
       try {
-        execFileSync('git', ['-C', linkInfo.repoRoot, 'pull', '--ff-only'], { stdio: 'inherit', timeout: 120_000 });
+        execFileSync('git', ['-C', linkInfo.repoRoot, 'fetch'], { stdio: 'inherit', timeout: 120_000 });
+        // #5855: gate on the incoming tree's declared Bun floor BEFORE merging —
+        // a release the host Bun cannot start must be skipped, not installed.
+        const floor = readBunFloorFromFetchedRef(linkInfo.repoRoot);
+        if (!bunFloorSatisfied(floor)) {
+          refuseForBunFloor(floor!, Bun.version, opts.targetVersion, oldVersion);
+          break;
+        }
+        execFileSync('git', ['-C', linkInfo.repoRoot, 'merge', '--ff-only', 'FETCH_HEAD'], { stdio: 'inherit', timeout: 120_000 });
         execFileSync('bun', ['install'], { cwd: linkInfo.repoRoot, env: upgradeEnv, stdio: 'inherit', timeout: 120_000 });
         upgraded = true;
       } catch {
@@ -73,6 +174,13 @@ export async function runUpgrade(args: string[], opts: { targetVersion?: string 
       console.log('Upgrading via bun...');
       const bunGlobalRoot = resolveBunGlobalRoot();
       try {
+        // #5855: read the incoming package's declared Bun floor before
+        // installing it; unreadable floors fail open to the swap path.
+        const floor = await fetchBunFloorFromGitHub(opts.targetVersion);
+        if (!bunFloorSatisfied(floor)) {
+          refuseForBunFloor(floor!, Bun.version, opts.targetVersion, oldVersion);
+          break;
+        }
         execFileSync('bun', ['update', 'gbrain'], { cwd: bunGlobalRoot, env: upgradeEnv, stdio: 'inherit', timeout: 120_000 });
         upgraded = true;
       } catch {
