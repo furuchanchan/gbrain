@@ -192,6 +192,14 @@ export type ProposeTakesExtractor = (input: {
   /** #4494: escalated cap for the one truncation retry (default
    *  PROPOSE_TAKES_RETRY_MAX_TOKENS; clamped to >= maxTokens). */
   retryMaxTokens?: number;
+  /** #5874: per-call wall-clock bound in ms (default: the maxTokens-scaled
+   *  extractorCallTimeoutMs). Configurable via
+   *  dream.propose_takes.call_timeout_ms — a claude-cli call pays cold start
+   *  on top of model time, so an Opus-class model on a 100 KB+ page needs
+   *  more than the 90s base. The gateway's own chat timeout
+   *  (GBRAIN_AI_CHAT_TIMEOUT_MS, 300s default) still composes whichever
+   *  fires first — raise that too when lifting past it. */
+  callTimeoutMs?: number;
   /** #5425: include EXTRACT_TAKES_ATTRIBUTION_RULES (opt-in). */
   attributionRules?: boolean;
 }) => Promise<ProposedTake[]>;
@@ -385,7 +393,12 @@ export const PROPOSE_TAKES_RETRY_MAX_TOKENS = 4096;
  * 90s per PROPOSE_TAKES_MAX_TOKENS of output, floored at 90s, capped at
  * EXTRACTOR_CALL_TIMEOUT_MAX_MS.
  */
-function extractorCallTimeoutMs(maxTokens: number): number {
+function extractorCallTimeoutMs(maxTokens: number, callTimeoutMs?: number): number {
+  // #5874: an explicit per-call bound (dream.propose_takes.call_timeout_ms)
+  // wins over the scaled default — the operator knows their provider route.
+  if (callTimeoutMs != null && Number.isFinite(callTimeoutMs) && callTimeoutMs > 0) {
+    return Math.floor(callTimeoutMs);
+  }
   const scaled = Math.ceil((EXTRACTOR_CALL_TIMEOUT_MS * maxTokens) / PROPOSE_TAKES_MAX_TOKENS);
   return Math.min(EXTRACTOR_CALL_TIMEOUT_MAX_MS, Math.max(EXTRACTOR_CALL_TIMEOUT_MS, scaled));
 }
@@ -439,7 +452,7 @@ export async function defaultExtractor(
     messages: [{ role: 'user', content: prompt }],
     ...(input.modelHint ? { model: input.modelHint } : {}),
     maxTokens,
-    abortSignal: AbortSignal.timeout(extractorCallTimeoutMs(maxTokens)),
+    abortSignal: AbortSignal.timeout(extractorCallTimeoutMs(maxTokens, input.callTimeoutMs)),
   });
   let result = await call(baseMaxTokens);
 
@@ -632,6 +645,39 @@ export const MIN_PROPOSE_TAKES_BUDGET_MS = 2 * 60 * 1000;
  * means "not worth starting" (caller returns an honest skip). Pure —
  * unit-testable without an engine.
  */
+/**
+ * #4494: configurable extractor output caps (dream.triage.max_tokens
+ * precedent — floor 256, retry clamped >= base, fail-open to the #3763
+ * defaults on any config-plane error). Thinking models spend reasoning
+ * tokens inside maxTokens, so the hardcoded 2048/4096 pair put dense
+ * pages into a permanent truncate → retry → truncate → re-bill loop.
+ * #5874: dream.propose_takes.call_timeout_ms adds the per-call wall-clock
+ * bound — a non-finite or non-positive value falls back to the scaled
+ * default rather than erroring the phase.
+ */
+async function resolveExtractorCaps(
+  engine: BrainEngine,
+): Promise<{ maxTokens: number; retryMaxTokens: number; callTimeoutMs?: number }> {
+  let maxTokens = PROPOSE_TAKES_MAX_TOKENS;
+  let retryMaxTokens = PROPOSE_TAKES_RETRY_MAX_TOKENS;
+  let callTimeoutMs: number | undefined;
+  try {
+    const readCap = async (key: string): Promise<number | null> => {
+      const raw = await engine.getConfig?.(key);
+      if (raw == null || String(raw).trim() === '') return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+    const baseCap = await readCap('dream.propose_takes.max_tokens');
+    if (baseCap != null) maxTokens = Math.max(256, Math.floor(baseCap));
+    const retryCap = await readCap('dream.propose_takes.retry_max_tokens');
+    if (retryCap != null) retryMaxTokens = Math.floor(retryCap);
+    const callCap = await readCap('dream.propose_takes.call_timeout_ms');
+    if (callCap != null && callCap > 0) callTimeoutMs = Math.floor(callCap);
+  } catch { /* keep defaults */ }
+  return { maxTokens, retryMaxTokens: Math.max(maxTokens, retryMaxTokens), callTimeoutMs };
+}
+
 export function resolveProposeTakesDeadlineMs(
   deadlineAtMs: number | null | undefined,
   nowMs: number,
@@ -720,26 +766,9 @@ class ProposeTakesPhase extends BaseCyclePhase {
 
     const modelId = opts.model ?? getChatModel();
 
-    // #4494: configurable extractor output caps (dream.triage.max_tokens
-    // precedent — floor 256, retry clamped >= base, fail-open to the #3763
-    // defaults on any config-plane error). Thinking models spend reasoning
-    // tokens inside maxTokens, so the hardcoded 2048/4096 pair put dense
-    // pages into a permanent truncate → retry → truncate → re-bill loop.
-    let extractorMaxTokens = PROPOSE_TAKES_MAX_TOKENS;
-    let extractorRetryMaxTokens = PROPOSE_TAKES_RETRY_MAX_TOKENS;
-    try {
-      const readCap = async (key: string): Promise<number | null> => {
-        const raw = await engine.getConfig?.(key);
-        if (raw == null || String(raw).trim() === '') return null;
-        const n = Number(raw);
-        return Number.isFinite(n) ? n : null;
-      };
-      const baseCap = await readCap('dream.propose_takes.max_tokens');
-      if (baseCap != null) extractorMaxTokens = Math.max(256, Math.floor(baseCap));
-      const retryCap = await readCap('dream.propose_takes.retry_max_tokens');
-      if (retryCap != null) extractorRetryMaxTokens = Math.floor(retryCap);
-    } catch { /* keep defaults */ }
-    extractorRetryMaxTokens = Math.max(extractorMaxTokens, extractorRetryMaxTokens);
+    // #4494 + #5874: configurable extractor caps — see resolveExtractorCaps.
+    const { maxTokens: extractorMaxTokens, retryMaxTokens: extractorRetryMaxTokens, callTimeoutMs: extractorCallTimeoutOverride } =
+      await resolveExtractorCaps(engine);
 
     // With the default (gateway) extractor, skip cheaply when the resolved
     // model's provider can't run — same probe semantics as patterns.ts /
@@ -907,6 +936,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
           // #4494: configurable output caps (see resolution above).
           maxTokens: extractorMaxTokens,
           retryMaxTokens: extractorRetryMaxTokens,
+          callTimeoutMs: extractorCallTimeoutOverride,
           attributionRules,
         });
       } catch (err) {

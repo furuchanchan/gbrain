@@ -124,6 +124,7 @@ The release also absorbs 62 open community pull requests, each re-checked agains
 - **#5341** `check-backlinks fix` managed-worktree refusal.
 - **#5330** shared conversation-facts eligibility (`isConversationFactsEligiblePage` and its SQL twin in `src/core/facts/conversation-types.ts`).
 - **#5329** `chronicle_backfill` idempotency keys and paging, no schema change. The issue's other parts (a cadence gate, extraction idempotency for direct `chronicle_extract` runs, the no-sub-events page, the judge output cap) remain open.
+- **#5874** `dream.propose_takes.call_timeout_ms` config key bounds each extractor call (replacing the 90s-scaled default when set); the gateway's own `GBRAIN_AI_CHAT_TIMEOUT_MS` still composes.
 
 #### Memory capture (#5888, #5887)
 
