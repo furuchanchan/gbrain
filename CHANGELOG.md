@@ -124,6 +124,7 @@ The release also absorbs 62 open community pull requests, each re-checked agains
 - **#5341** `check-backlinks fix` managed-worktree refusal.
 - **#5330** shared conversation-facts eligibility (`isConversationFactsEligiblePage` and its SQL twin in `src/core/facts/conversation-types.ts`).
 - **#5329** `chronicle_backfill` idempotency keys and paging, no schema change. The issue's other parts (a cadence gate, extraction idempotency for direct `chronicle_extract` runs, the no-sub-events page, the judge output cap) remain open.
+- **#5626** `gbrain lint` emits `unknown-type` for an explicit frontmatter `type:` outside the active schema pack's declared vocabulary (previously invisible until `schema unify-types`).
 
 #### Memory capture (#5888, #5887)
 

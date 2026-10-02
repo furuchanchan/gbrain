@@ -93,6 +93,15 @@ export interface LintContentOpts {
     /** #4702: built-in junk-pattern names to skip (see content-sanity.ts). */
     disabled_patterns?: string[];
   };
+  /**
+   * #5626: the active schema pack's declared page-type vocabulary. When
+   * present, an explicit frontmatter `type:` outside the set emits an
+   * `unknown-type` finding — the same drift `gbrain schema stats`
+   * reports, caught at lint time instead of at the next unify pass.
+   * Inferred (non-explicit) types are never flagged. Omitted for
+   * engine-less callers, where no pack can be resolved.
+   */
+  allowedTypes?: ReadonlySet<string>;
 }
 
 export function lintContent(content: string, filePath: string, opts: LintContentOpts = {}): LintIssue[] {
@@ -115,6 +124,20 @@ export function lintContent(content: string, filePath: string, opts: LintContent
       rule: FRONTMATTER_RULE_NAMES[err.code],
       message: err.message,
       fixable: FRONTMATTER_FIXABLE.has(err.code),
+    });
+  }
+
+  // Rule: explicit frontmatter type outside the active pack's
+  // vocabulary (#5626). `typeExplicit` gates this to frontmatter-
+  // declared types only — a path-inferred or defaulted type is the
+  // resolver's guess, not the page author's declaration, and flagging it
+  // would double-report `missing-type`-adjacent pages. Unfixable:
+  // healing is `schema unify-types`, not a lint --fix rewrite.
+  if (opts.allowedTypes && parsed.typeExplicit && !opts.allowedTypes.has(parsed.type)) {
+    issues.push({
+      file: filePath, line: 1, rule: 'unknown-type',
+      message: `type '${parsed.type}' is not declared in the active schema pack`,
+      fixable: false,
     });
   }
 
@@ -432,6 +455,48 @@ async function resolveLintContentSanity(
 }
 
 /**
+ * #5626: resolve the active schema pack's declared page-type names for
+ * the unknown-type rule. Mirrors resolveLintContentSanity's engine
+ * posture exactly — reuse a live caller engine, or open one only when
+ * file/env config says a database exists, and never block lint on a
+ * pack that cannot be resolved (undefined = rule off).
+ */
+async function resolveLintAllowedTypes(
+  sharedEngine?: BrainEngine,
+): Promise<ReadonlySet<string> | undefined> {
+  const packTypes = (pack: { manifest: { page_types: Array<{ name: string }> } } | null) =>
+    pack ? new Set(pack.manifest.page_types.map((t) => t.name)) : undefined;
+  if (sharedEngine) {
+    try {
+      const { loadActivePackForLocalEngine } = await import('../core/schema-pack/best-effort.ts');
+      return packTypes(await loadActivePackForLocalEngine(sharedEngine));
+    } catch {
+      return undefined;
+    }
+  }
+  const base = loadConfig();
+  if (!(base?.database_url || base?.database_path)) return undefined;
+  try {
+    const { createEngine } = await import('../core/engine-factory.ts');
+    const engine = await createEngine({
+      engine: base!.engine,
+      database_url: base!.database_url,
+      database_path: base!.database_path,
+    });
+    try {
+      await engine.connect({});
+      const { loadActivePackForLocalEngine } = await import('../core/schema-pack/best-effort.ts');
+      return packTypes(await loadActivePackForLocalEngine(engine));
+    } finally {
+      await engine.disconnect().catch(() => { /* best-effort cleanup */ });
+    }
+  } catch {
+    // Engine unreachable or failed mid-probe — lint never blocks on it.
+    return undefined;
+  }
+}
+
+/**
  * Directories never containing knowledge pages, skipped by default.
  * Deliberately tiny: only vendored dependency trees qualify. Anything
  * more opinionated (README.md, CHANGELOG.md, test/) is repo policy —
@@ -469,6 +534,9 @@ export interface LintOpts {
    *  `runLintCore` resolves via the file/env/DB chain. Tests inject
    *  this directly to bypass the FS + engine layers. */
   contentSanity?: LintContentOpts['contentSanity'];
+  /** #5626: optional pre-resolved pack type vocabulary (tests inject
+   *  this directly; resolved from the active pack when omitted). */
+  allowedTypes?: ReadonlySet<string>;
   /** issue #1678: a live, already-connected engine to REUSE for the
    *  content-sanity DB-plane config lift. Callers with a shared engine (the
    *  cycle lint phase, Minion lint handlers) MUST pass it so lint doesn't
@@ -548,7 +616,8 @@ export async function runLintCore(opts: LintOpts): Promise<LintResult> {
   // config when reachable). Caller can pre-pass via opts.contentSanity
   // (tests, Minion handler) to bypass the engine probe entirely.
   const contentSanity = opts.contentSanity ?? await resolveLintContentSanity(opts.engine);
-  const lintOpts: LintContentOpts = { contentSanity };
+  const allowedTypes = opts.allowedTypes ?? await resolveLintAllowedTypes(opts.engine);
+  const lintOpts: LintContentOpts = { contentSanity, allowedTypes };
 
   // Durability-hardened brains (`gbrain sources harden`) promise every write
   // is committed AND pushed. An uncommitted lint repair would otherwise sit
