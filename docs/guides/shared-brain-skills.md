@@ -410,6 +410,7 @@ rather than assuming it shares a `connect` installation's receipt path.
 | `requirements_changed` / `approval_required` | Have the owner review the changed disclosure, tools, source, or follow policy. Do not self-grant permissions. |
 | `revision_conflict` / `local_conflict` | Preserve both edits and inspect current revisions/ownership receipts before retrying. |
 | `restart_required` | Restart the harness and record actual new-conversation evidence. Files alone do not clear this check. |
+| `membership_inactive` | The recorded enrollment epoch was superseded — the same principal was re-enrolled (a `join_brain` narrows the follow policy and bumps the epoch) or the membership was left. For a `bootstrap harness`-managed installation run `gbrain bootstrap harness --refresh-skills`, which re-joins under the recorded credentials so the receipt and native router adopt the current epoch; `--status` flags a stale epoch. For a `connect` installation, re-run its documented install under the same credentials. |
 | `left_with_retained_files` | Preserve the reported edits, disable native cached instructions through the harness controls, and restart. |
 
 `leave_brain` stops this principal's membership. The managed adapter's leave

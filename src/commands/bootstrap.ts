@@ -78,6 +78,7 @@ import {
   ensureHarnessHome,
   harnessDetectDeps,
   parseHarnessArgs,
+  refreshHarnessSharedSkills,
   removeHarness,
   statusHarness,
   type HarnessDeps,
@@ -137,13 +138,19 @@ Subcommands (run \`gbrain bootstrap status\` first — it is the resume entrypoi
   attach [--harness H]            Machine two: adopt a cloned agent workspace.
   harness [--harness claude-code|codex|opencode|all] [--url U | --port N] [--source ID]
           [--token-name NAME | --token TOK] [--name MCPNAME] [--project DIR]...
-          [--no-hooks] [--no-capture] [--force] [--status] [--remove] [--yes] [--json]
+          [--no-hooks] [--no-capture] [--force] [--status] [--refresh-skills] [--remove] [--yes] [--json]
                                   Wire framework-spawned Claude Code / Codex / opencode
                                   sessions to a RUNNING \`gbrain serve --http\` on this box
                                   (#4043): scoped bearer token, user-scope MCP + headless
                                   pre-approval, lifecycle hooks (user scope, or per --project
                                   dir), codex config block, opencode config entry. No
                                   agent.json needed. Idempotent; --remove tears it down.
+                                  --refresh-skills re-joins each live shared-skills
+                                  enrollment under its recorded credentials so a
+                                  superseded enrollment epoch (membership_inactive)
+                                  is adopted by the receipt and native router — the
+                                  documented repair for a stale bootstrap-managed
+                                  router. Mints no token, wires no target.
                                   --source ID: the source the hooks + token bind to
                                   (default: sources.default, else the sole populated
                                   non-default source, else default).
@@ -1746,6 +1753,11 @@ async function runHarness(rest: string[], home: string, runner: ExecRunner, dete
   return withLock(home, async () => {
     if (flags.remove) {
       const code = await removeHarness(flags, deps);
+      abortIfInjected('harness');
+      return code;
+    }
+    if (flags.refreshSkills) {
+      const code = await refreshHarnessSharedSkills(flags, deps);
       abortIfInjected('harness');
       return code;
     }

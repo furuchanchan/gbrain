@@ -154,6 +154,10 @@ export interface HarnessFlags {
   force: boolean;
   remove: boolean;
   status: boolean;
+  /** `--refresh-skills`: re-join each live shared-skills enrollment under the
+   * installation's recorded credentials so the adapter receipt + native
+   * router adopt the server's current enrollment epoch. */
+  refreshSkills: boolean;
   yes: boolean;
   json: boolean;
   gbrainBin?: string;
@@ -173,6 +177,7 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
     force: false,
     remove: false,
     status: false,
+    refreshSkills: false,
     yes: false,
     json: false,
   };
@@ -251,6 +256,7 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
   out.force = rest.includes('--force');
   out.remove = rest.includes('--remove');
   out.status = rest.includes('--status');
+  out.refreshSkills = rest.includes('--refresh-skills');
   out.yes = rest.includes('--yes');
   out.json = rest.includes('--json');
   const bin = value('--gbrain-bin');
@@ -261,6 +267,9 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
   }
   if (out.status && out.remove) {
     out.error = out.error ?? 'pass --status OR --remove, not both';
+  }
+  if (out.refreshSkills && (out.status || out.remove)) {
+    out.error = out.error ?? 'pass --refresh-skills alone (not with --status or --remove)';
   }
   // --user-hooks and --local are accepted, documented no-ops (script clarity).
   // Unknown/typo'd flags never reach this parser through the CLI: cli.ts
@@ -309,6 +318,9 @@ export interface HarnessDeps {
   }) => Promise<MintedLegacyToken>;
   installSharedSkills?: (credentials: HarnessCredentials, options: SharedSkillsConnectionOptions) => Promise<{
     status: string; reason?: string; retained_files?: string[]; next_action?: string; remote_membership_pending?: boolean;
+    /** Server-side enrollment epoch after a join, or the epoch a probe found
+     * current. `receipt_epoch` is the epoch recorded on the local receipt. */
+    enrollment_epoch?: number; receipt_epoch?: number;
   }>;
   nativeSkillsDir?: (host: HarnessTarget['host']) => string | undefined;
   revokeById?: (id: string) => Promise<boolean>;
@@ -1904,6 +1916,9 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
         });
         entry.status = result.status;
         entry.reason = result.reason ? redactToken(result.reason, hostToken) : undefined;
+        // The server epoch the join left on the receipt — --status reports a
+        // stale router when a later re-enrollment moves past it.
+        if (typeof result.enrollment_epoch === 'number') entry.server_epoch = result.enrollment_epoch;
         skillsReady = skillsReady && ['restart_required', 'advisory_refresh'].includes(result.status);
         d.log(redactToken(`shared skills (${host}): ${result.status}; native activation unverified. ${result.next_action ?? 'Keep using memory; verify the follow grant and server support if enrollment is pending.'}`, hostToken));
       } catch {
@@ -2447,6 +2462,27 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
     });
   const instructionsOk = instructionsProbes.every((p) => p.probe === 'installed');
 
+  // Enrollment-epoch liveness: the adapter receipt's epoch can drift stale
+  // when the same principal is re-enrolled over MCP (a join narrows the
+  // follow policy and bumps the server epoch). The read-only `probe` lane
+  // syncs the recorded epoch — a superseded epoch is refused before any
+  // batch is issued, so a stale installation is detected with no server
+  // side effect; anything else degrades to `unverified`.
+  const epochProbes = new Map<NonNullable<HarnessReceipt['shared_skills']>[number], { recorded?: number; server?: number; stale: boolean }>();
+  for (const entry of receipt.shared_skills ?? []) {
+    const info: { recorded?: number; server?: number; stale: boolean } = { stale: false };
+    info.recorded = readAdapterEpoch(entry.root);
+    epochProbes.set(entry, info);
+    if (entry.status.startsWith('left')) continue;
+    try {
+      const credentials = readCredentials(join(entry.root, 'credentials.json'));
+      if (credentials.mcp_url !== entry.url) throw new Error('credential endpoint mismatch');
+      const probe = await d.installSharedSkills(credentials, { harness: entry.host, root: entry.root, name: entry.name, probe: true });
+      if (probe.status === 'current') info.server = probe.enrollment_epoch;
+      else if (probe.status === 'superseded') info.stale = true;
+    } catch { /* degrade — the server epoch stays unverified */ }
+  }
+
   if (flags.json) {
     d.log(
       JSON.stringify(
@@ -2462,7 +2498,11 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
           token_verified: tokenVerified,
           harness_tokens: harnessTokenStatus,
           skills_policy: receipt.skills_policy ?? 'memory-only',
-          shared_skills: receipt.shared_skills ?? [],
+          shared_skills: (receipt.shared_skills ?? []).map((entry) => {
+            const info = epochProbes.get(entry);
+            return { ...entry, enrollment_epoch: info?.recorded ?? null, enrollment_stale: info?.stale ?? false,
+              enrollment_server_epoch: info?.server ?? null };
+          }),
           degraded_per_turn: degraded,
           targets: liveTargets,
           ...(instructionsProbes.length > 0 ? { instructions_blocks: instructionsProbes } : {}),
@@ -2477,7 +2517,12 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
     d.log(serveLine);
     d.log(tokenLine);
     for (const entry of receipt.shared_skills ?? []) {
-      d.log(`  shared skills (${entry.host}): ${entry.status}${entry.reason ? ` — ${entry.reason}` : ''}; receipt evidence only, native activation unverified.`);
+      const info = epochProbes.get(entry);
+      const epochNote = info?.stale
+        ? `; enrollment epoch STALE (recorded ${info.recorded ?? '?'} superseded on the server) — run \`gbrain bootstrap harness --refresh-skills\``
+        : info?.server !== undefined ? `; enrollment epoch ${info.server} current`
+          : info?.recorded !== undefined ? `; enrollment epoch ${info.recorded} (server epoch unverified)` : '';
+      d.log(`  shared skills (${entry.host}): ${entry.status}${entry.reason ? ` — ${entry.reason}` : ''}${epochNote}; receipt evidence only, native activation unverified.`);
       if (entry.retained_files?.length) d.log(`    edited files retained: ${entry.retained_files.join(', ')}`);
     }
     for (const t of liveTargets) {
@@ -2521,6 +2566,81 @@ export async function statusHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
   return health.ok && tokenVerified !== false && allTargetsConfirmed && rotationConverged && !removalPending && instructionsOk
     ? 0
     : 1;
+}
+
+/** The enrollment epoch on the adapter's local receipt — absent when the
+ * receipt is missing or unreadable; never guessed. */
+function readAdapterEpoch(root: string): number | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, 'shared-skills', 'receipt.json'), 'utf8'));
+    return typeof parsed.enrollment_epoch === 'number' ? parsed.enrollment_epoch : undefined;
+  } catch { return undefined; }
+}
+
+/** `--refresh-skills`: re-join each live shared-skills enrollment under the
+ * installation's RECORDED credentials so the adapter receipt and native
+ * router adopt the server's current enrollment epoch — the repair for a
+ * `membership_inactive` router (the epoch drifts when the same principal is
+ * re-enrolled over MCP). Mints no token and wires no target; a re-apply's
+ * minted lane stays the rotation path. */
+export async function refreshHarnessSharedSkills(_flags: HarnessFlags, rawDeps: HarnessDeps): Promise<number> {
+  const d = resolveDeps(rawDeps);
+  const state = readHarnessReceiptState(d.gbrainHome);
+  if (state.state !== 'ok') {
+    if (state.state === 'absent') {
+      d.log('no harness install on this machine (no harness receipt).');
+      return 0;
+    }
+    d.logError(`harness receipt unreadable (${state.state}) — see ${harnessReceiptPath(d.gbrainHome)}`);
+    return 1;
+  }
+  const receipt = state.receipt;
+  const entries = (receipt.shared_skills ?? []).filter((entry) => !entry.status.startsWith('left'));
+  if (entries.length === 0) {
+    d.log('no live shared-skills enrollments to refresh.');
+    return 0;
+  }
+  const save = () => writeHarnessReceipt(d.gbrainHome, receipt);
+  let ok = true;
+  for (const entry of entries) {
+    let credentials: HarnessCredentials;
+    try {
+      credentials = readCredentials(join(entry.root, 'credentials.json'));
+      if (credentials.mcp_url !== entry.url) throw new Error('credential endpoint mismatch');
+    } catch {
+      entry.reason = 'credentials_unavailable';
+      ok = false;
+      d.logError(`shared skills (${entry.host}): cleanup credential unreadable — re-enroll with \`gbrain bootstrap harness\`.`);
+      save();
+      continue;
+    }
+    const before = readAdapterEpoch(entry.root);
+    try {
+      // A plain join IS the refresh: join_brain returns the server's current
+      // epoch (narrowing an active membership or re-enrolling a superseded
+      // one), and the adapter stamps it on the receipt + router.
+      const result = await d.installSharedSkills(credentials, {
+        harness: entry.host, root: entry.root, name: entry.name, nativeSkillsDir: d.nativeSkillsDir(entry.host),
+      });
+      entry.status = result.status;
+      entry.reason = result.reason;
+      if (typeof result.enrollment_epoch === 'number') entry.server_epoch = result.enrollment_epoch;
+      if (before !== undefined && result.enrollment_epoch !== undefined && result.enrollment_epoch !== before) {
+        d.log(`shared skills (${entry.host}): enrollment epoch ${before} → ${result.enrollment_epoch} (was superseded; receipt and router refreshed).`);
+      } else {
+        d.log(`shared skills (${entry.host}): ${result.status}${result.enrollment_epoch !== undefined ? ` — enrollment epoch ${result.enrollment_epoch} current` : ''}.`);
+      }
+      ok = ok && ['restart_required', 'advisory_refresh'].includes(result.status);
+      save();
+    } catch {
+      entry.status = 'pending';
+      entry.reason = 'shared_skills_unavailable';
+      ok = false;
+      d.logError(`shared skills (${entry.host}): refresh failed — memory remains independent. Verify the follow grant and shared-skills server support, then retry.`);
+      save();
+    }
+  }
+  return ok ? 0 : 1;
 }
 
 // ── Home preflight ──────────────────────────────────────────────────────────

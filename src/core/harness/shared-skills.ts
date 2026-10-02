@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createSharedSkillsAdapter, type SharedSkillsToolCaller } from '../shared-skills/adapter.ts';
 import { credentialAccessToken, type HarnessCredentials } from './credentials.ts';
 import { extractResultText } from '../connect-probe.ts';
@@ -14,6 +14,10 @@ export interface SharedSkillsConnectionOptions {
   launcher?: string;
   name?: string;
   remove?: boolean;
+  /** Read-only liveness check: sync the recorded enrollment epoch against the
+   * server and report whether it is still current. Nothing is installed,
+   * left, or written; the epoch join/refresh path is the repair. */
+  probe?: boolean;
   sharedSkills?: HarnessCredentials['shared_skills'];
   toolCaller?: SharedSkillsToolCaller;
   nativeSkillsDir?: string;
@@ -25,6 +29,9 @@ export async function installSharedSkillsConnection(credentials: HarnessCredenti
   const deactivating = options.remove || policy?.follow === false && existsSync(join(options.root, 'shared-skills', 'receipt.json'));
   if (!policy?.follow && !deactivating) return { status: 'pending', reason: policy?.follow === false ? 'memory_only' : 'follow_approval_required',
     native: 'unverified', next_action: 'Keep using memory. To follow shared skills, approve the follow policy and ask the host for skills_member_self and enrollment operation access.' };
+  if (options.probe && !existsSync(join(options.root, 'shared-skills', 'receipt.json'))) {
+    return { status: 'pending', reason: 'no_receipt', native: 'unverified', next_action: 'No shared-skills enrollment receipt exists in this installation.' };
+  }
   let client: Client | undefined;
   try {
     let call = options.toolCaller;
@@ -45,6 +52,30 @@ export async function installSharedSkillsConnection(credentials: HarnessCredenti
         if (result.isError || data.error) throw new OperationError(typeof data.error === 'string' ? data.error : 'shared_skills_unavailable', 'The shared-skills operation was refused. Memory remains independently available.');
         return data as T;
       };
+    }
+    if (options.probe) {
+      // A sync with the recorded epoch is the membership read: the server
+      // refuses a superseded epoch before issuing a batch, so a stale
+      // installation is reported without side effects. A current epoch
+      // returns a fresh catalog view the way the router's own sync does.
+      let receipt: { installation_id?: string; enrollment_epoch?: number };
+      try { receipt = JSON.parse(readFileSync(join(options.root, 'shared-skills', 'receipt.json'), 'utf8')); }
+      catch { return { status: 'pending', reason: 'receipt_unreadable', native: 'unverified' }; }
+      if (!receipt.installation_id || typeof receipt.enrollment_epoch !== 'number') {
+        return { status: 'pending', reason: 'receipt_unreadable', native: 'unverified' };
+      }
+      try {
+        const snapshot = await call<{ enrollment_epoch?: number }>('sync_brain_skills', {
+          installation_id: receipt.installation_id, enrollment_epoch: receipt.enrollment_epoch,
+        });
+        return { status: 'current', native: 'unverified', enrollment_epoch: snapshot.enrollment_epoch ?? receipt.enrollment_epoch, receipt_epoch: receipt.enrollment_epoch };
+      } catch (error) {
+        if ((error as { code?: string }).code === 'membership_inactive') {
+          return { status: 'superseded', reason: 'membership_inactive', native: 'unverified', receipt_epoch: receipt.enrollment_epoch,
+            next_action: 'The recorded enrollment epoch was superseded on the server; run `gbrain bootstrap harness --refresh-skills` to adopt the current epoch.' };
+        }
+        throw error;
+      }
     }
     const nativeSkillsDir = options.nativeSkillsDir ?? nativeSharedSkillsDirectory(options.harness) ?? undefined;
     const adapter = createSharedSkillsAdapter({ call, root: join(options.root, 'shared-skills'), adapter: options.harness, launcher: options.launcher, connectionName: options.name,

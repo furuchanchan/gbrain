@@ -264,9 +264,21 @@ export function createSharedSkillsAdapter(options: SharedSkillsAdapterOptions) {
         receipt.remote_membership_pending = false;
         delete receipt.remote_membership_reason;
       } catch (error) {
-        receipt.remote_membership_pending = true;
-        receipt.remote_membership_reason = error instanceof OperationError ? error.code : 'remote_unavailable';
-        receipt.next_action += ' Remote membership deactivation is pending; retry leave when the host can acknowledge it.';
+        const code = error instanceof OperationError ? error.code : 'remote_unavailable';
+        // A superseded epoch means this installation's enrollment is already
+        // gone server-side — the membership was left or re-enrolled by another
+        // call, so there is nothing to deactivate. Treating it as complete
+        // lets a harness rotation converge instead of retrying a refusal
+        // forever; the reason is kept so status surfaces can say WHY.
+        if (code === 'membership_inactive') {
+          receipt.remote_membership_pending = false;
+          receipt.remote_membership_reason = 'superseded';
+          receipt.next_action += ' Remote enrollment was already superseded; no server-side deactivation was needed.';
+        } else {
+          receipt.remote_membership_pending = true;
+          receipt.remote_membership_reason = code;
+          receipt.next_action += ' Remote membership deactivation is pending; retry leave when the host can acknowledge it.';
+        }
       }
       save(receipt);
       return receipt;

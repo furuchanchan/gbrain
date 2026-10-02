@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- `gbrain bootstrap harness`: a bootstrap-managed router keeps a shared-skills enrollment epoch that a later re-enrollment supersedes — the membership then refused every sync and leave with `membership_inactive`, so a harness re-apply never converged and `--status` reported nothing wrong. New `gbrain bootstrap harness --refresh-skills` re-joins each recorded enrollment under its recorded credentials so the adapter receipt and router adopt the server's current epoch; `--status` now probes each live enrollment and reports a superseded epoch as `STALE` (JSON: `enrollment_stale`, `enrollment_epoch`, `enrollment_server_epoch`); and the adapter leave treats `membership_inactive` as already-completed remote cleanup instead of a forever-pending deactivation, letting a re-apply converge. (#5878)
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

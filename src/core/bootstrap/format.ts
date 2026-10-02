@@ -279,6 +279,10 @@ export interface HarnessReceipt {
     status: string;
     reason?: string;
     retained_files?: string[];
+    /** Server-side enrollment epoch observed at the last join/refresh —
+     * compared against the adapter receipt's epoch to flag a superseded
+     * router. */
+    server_epoch?: number;
   }>;
   token: {
     name: string;
