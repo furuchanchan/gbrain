@@ -201,6 +201,11 @@ function loopView(l: OpenLoopRow, trusted: boolean, deepLinks: Map<string, strin
   return base;
 }
 
+/** Internal fetch bound for open_loops (#5871 — was 500; a brain past it silently ranked a subset). */
+const OPEN_LOOPS_FETCH_CAP = 5000;
+/** Per-group render cap for the text digest — the rest folds into "… and N more". */
+const GROUP_TEXT_LOOP_CAP = 10;
+
 interface CounterpartyGroup {
   counterparty: string;
   counterparty_slug: string | null;
@@ -230,19 +235,21 @@ function rankGroups(groups: CounterpartyGroup[], backlinks: Map<string, number>)
   return [...groups].sort((a, b) => score(b) - score(a) || a.counterparty.localeCompare(b.counterparty));
 }
 
-function renderText(groups: CounterpartyGroup[], stale: boolean, noGoogleSources: boolean,
+function renderText(groups: CounterpartyGroup[], unassigned: CounterpartyGroup | null,
+  stale: boolean, noGoogleSources: boolean,
   coverage: { completeness: 'complete' | 'partial'; held: HeldItemView[] } = { completeness: 'complete', held: [] }): string {
   const lines: string[] = [];
   const { held } = coverage;
   if (stale) lines.push('⚠ google sources have not synced recently — this may be out of date.');
   const partial = coverage.completeness === 'partial';
   const what = held.length ? `${held.length} held item(s) could not be imported:` : 'the held-item state could not be read.';
-  if (partial && groups.length === 0) {
+  const nothing = groups.length === 0 && !unassigned;
+  if (partial && nothing) {
     lines.push(`No open loops found, but coverage is partial: ${what}`, ...partialLines(held));
     return lines.join('\n');
   }
   if (partial) lines.push(`⚠ Coverage is partial: ${what}`, ...partialLines(held), '');
-  if (groups.length === 0) {
+  if (nothing) {
     if (noGoogleSources) {
       // Trust-critical copy: on a brain whose email arrives some other way
       // (a gateway, an agent-authored collector), "You are clean" would be a
@@ -257,10 +264,11 @@ function renderText(groups: CounterpartyGroup[], stale: boolean, noGoogleSources
     lines.push('No open loops — no unanswered threads older than 24h and no tracked promises. You are clean.');
     return lines.join('\n');
   }
-  lines.push(`${groups.length} ${groups.length === 1 ? 'person is' : 'people are'} waiting on you:`);
-  for (const g of groups) {
-    lines.push('', `## ${g.counterparty} (${g.loop_count} open)`);
-    for (const l of g.loops) {
+  const renderGroup = (g: CounterpartyGroup, heading: string): void => {
+    lines.push('', `${heading} (${g.loop_count} open)`);
+    // #5871: cap the digest per group — the full set stays in the JSON
+    // groups; an unbounded render once produced a 327 KB envelope.
+    for (const l of g.loops.slice(0, GROUP_TEXT_LOOP_CAP)) {
       const due = l.due_at ? ` — due ${l.due_at.slice(0, 10)}` : '';
       // Age renders at READ time from last_activity_at — stored summaries
       // deliberately carry no age (it would freeze at detection time).
@@ -270,7 +278,15 @@ function renderText(groups: CounterpartyGroup[], stale: boolean, noGoogleSources
       if (l.quote) lines.push(`  > "${l.quote}"`);
       if (l.deep_link) lines.push(`  ${l.deep_link}`);
     }
+    if (g.loops.length > GROUP_TEXT_LOOP_CAP) {
+      lines.push(`- … and ${g.loops.length - GROUP_TEXT_LOOP_CAP} more`);
+    }
+  };
+  if (groups.length > 0) {
+    lines.push(`${groups.length} ${groups.length === 1 ? 'person is' : 'people are'} waiting on you:`);
+    for (const g of groups) renderGroup(g, `## ${g.counterparty}`);
   }
+  if (unassigned) renderGroup(unassigned, '## Unassigned — no counterparty');
   return lines.join('\n');
 }
 
@@ -290,7 +306,7 @@ const open_loops: Operation = {
     status: { type: 'string', enum: ['open', 'done', 'dropped', 'stale'], description: "Default 'open'." },
     loop_type: { type: 'string', enum: ['commitment_owed_by_me', 'commitment_owed_to_me', 'unanswered_inbound', 'unanswered_outbound', 'decision_pending'], description: 'Filter to one loop type.' },
     counterparty: { type: 'string', description: 'Filter to one counterparty (slug or email).' },
-    limit: { type: 'number', description: 'Grouped: max groups (default 3). Flat: max loops (default 50). The internal fetch is capped at 500 rows; `truncated: true` marks a hit.' },
+    limit: { type: 'number', description: 'Grouped: max groups (default 3). Flat: max loops (default 50). The internal fetch is capped at 5,000 rows; `truncated: true` marks a hit.' },
     include_context: { type: 'boolean', description: 'Attach the counterparty entity card per group (trusted local only). Default true.' },
     source_id: { type: 'string', description: "Scope to one source (e.g. the google source, when the caller's transport is bound elsewhere). Remote callers must hold a grant covering it." },
     all_sources: { type: 'boolean', description: 'Trusted local: span every source in the brain. Remote callers stay inside their grant.' },
@@ -345,14 +361,14 @@ const open_loops: Operation = {
       status,
       ...(p.loop_type ? { loopType: p.loop_type as LoopType } : {}),
       ...(p.counterparty ? { counterparty: p.counterparty as string } : {}),
-      limit: 500,
+      limit: OPEN_LOOPS_FETCH_CAP,
     });
     const freshness = await googleSourceFreshness(ctx, scope);
     const noGoogleSources = freshness.sources.length === 0;
     const coverage = await heldCoverage(ctx, freshness.sources, trusted);
     const deepLinks = trusted ? await deepLinksFor(ctx, loops) : new Map<string, string>();
 
-    const truncated = loops.length >= 500;
+    const truncated = loops.length >= OPEN_LOOPS_FETCH_CAP;
     if (groupBy === 'none') {
       const limit = Math.min(Math.max((p.limit as number | undefined) ?? 50, 1), 500);
       return {
@@ -390,6 +406,13 @@ const open_loops: Operation = {
       if (l.due_at && (!g.nearest_due_at || l.due_at < g.nearest_due_at)) g.nearest_due_at = l.due_at;
       g.loops.push(loopView(l, trusted, deepLinks));
     }
+    // #5871: a counterparty-less bucket is not a person — it outranked every
+    // real counterparty on raw loop count (decision_pending loops never
+    // carry a counterparty, so they all pile into 'unknown'). It reports
+    // separately as `unassigned` and never enters the people ranking.
+    const unassigned = byKey.get('unknown') ?? null;
+    byKey.delete('unknown');
+    if (unassigned) unassigned.counterparty = 'unassigned';
 
     const backlinks = new Map<string, number>();
     try {
@@ -438,6 +461,7 @@ const open_loops: Operation = {
 
     return {
       groups,
+      unassigned,
       count: loops.length,
       truncated,
       stale: freshness.stale,
@@ -446,7 +470,7 @@ const open_loops: Operation = {
       held: coverage.held,
       no_google_sources: noGoogleSources,
       redacted: !trusted,
-      ...(trusted ? { text: renderText(groups, freshness.stale, noGoogleSources, coverage) } : {}),
+      ...(trusted ? { text: renderText(groups, unassigned, freshness.stale, noGoogleSources, coverage) } : {}),
     };
   },
 };
