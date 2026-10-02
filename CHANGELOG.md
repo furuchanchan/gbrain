@@ -10,6 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+- **doctor `backup_coverage`** — the warn message now names every non-recoverable asset by its actual state (`no_remote`/`unpushed`/`dirty`/`failing`/`unknown`, or `unverified:<state>` for an ok-looking repo whose remote evidence is not `verified`), on both the local and aggregate surfaces. Previously the message only enumerated `no_remote` assets, so a warn caused by dirty or `not_a_git_repo` assets rendered "0 knowledge asset(s) have no git remote: ." and named none of the real causes (#5505).
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

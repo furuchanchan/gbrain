@@ -151,7 +151,7 @@ describe('checkBackupCoverage — localOnly (trusted, probes run)', () => {
     expect(check.status).toBe('warn');
     expect(check.message).toContain('gbrain backup status');
     expect(check.message).toContain('src-a');
-    expect(check.message).toContain('no git remote');
+    expect(check.message).toContain('src-a (no_remote)');
 
     const details = check.details as { totals: BackupStatus['totals']; computed_by: string };
     expect(details.totals.no_remote).toBe(1);

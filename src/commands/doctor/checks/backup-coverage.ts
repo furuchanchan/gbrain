@@ -17,7 +17,24 @@ import {
   type BackupStatus,
 } from '../../../core/backup/status-file.ts';
 
-function toCheck(s: BackupStatus, now?: number): Check {
+// #5505: warn can come from ANY non-recoverable state — no_remote, unpushed,
+// dirty, failing, unknown, or a verified-looking repo whose remote check is
+// stale/unavailable (`repos.length > recoverable`). Naming only `no_remote`
+// assets printed "0 asset(s) have no git remote: <empty>" in exactly the
+// common case the warn exists for.
+function warnAssets(s: BackupStatus): Array<{ id: string; state: string }> {
+  const repoKind = (k: string) => k === 'source_repo' || k === 'bootstrap_workspace';
+  return s.assets
+    .filter((a) =>
+      (a.state !== 'ok' && a.state !== 'info') ||
+      (repoKind(a.kind) && a.state === 'ok' && a.verification?.state !== 'verified'))
+    .map((a) => ({
+      id: a.id,
+      state: a.state === 'ok' ? `unverified:${a.verification?.state ?? 'none'}` : a.state,
+    }));
+}
+
+export function toCheck(s: BackupStatus, now?: number): Check {
   const details = {
     totals: s.totals,
     checked_at: s.checked_at,
@@ -27,15 +44,15 @@ function toCheck(s: BackupStatus, now?: number): Check {
     degraded: s.degraded === true,
   };
   if (s.overall === 'warn') {
-    const ids = s.assets
-      .filter((a) => a.state === 'no_remote')
-      .map((a) => a.id)
-      .join(', ');
+    const bad = warnAssets(s);
+    const list = bad.length
+      ? bad.map((a) => `${a.id} (${a.state})`).join(', ')
+      : 'none listed';
     return {
       name: 'backup_coverage',
       status: 'warn',
       message:
-        `${s.totals.no_remote} knowledge asset(s) have no git remote: ${ids}. Current recovery is not verified for all repositories. ` +
+        `${bad.length} of ${s.totals.assets} knowledge asset(s) are not recoverable: ${list}. Current recovery is not verified for all repositories. ` +
         'Run `gbrain backup status` for fix commands (`gbrain bootstrap repo` / `git remote add origin <url>` / `gbrain sources harden <id>`).',
       details,
     };
@@ -86,7 +103,7 @@ export async function checkBackupCoverage(
           name: 'backup_coverage',
           status: 'warn',
           message:
-            `${cached.totals.no_remote} of ${cached.totals.assets} knowledge asset(s) have no git remote; current recovery is not verified for all repositories — ` +
+            `${warnAssets(cached).length} of ${cached.totals.assets} knowledge asset(s) are not recoverable; current recovery is not verified for all repositories — ` +
             'run `gbrain backup status` on the brain host for the per-asset detail and fix commands.',
           details,
         }
