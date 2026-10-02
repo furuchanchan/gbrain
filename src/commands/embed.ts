@@ -35,6 +35,7 @@ import {
 } from '../core/pace-mode.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
 import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
+import { createHash } from 'node:crypto';
 import { AITransientError } from '../core/ai/errors.ts';
 import { resolveEmbedConcurrency } from '../core/embed-concurrency.ts';
 export { resolveEmbedConcurrency, _resetEmbedConcurrencyClampWarningForTest } from '../core/embed-concurrency.ts';
@@ -451,7 +452,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
     for (const s of opts.slugs) {
       if (isAborted(opts.signal)) break; // #1737: stop the per-slug loop on abort
       try {
-        await embedPage(engine, s, !!opts.dryRun, result, opts.sourceId, opts.signal, opts.quiet);
+        await embedPage(engine, s, !!opts.dryRun, result, opts.sourceId, opts.signal, opts.quiet, { signature: currentEmbeddingSignature() ?? undefined, includeNullSignature: opts.includeNullSignature });
       } catch (e: unknown) {
         if (isAborted(opts.signal)) break; // shutdown, not a failure
         // #3037: a page-level error (not found, DB write) must not exit 0.
@@ -781,7 +782,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
     return result;
   }
   if (opts.slug) {
-    await embedPage(engine, opts.slug, !!opts.dryRun, result, opts.sourceId, opts.signal, opts.quiet);
+    await embedPage(engine, opts.slug, !!opts.dryRun, result, opts.sourceId, opts.signal, opts.quiet, { signature: currentEmbeddingSignature() ?? undefined, includeNullSignature: opts.includeNullSignature });
     return result;
   }
   throw new Error('No embed target specified. Pass { slug }, { slugs }, { all }, or { stale }.');
@@ -926,7 +927,7 @@ export async function runEmbed(engine: BrainEngine, args: string[], selectedConf
 
   let opts: EmbedOpts;
   if (slugsIdx >= 0) {
-    opts = { slugs: args.slice(slugsIdx + 1).filter(a => !a.startsWith('--')), dryRun, sourceId, batchSize, priority, catchUp };
+    opts = { slugs: args.slice(slugsIdx + 1).filter(a => !a.startsWith('--')), dryRun, sourceId, batchSize, priority, catchUp, ...(includeNullSignature && { includeNullSignature: true }) };
   } else if (all || stale) {
     // E-2: CLI-only single-flight for stale runs (the minion path locks itself).
     opts = { all, stale, dryRun, sourceId, batchSize, priority, catchUp, ...(pace && { pace }), ...(stale && { singleFlight: true }), ...(includeNullSignature && { includeNullSignature: true }) };
@@ -936,7 +937,7 @@ export async function runEmbed(engine: BrainEngine, args: string[], selectedConf
       serr('Usage: gbrain embed [<slug>|--all|--stale|--slugs s1 s2 ...] [--dry-run] [--batch-size N] [--priority recent] [--catch-up] [--include-null-signature] | --stale --images');
       process.exit(1);
     }
-    opts = { slug, dryRun, sourceId, batchSize, priority, catchUp };
+    opts = { slug, dryRun, sourceId, batchSize, priority, catchUp, ...(includeNullSignature && { includeNullSignature: true }) };
   }
 
   // CLI path: wire a reporter so --progress-json / --quiet / TTY rendering
@@ -999,6 +1000,7 @@ async function embedPage(
   sourceId?: string,
   signal?: AbortSignal,
   quiet?: boolean,
+  signatureOpts?: { signature?: string; includeNullSignature?: boolean },
 ) {
   const opts = sourceId ? { sourceId } : undefined;
   const initial = await engine.readPageSnapshot(slug, opts);
@@ -1066,7 +1068,23 @@ async function embedPage(
   // keying on embedded_at alone silently no-ops ("all chunks already
   // embedded") on a rebuild-darkened page. Older callers that selected chunks
   // without the boolean fall back to embedded_at.
-  const toEmbed = chunks.filter(c => !c.embedded_at || c.embedding_is_null === true);
+  // #5527: an explicit slug must see the same staleness the --stale sweep
+  // does — a vector whose stored hash no longer matches its text, or a page
+  // whose embedding_signature drifted (or, under --include-null-signature,
+  // was never stamped). The page signature is not part of the snapshot page
+  // row, so it is read directly; one tiny query per explicit embed.
+  const signature = signatureOpts?.signature;
+  let pageSignatureStale = false;
+  if (signature && chunks.length > 0) {
+    const [sigRow] = await engine.executeRaw<{ embedding_signature: string | null }>(
+      'SELECT embedding_signature FROM pages WHERE id=$1', [page.id]);
+    const pageSig = sigRow?.embedding_signature ?? null;
+    pageSignatureStale = pageSig !== null
+      ? pageSig !== signature
+      : signatureOpts?.includeNullSignature === true;
+  }
+  const toEmbed = pageSignatureStale ? chunks : chunks.filter(c => !c.embedded_at || c.embedding_is_null === true
+    || (c.embedded_text_hash != null && c.embedded_text_hash !== createHash('md5').update(c.chunk_text).digest('hex')));
   result.total_chunks += chunks.length;
   result.skipped += chunks.length - toEmbed.length;
 

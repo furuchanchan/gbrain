@@ -677,6 +677,13 @@ export interface Chunk {
    * (getChunks).
    */
   embedding_is_null?: boolean;
+  /**
+   * md5(chunk_text) stamped at embed time (pre-v133 rows carry NULL). Selected
+   * by `getChunks`; a present-but-mismatched value means the stored vector
+   * describes a previous text revision (#4246). `embed <slug>` reads it to
+   * honor content drift the same way `--stale` does.
+   */
+  embedded_text_hash?: string | null;
 }
 
 /**
