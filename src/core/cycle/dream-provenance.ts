@@ -9,13 +9,13 @@ import { throwIfAborted } from '../abort-check.ts';
  */
 export async function stampDreamProvenance(
   engine: BrainEngine,
-  refs: Array<{ slug: string; source_id: string; raw_source?: string; first_write_at?: Date }>,
+  refs: Array<{ slug: string; source_id: string; raw_source?: string; raw_trace_exempt_reason?: string; first_write_at?: Date }>,
   cycleDate: string,
   signal?: AbortSignal,
 ): Promise<void> {
   if (refs.length === 0) return;
   const { executeRawJsonb } = await import('../sql-query.ts');
-  for (const { slug, source_id, raw_source, first_write_at } of refs) {
+  for (const { slug, source_id, raw_source, raw_trace_exempt_reason, first_write_at } of refs) {
     // #4077: per-row abort check — the per-row try below is only for stamp
     // failures and must not swallow the cancellation unwind.
     throwIfAborted(signal, '[dream] synthesize provenance');
@@ -45,6 +45,9 @@ export async function stampDreamProvenance(
         [{
           dream_generated: true,
           ...(raw_source ? { raw_source } : {}),
+          ...(raw_trace_exempt_reason
+            ? { raw_trace_exempt: true, raw_trace_exempt_reason }
+            : {}),
         }],
       );
     } catch (e) {

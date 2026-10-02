@@ -616,12 +616,20 @@ When done, briefly list the pattern slugs you wrote/updated in your final messag
  * dream_generated identity stamp every dream_generated consumer reads, through
  * the managed maintenance write on a managed brain, before the reverse-write.
  */
+// #5884: a pattern page's raw material is the in-brain reflection corpus —
+// there is no single source document to name in raw_source, and the model's
+// per-pattern citation set isn't recoverable, so the honest stamp is the
+// same explicit exemption the cycle-summary page carries (#1978).
+const PATTERNS_RAW_TRACE_EXEMPT_REASON =
+  'derived from the reflection corpus; raw traces live on the cited reflection pages';
+
 async function stampPatternOutputs(engine: BrainEngine, maintenance: MaintenanceAuthority | null,
   refs: Array<{ slug: string; source_id: string }>, cycleDate: string, signal?: AbortSignal): Promise<void> {
-  if (!maintenance) return stampDreamProvenance(engine, refs, cycleDate, signal);
+  if (!maintenance) return stampDreamProvenance(engine,
+    refs.map(r => ({ ...r, raw_trace_exempt_reason: PATTERNS_RAW_TRACE_EXEMPT_REASON })), cycleDate, signal);
   for (const ref of refs) {
     throwIfAborted(signal, '[dream] patterns provenance');
-    await stampMaintenancePage(engine, maintenance, ref.slug, cycleDate);
+    await stampMaintenancePage(engine, maintenance, ref.slug, cycleDate, undefined, PATTERNS_RAW_TRACE_EXEMPT_REASON);
   }
 }
 
@@ -750,4 +758,5 @@ export const __testing = {
   gatherReflections,
   collectChildPutPageSlugs,
   reverseWriteRefs,
+  stampPatternOutputs,
 };
