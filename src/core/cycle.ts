@@ -1381,6 +1381,21 @@ async function runPhaseExtract(
     } catch (e) {
       staleDetails = { stale_drain_error: e instanceof Error ? e.message : String(e) };
     }
+    // #5876: the auto_chronicle sweep — the cycle is the surviving durable
+    // trigger for chronicle_extract enqueue (see chronicle/sweep.ts).
+    let chronicleDetails: Record<string, unknown> = {};
+    try {
+      const { sweepChronicleCandidates } = await import('./chronicle/sweep.ts');
+      const sweep = await sweepChronicleCandidates(engine, { sourceId });
+      chronicleDetails = {
+        chronicle_scanned: sweep.scanned,
+        chronicle_enqueued: sweep.enqueued,
+        ...(sweep.skipped ? { chronicle_skipped: sweep.skipped } : {}),
+        ...(sweep.errors > 0 ? { chronicle_errors: sweep.errors } : {}),
+      };
+    } catch (e) {
+      chronicleDetails = { chronicle_sweep_error: e instanceof Error ? e.message : String(e) };
+    }
     return {
       phase: 'extract',
       status: 'ok',
@@ -1394,6 +1409,7 @@ async function runPhaseExtract(
         incremental,
         ...(incremental ? { slugs_targeted: changedSlugs.length } : {}),
         ...staleDetails,
+        ...chronicleDetails,
         ...(staleRemaining !== undefined && staleRemaining > 0 ? { stale_backlog: true } : {}),
       },
     };

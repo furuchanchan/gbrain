@@ -41,11 +41,17 @@ export const collectChronicle: AdvisorCollector = {
       );
       const gap = Number(rows[0]?.n ?? 0);
       if (gap > 0) {
+        const { isAutoChronicleEnabled } = await import('../chronicle/config.ts');
+        const autoOn = await isAutoChronicleEnabled(ctx.engine).catch(() => false);
         findings.push({
           id: 'chronicle_coverage_gap',
           severity: 'info',
           title: `${gap} recent meeting(s) aren't in the timeline yet`,
-          detail: 'Sweep them into events with `gbrain chronicle-backfill`, or enable auto_chronicle.',
+          // #5876: don't advise enabling a knob that's already on — with
+          // auto_chronicle on, the extract-phase sweep drains the gap itself.
+          detail: autoOn
+            ? 'auto_chronicle is on — the cycle sweep will pick these up, or run `gbrain chronicle-backfill` now.'
+            : 'Sweep them into events with `gbrain chronicle-backfill`, or enable auto_chronicle.',
           fix: { command_argv: ['gbrain', 'chronicle-backfill'] },
           collector: 'chronicle',
           ask_user: true,

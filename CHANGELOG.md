@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.31.2] - 2026-10-02
+
+### Fixed
+
+- `auto_chronicle` enqueues `chronicle_extract` jobs again. Since v0.51.0.0 the setting did nothing — the put_page backstop lost its caller and no replacement was wired — so turning it on silently changed nothing. The cycle's extract phase now sweeps eligible meeting/conversation/calendar pages changed since the last pass and enqueues one job per page (idempotency-keyed per revision, capped per type per cycle, skipped with a named reason when the setting is off or no chat provider is configured). The advisor's chronicle coverage-gap finding no longer tells you to enable the setting when it's already on. (#5876)
+
+## [0.60.31.2] - 2026-10-02
+
+### Fixed
+
+- `auto_chronicle` enqueues `chronicle_extract` jobs again. Since v0.51.0.0 the setting did nothing — the put_page backstop lost its caller and no replacement was wired — so turning it on silently changed nothing. The cycle's extract phase now sweeps eligible meeting/conversation/calendar pages changed since the last pass and enqueues one job per page (idempotency-keyed per revision, capped per type per cycle, skipped with a named reason when the setting is off or no chat provider is configured). The advisor's chronicle coverage-gap finding no longer tells you to enable the setting when it's already on. (#5876)
+
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
