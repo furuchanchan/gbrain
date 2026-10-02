@@ -65,4 +65,14 @@ describe('autopilot auto-drain wiring', () => {
     expect(drainBlock.slice(0, 900)).not.toContain('maxWaiting');
     expect(SRC).toContain('WHERE idempotency_key = $1 LIMIT 1');
   });
+
+  test('issue #5856: gates on the SAME owner predicate the session enforces', () => {
+    // Without the gate a source with a root but no canonical owner on this
+    // host (connector sources, foreign-owned bindings) is submitted daily and
+    // dead-letters on owner_unavailable. Dispatch must consult the shared
+    // managedAtomOwnerGate — not a divergent re-check.
+    expect(DISPATCH_SRC).toContain('managedAtomOwnerGate');
+    expect(DISPATCH_SRC).toContain('managedPersistenceEnabled');
+    expect(DISPATCH_SRC).toContain('gate.blocked');
+  });
 });

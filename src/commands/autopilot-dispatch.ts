@@ -416,6 +416,9 @@ async function dispatchAutoDrain(
 
           if (submittedToday < maxJobsToday) {
             const { countExtractAtomsBacklog } = await import('../core/cycle/extract-atoms.ts');
+            const { managedAtomOwnerGate } = await import('../core/persistence/atom-maintenance.ts');
+            const { managedPersistenceEnabled } = await import('../core/persistence/ownership.ts');
+            const managedPersistence = await managedPersistenceEnabled(engine);
             const sources = await loadAllSources(engine);
             for (const src of sources) {
               if (submittedToday >= maxJobsToday) break; // brain-wide daily cap (fairness)
@@ -428,6 +431,22 @@ async function dispatchAutoDrain(
                   (jsonMode ? JSON.stringify({ event: 'freshness_source_path_skipped', source_id: src.id, reason: skipWarn }) : skipWarn) + '\n',
                 );
                 continue;
+              }
+              // #5856: a source that can never run a managed atom session
+              // (root configured but no canonical owner on this host — e.g.
+              // Google connector sources, or a binding owned by another host)
+              // must not be submitted: the handler throws owner_unavailable
+              // and the job retries + dead-letters once a day forever. Gate
+              // on the SAME predicate the session enforces.
+              if (managedPersistence) {
+                const gate = await managedAtomOwnerGate(engine, { id: src.id, local_path: src.local_path });
+                if (gate.blocked) {
+                  const note = `auto-drain skipped ${src.id}: no canonical atom owner on this host (${gate.blocked})`;
+                  process.stderr.write(
+                    (jsonMode ? JSON.stringify({ event: 'auto_drain_source_skipped', source_id: src.id, reason: gate.blocked }) : note) + '\n',
+                  );
+                  continue;
+                }
               }
               const backlog = await countExtractAtomsBacklog(engine, src.id);
               if (backlog === null || backlog <= threshold) continue;

@@ -48,6 +48,38 @@ export interface AtomIntent extends Record<string, unknown> {
   expectedCheckpoint?: unknown;
 }
 
+export interface AtomOwnerGate {
+  writeThrough: boolean;
+  root: string | null;
+  binding: WorktreeBinding | null;
+  /**
+   * Why a managed atom session would refuse this source, or null when it can
+   * proceed (#5856). 'no_binding' = root configured but nothing claims it;
+   * 'owner_unavailable' = the canonical owner is another host, inactive, or
+   * has no local path on this host. Evaluated by BOTH the session itself and
+   * the autopilot auto-drain, so a source that deterministically cannot run
+   * is skipped at dispatch instead of dead-lettering one job per day.
+   */
+  blocked: 'no_binding' | 'owner_unavailable' | null;
+}
+
+/**
+ * Single source of truth for the canonical-owner precondition of a managed
+ * atom session: write-through + a configured root require an active binding
+ * owned by THIS host; write-through off or no root runs database-only.
+ */
+export async function managedAtomOwnerGate(engine: BrainEngine, source: { id: string; local_path: string | null }): Promise<AtomOwnerGate> {
+  const root = source.local_path || (source.id === 'default' ? await engine.getConfig('sync.repo_path') : null);
+  const writeThrough = !/^(false|0|off|no)$/i.test(await engine.getConfig('sync.write_through') ?? 'true');
+  if (!writeThrough || !root) return { writeThrough, root, binding: null, blocked: null };
+  const binding = await getWorktreeBinding(engine, source.id);
+  if (!binding) return { writeThrough, root, binding: null, blocked: 'no_binding' };
+  if (binding.owner_host_id !== localHostId() || binding.state !== 'active' || !binding.local_path) {
+    return { writeThrough, root, binding, blocked: 'owner_unavailable' };
+  }
+  return { writeThrough, root, binding, blocked: null };
+}
+
 export async function managedAtomSession(engine: BrainEngine, sourceId: string, retry?: { requestId: string; retryId: string }): Promise<ManagedAtomSession | null> {
   if (!(await managedPersistenceEnabled(engine))) return null;
   assertPersistenceAccepting(engine);
@@ -65,11 +97,10 @@ export async function managedAtomSession(engine: BrainEngine, sourceId: string, 
     throw new OperationError('permission_denied', 'Atom maintenance requires a source-wide grant.');
   }
   await authorizeWrite(engine, authority, 'put_page', 'atoms/preflight');
-  const binding = await getWorktreeBinding(engine, sourceId);
-  const root = source.local_path || (sourceId === 'default' ? await engine.getConfig('sync.repo_path') : null);
-  const writeThrough = !/^(false|0|off|no)$/i.test(await engine.getConfig('sync.write_through') ?? 'true');
-  if (writeThrough && root && !binding) throw new OperationError('owner_unavailable', 'Atom maintenance requires the configured canonical owner.');
-  if (writeThrough && binding && (binding.owner_host_id !== localHostId() || binding.state !== 'active' || !binding.local_path)) {
+  const gate = await managedAtomOwnerGate(engine, { id: sourceId, local_path: source.local_path });
+  const { writeThrough, binding } = gate;
+  if (gate.blocked === 'no_binding') throw new OperationError('owner_unavailable', 'Atom maintenance requires the configured canonical owner.');
+  if (gate.blocked === 'owner_unavailable') {
     throw new OperationError('owner_unavailable', 'The canonical atom owner is unavailable; no extraction was started.');
   }
   if (writeThrough && binding) {

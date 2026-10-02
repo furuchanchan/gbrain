@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.3] - 2026-09-25
+
+### Fixed
+
+- **Autopilot auto-drain no longer submits extract-atoms-drain jobs that can only dead-letter (#5856).** On a managed brain, `dispatchAutoDrain` considered every source with a `local_path` — including Google connector sources and bindings owned by another host — but `managedAtomSession` requires a canonical worktree owner on THIS host when write-through is on and a root is configured, so each submitted job threw `owner_unavailable`, retried, and dead-lettered (one per source per day, forever). The owner precondition is now a single shared predicate, `managedAtomOwnerGate`, extracted from `managedAtomSession` and consulted by dispatch before submitting: blocked sources are skipped with a stderr note (`auto_drain_source_skipped`) instead of consuming retries. The session's throw semantics and messages are unchanged; unmanaged brains still submit as before.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**
