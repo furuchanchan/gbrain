@@ -57,8 +57,13 @@ import { ensureWellFormed } from '../text-safe.ts';
 // module (the only known caller is the test suite).
 // ---------------------------------------------------------------------------
 
-import { BudgetExhausted, BudgetTracker } from '../budget/budget-tracker.ts';
-import { withBudgetTracker } from '../ai/gateway.ts';
+import {
+  BudgetExhausted,
+  BudgetTracker,
+  isModelPriceable,
+  loadPricingOverrides,
+} from '../budget/budget-tracker.ts';
+import { withBudgetTracker, getChatModel } from '../ai/gateway.ts';
 import {
   computeRunId,
   loadCheckpoint,
@@ -161,6 +166,11 @@ export interface BrainstormOptions {
    * a hard limit).
    */
   maxCostUsd?: number;
+  /**
+   * `--max-cost off` — run uncapped even when the resolved chat model is
+   * priceable. Mirrors `enrich --max-usd off`.
+   */
+  maxCostOff?: boolean;
   /**
    * Hard cap on the domain-bank far set. Default 50. Threaded into
    * `fetchFar` to prevent the "2K prefix" explosion on large brains.
@@ -570,17 +580,49 @@ async function runBrainstormImpl(
   // estimated call leaks past the ceiling (TX1). BudgetExhausted is NOT
   // SQLSTATE 57014, so the outer classifyBrainstormError lets it pass
   // through with its original shape (which the CLI formatter renders).
+  // #5873: a USD cap can only bound priced calls — a defaulted cap on an
+  // unpriced chat route (a claude-cli:* subscription recipe) hard-fails the
+  // first reserve with no_pricing and aborts work that would be free.
+  // Following the defaulted-cap rule (embed-backfill, extract_atoms, #5823):
+  // the implicit $5 installs only when the resolved chat model is priceable;
+  // an explicit --max-cost keeps enforcement (the first reserve fails loudly
+  // naming pricing.overrides); --max-cost off opts out entirely. The model
+  // the run actually pays through is the gateway's resolved chat model
+  // (models.chat / models.tier.reasoning / file chat_model already folded at
+  // boot), not the orchestrator's file-only pin.
+  const pricingOverrides = await loadPricingOverrides(engine);
+  let chatModel: string;
+  try {
+    chatModel = opts.modelOverride ?? getChatModel();
+  } catch {
+    chatModel = config.chat_model ?? 'anthropic:claude-sonnet-4-6';
+  }
+  const priceable = isModelPriceable(chatModel, 'chat', pricingOverrides);
+  const capUsd = opts.maxCostOff
+    ? undefined
+    : opts.maxCostUsd ?? (priceable ? 5 : undefined);
+  const stderrWrite = opts.stderrWrite ?? ((s: string) => process.stderr.write(s));
+  if (capUsd === undefined && !opts.maxCostOff) {
+    stderrWrite(
+      `[${opts.profile?.label ?? 'brainstorm'}] chat model "${chatModel}" has no pricing entry; ` +
+        `running without the default $5 cost cap. Declare a rate via ` +
+        `\`gbrain config set pricing.overrides '{"${chatModel}": <usd-per-1M-tokens>}'\` ` +
+        `or pass --max-cost to fail closed.\n`,
+    );
+  }
   const _runTracker = new BudgetTracker({
     label: `brainstorm.${opts.profile?.label ?? 'brainstorm'}`,
-    maxCostUsd: opts.maxCostUsd ?? 5,
+    maxCostUsd: capUsd,
+    pricingOverrides,
   });
-  return withBudgetTracker(_runTracker, () => _runBrainstormInner(engine, config, opts));
+  return withBudgetTracker(_runTracker, () => _runBrainstormInner(engine, config, opts, capUsd));
 }
 
 async function _runBrainstormInner(
   engine: BrainEngine,
   config: BrainstormRunConfig,
   opts: BrainstormOptions,
+  runCapUsd?: number,
 ): Promise<BrainstormResult> {
   const profile = opts.profile ?? BRAINSTORM_PROFILE;
   const stderr = opts.stderrWrite ?? ((s: string) => { process.stderr.write(s); });
@@ -606,8 +648,8 @@ async function _runBrainstormInner(
   // the wild on a 13K-page brain) because `m_far` got blown out by
   // un-capped prefix sampling. We refuse to start if the *estimate alone*
   // already exceeds the user's ceiling.
-  const maxCostUsd = opts.maxCostUsd ?? 5;
-  if (estimate > maxCostUsd) {
+  const maxCostUsd = runCapUsd;
+  if (maxCostUsd !== undefined && estimate > maxCostUsd) {
     throw new BudgetExhausted(
       `${profile.label}: estimated cost ${fmtUsd(estimate)} exceeds --max-cost ${fmtUsd(maxCostUsd)}. ` +
       `Lower --limit, raise --max-cost, or pass --max-far-set <n> to cap the domain bank.`,
@@ -814,7 +856,7 @@ async function _runBrainstormInner(
       const runningUsd =
         (totalUsage.input_tokens / 1_000_000) * runningPricing.input +
         (totalUsage.output_tokens / 1_000_000) * runningPricing.output;
-      if (runningUsd > maxCostUsd) {
+      if (maxCostUsd !== undefined && runningUsd > maxCostUsd) {
         throw new BudgetExhausted(
           `${profile.label}: running cost ${fmtUsd(runningUsd)} exceeded --max-cost ${fmtUsd(maxCostUsd)} mid-run; aborting remaining crosses`,
           { reason: 'cost', spent: runningUsd, cap: maxCostUsd },

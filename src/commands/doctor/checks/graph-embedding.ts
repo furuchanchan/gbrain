@@ -180,6 +180,41 @@ export async function checkBrainstormHealth(engine: BrainEngine): Promise<Check>
     // Config read miss is benign; default-on applies.
   }
 
+  // (#5873) Resolved chat model unpriceable — brainstorm/lsd run uncapped
+  // by default (the default $5 cap can't engage), and an explicit --max-cost
+  // fails no_pricing before any call. Name the pricing.overrides remedy.
+  try {
+    const { isModelPriceable, loadPricingOverrides } = await import('../../../core/budget/budget-tracker.ts');
+    const overrides = await loadPricingOverrides(engine);
+    // The model a run actually pays through is the gateway's resolved
+    // chat model (models.chat / models.tier.* / file pin already folded at
+    // boot); fall back to re-resolving when the gateway isn't configured.
+    let model: string;
+    try {
+      const { getChatModel } = await import('../../../core/ai/gateway.ts');
+      model = getChatModel();
+    } catch {
+      const { resolveModel } = await import('../../../core/model-config.ts');
+      model = await resolveModel(engine, {
+        configKey: 'models.chat',
+        tier: 'reasoning',
+        fallback: loadConfigFileOnly()?.chat_model ?? 'anthropic:claude-sonnet-4-6',
+      });
+    }
+    if (!isModelPriceable(model, 'chat', overrides)) {
+      return {
+        name: 'brainstorm_health',
+        status: 'warn',
+        message:
+          `Resolved chat model "${model}" has no pricing entry — brainstorm/lsd run without the default ` +
+          `cost cap, and explicit --max-cost fails no_pricing. Fix: \`gbrain config set ` +
+          `pricing.overrides '{"${model}": <usd-per-1M-tokens>}'\` or choose a priced model.`,
+      };
+    }
+  } catch {
+    // Best-effort: a config/DB hiccup must never break doctor.
+  }
+
   // (3) Calibration cold-start — empty active_bias_tags.
   try {
     const calibRows = await engine.executeRaw<{ active_bias_tags: string[] | null }>(

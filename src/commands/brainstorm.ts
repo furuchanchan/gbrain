@@ -37,6 +37,8 @@ export interface BrainstormCliArgs {
   limit?: number;
   /** Cost ceiling in USD; aborts pre-run if estimate exceeds. Default $5. */
   maxCost?: number;
+  /** `--max-cost off` — run uncapped (mirrors `enrich --max-usd off`). */
+  maxCostOff?: boolean;
   /** Hard cap on far-set prefix sampling. Default 50. */
   maxFarSet?: number;
   /** When true, abort mid-run if running spend exceeds 5× estimate. */
@@ -81,12 +83,16 @@ export function parseBrainstormArgs(args: string[]): BrainstormCliArgs {
       out.limit = n;
     } else if (arg === '--max-cost') {
       const v = args[++i];
-      const n = v ? parseFloat(v) : NaN;
-      if (!Number.isFinite(n) || n <= 0) {
-        out.error = `--max-cost requires a positive number in USD (got ${v})`;
-        return out;
+      if (v === 'off' || v === 'none' || v === 'unlimited') {
+        out.maxCostOff = true;
+      } else {
+        const n = v ? parseFloat(v) : NaN;
+        if (!Number.isFinite(n) || n <= 0) {
+          out.error = `--max-cost requires a positive number in USD (got ${v})`;
+          return out;
+        }
+        out.maxCost = n;
       }
-      out.maxCost = n;
     } else if (arg === '--max-far-set') {
       const v = args[++i];
       const n = v ? parseInt(v, 10) : NaN;
@@ -150,7 +156,7 @@ Options:
   --no-save                       Don't save; print only
   --yes, -y                       Skip the 10s cost-preview wait (TTY only)
   --limit N                       Override the far-bank size (default 6 brainstorm / 12 LSD)
-  --max-cost USD                  Abort if estimated cost exceeds USD (default 5)
+  --max-cost USD|off              Abort if estimated cost exceeds USD (default 5 when the model is priced; 'off' disables the cap)
   --max-far-set N                 Cap domain bank prefix sampling (default 50)
   --strict-budget                 Abort if running cost exceeds 5× the estimate
   --judge-model MODEL             Override the judge LLM (larger-context for big runs)
@@ -185,7 +191,7 @@ Options:
   --save                          Persist to wiki/ideas/<date>-lsd-<slug>.md (default OFF)
   --yes, -y                       Skip the 10s cost-preview wait (TTY only)
   --limit N                       Override the far-bank size (default 12)
-  --max-cost USD                  Abort if estimated cost exceeds USD (default 5)
+  --max-cost USD|off              Abort if estimated cost exceeds USD (default 5 when the model is priced; 'off' disables the cap)
   --max-far-set N                 Cap domain bank prefix sampling (default 50)
   --strict-budget                 Abort if running cost exceeds 5× the estimate
   --judge-model MODEL             Override the judge LLM (larger-context for big runs)
@@ -281,6 +287,7 @@ async function runBrainstormCli(
       ideaSlug: shouldSave ? freshSlug : undefined,
       // v0.39.0.0 T10 cost-cap surface — wired in master, preserved here.
       maxCostUsd: parsed.maxCost,
+      maxCostOff: parsed.maxCostOff,
       maxFarSet: parsed.maxFarSet,
       strictBudget: parsed.strictBudget,
       judgeModel: parsed.judgeModel,
