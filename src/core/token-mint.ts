@@ -37,6 +37,43 @@ export interface MintLegacyTokenOpts {
   allowedOperations?: string[];
 }
 
+/**
+ * #5893: read a rotating-out token's operator-set `takes_holders` so the
+ * replacement mint can carry them forward instead of resetting to
+ * `['world']` (the only key `gbrain auth permissions` manages today).
+ * Returns undefined — caller falls back to the documented default — when
+ * the row is gone, the value is not a non-empty string array, or the
+ * permissions object itself is damaged (a jsonb string/array scalar from
+ * historical double-encode rows).
+ */
+export async function readRotatedTakesHolders(engine: BrainEngine, priorTokenId: string): Promise<string[] | undefined> {
+  const rows = await engine.executeRaw<{ permissions: unknown }>(
+    `SELECT permissions FROM access_tokens WHERE id = $1::uuid`,
+    [priorTokenId],
+  );
+  const perms = rows[0]?.permissions;
+  const holders = perms && typeof perms === 'object' && !Array.isArray(perms)
+    ? (perms as Record<string, unknown>).takes_holders
+    : undefined;
+  if (Array.isArray(holders) && holders.length > 0 && holders.every(h => typeof h === 'string' && h.trim().length > 0)) {
+    return holders.map(h => (h as string).trim());
+  }
+  return undefined;
+}
+
+/**
+ * #5893 rotation entry point: the rotating-out token's takes_holders,
+ * or the documented `['world']` default when there is nothing valid to
+ * carry — including an older schema without the permissions column.
+ */
+export async function rotatedTakesHoldersOrDefault(engine: BrainEngine, priorTokenId: string): Promise<string[]> {
+  try {
+    return await readRotatedTakesHolders(engine, priorTokenId) ?? ['world'];
+  } catch {
+    return ['world'];
+  }
+}
+
 export interface MintedLegacyToken {
   /** Plaintext token — shown/wired once, never stored. */
   token: string;

@@ -67,7 +67,7 @@ import {
   redactToken,
   validateToken,
 } from '../mcp-registration.ts';
-import { mintLegacyToken, revokeLegacyTokenById, type MintedLegacyToken } from '../token-mint.ts';
+import { mintLegacyToken, revokeLegacyTokenById, rotatedTakesHoldersOrDefault, type MintedLegacyToken } from '../token-mint.ts';
 import { generateToken } from '../utils.ts';
 import { readCredentials, writeCredentials, type HarnessCredentials } from '../harness/credentials.ts';
 import { installSharedSkillsConnection, type SharedSkillsConnectionOptions } from '../harness/shared-skills.ts';
@@ -306,6 +306,9 @@ export interface HarnessDeps {
     scopes: string[];
     sourceGrant?: string[];
     allowedOperations?: string[];
+    /** #5893: id of the prior token being rotated out — the mint carries its
+     * operator-set takes_holders forward instead of resetting to ['world']. */
+    preserveTakesHoldersFrom?: string;
   }) => Promise<MintedLegacyToken>;
   installSharedSkills?: (credentials: HarnessCredentials, options: SharedSkillsConnectionOptions) => Promise<{
     status: string; reason?: string; retained_files?: string[]; next_action?: string; remote_membership_pending?: boolean;
@@ -422,7 +425,7 @@ export function harnessDetectDeps(o?: HarnessDetectOverrides): Partial<HarnessDe
 }
 
 /** Production mint: open the configured engine just long enough to insert. */
-async function defaultMint(opts: { name: string; scopes: string[]; sourceGrant?: string[]; allowedOperations?: string[] }): Promise<MintedLegacyToken> {
+async function defaultMint(opts: { name: string; scopes: string[]; sourceGrant?: string[]; allowedOperations?: string[]; preserveTakesHoldersFrom?: string }): Promise<MintedLegacyToken> {
   const cfg = loadConfig();
   if (!cfg) {
     throw new Error('no brain configured — run `gbrain init` first (the harness wires an EXISTING brain).');
@@ -442,9 +445,19 @@ async function defaultMint(opts: { name: string; scopes: string[]; sourceGrant?:
         sourceGrant = undefined; // historical default floor
       }
     }
+    // #5893: a rotation mints a fresh credential while the old one is still
+    // live — carry the prior token's operator-set takes_holders into the new
+    // mint so re-running `bootstrap harness` to refresh the operation
+    // snapshot doesn't silently narrow takes visibility back to ['world'].
+    // Operator-settable today only via `auth permissions set-takes-holders`;
+    // everything else in permissions is recomputed from this run's flags.
+    // Guards: damaged/missing rows or a non-array value fall back to the
+    // documented default, never to a passthrough of arbitrary data.
+    const takesHolders = opts.preserveTakesHoldersFrom === undefined ? ['world']
+      : await rotatedTakesHoldersOrDefault(engine, opts.preserveTakesHoldersFrom);
     return await mintLegacyToken(engine, {
       name: opts.name,
-      takesHolders: ['world'],
+      takesHolders,
       scopes: opts.scopes,
       ...(opts.allowedOperations !== undefined ? { allowedOperations: opts.allowedOperations } : {}),
       ...(sourceGrant && sourceGrant.length > 0 ? { sourceGrant } : {}),
@@ -537,7 +550,7 @@ export function buildConsentBlock(p: {
       ? `  ${n++}. Use the supplied bearer token — written ${p.skills === 'follow' ? 'into' : 'ONLY into'} the host registrations below ` +
           `${p.skills === 'follow' ? 'and a private 0600 enrollment cleanup credential' : '(gbrain keeps no copy)'}. ` +
           `The remove flow does NOT revoke supplied tokens (they are not ours to revoke).`
-      : `  ${n++}. Mint an independent bearer token per harness under '${p.tokenName}' (scopes: ${p.scopes.join('+')}; sees takes marked 'world'; ` +
+      : `  ${n++}. Mint an independent bearer token per harness under '${p.tokenName}' (scopes: ${p.scopes.join('+')}; sees takes marked 'world' — a re-run carries the prior token's takes-holder list; ` +
           `reads span this brain's federated sources). Any prior harness token is revoked ` +
           `only after the new one is wired and verified.`,
   );
@@ -826,6 +839,16 @@ function logAmbientPostureNotes(
         `${PRIVATE_DEFAULT_REMOTE_CONSEQUENCE} (then re-run gbrain bootstrap harness --yes).`,
     );
   }
+}
+
+/**
+ * #5893: which prior-receipt token the fresh per-host mint replaces — the
+ * host's own rotated token, or the legacy single-token field on the first
+ * host (pre-harness_tokens receipts). Nothing to preserve on a first run.
+ */
+function rotatedOutTokenId(prior: HarnessReceipt | null, host: HarnessTarget['host'], firstHost: HarnessTarget['host']): string | undefined {
+  return (prior?.harness_tokens?.[host]?.minted ? prior.harness_tokens[host].id : undefined)
+    ?? (host === firstHost && prior?.token.minted ? prior.token.id : undefined);
 }
 
 export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): Promise<number> {
@@ -1212,10 +1235,15 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     for (const host of hosts) {
       let minted: MintedLegacyToken;
       try {
+        // #5893: the token this run rotates out (mint-first [C7] — still
+        // live, revoked only after wiring verifies) donates its operator-set
+        // takes_holders to the fresh mint.
+        const priorTokenId = rotatedOutTokenId(prior, host, hosts[0]);
         minted = await d.mint({
           name: hosts.length === 1 ? flags.tokenName : `${flags.tokenName}-${host}`,
           scopes: skillsPolicy === 'follow' ? ['read', 'write', 'skills_member_self'] : ['read', 'write'],
           allowedOperations,
+          ...(priorTokenId !== undefined ? { preserveTakesHoldersFrom: priorTokenId } : {}),
           // [X2] --source is the write floor — a scalar grant, the stdio
           // env-tier mirror. An implicit non-default source carries its
           // federated read set (#4897 — the same set search/think read, not a

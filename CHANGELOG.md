@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.8] - 2026-10-02
+
+### Fixed
+- `gbrain bootstrap harness` re-run keeps operator-set take permissions: rotating a harness token carried `allowed_operations` and the federation `source_id` grant forward but reset `takes_holders` to `['world']`, silently revoking the holder list an operator had widened with `auth permissions <name> set-takes-holders` (#4717) until it was re-added by hand. The mint now reads the rotating-out token's `takes_holders` and seeds the fresh token with the same list — a rotation that loses the grant still revokes the old token, it just no longer changes which holders the credential can see (#5893).
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**

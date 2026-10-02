@@ -338,6 +338,10 @@ describe('full apply', () => {
     };
     expect(await applyHarness(flags(), f2deps)).toBe(0);
     expect(f.revoked).toEqual(priorIds);
+    // #5893: each rotating-out token donates its id so the fresh mint
+    // carries the prior token's operator-set takes_holders.
+    const rotated = f.mintCalls.slice(3) as Array<{ preserveTakesHoldersFrom?: string }>;
+    expect(rotated.map(c => c.preserveTakesHoldersFrom)).toEqual(priorIds);
     expect(new Set(f.minted.map(m => m.id)).size).toBe(6);
     expect(new Set(f.minted.map(m => m.token)).size).toBe(6);
     expect(f.calls.some(argv => argv[0] === 'claude' && argv[2] === 'remove')).toBe(true);
