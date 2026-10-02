@@ -868,8 +868,8 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
 
     // #5470: every admission parses the journal caps; a malformed value
     // would refuse all managed writes, so reject it here.
-    const { JOURNAL_CONFIG_KEYS, parseJournalConfigValue } = await import('../core/persistence/limits.ts');
-    if (JOURNAL_CONFIG_KEYS.includes(key)) {
+    const { JOURNAL_CONFIG_KEYS, parseJournalConfigValue, MAINTENANCE_PUBLISH_WAIT_MS_KEY } = await import('../core/persistence/limits.ts');
+    if (JOURNAL_CONFIG_KEYS.includes(key) || key === MAINTENANCE_PUBLISH_WAIT_MS_KEY) {
       try { parseJournalConfigValue(key, value); }
       catch (error) { console.error(`[config] ${(error as Error).message}`); process.exit(1); }
     }

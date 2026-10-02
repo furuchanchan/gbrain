@@ -11,6 +11,7 @@ import { currentVerifiedLocalWriter, localHostId, registerLocalWriter } from './
 import { getWorktreeBinding, managedPersistenceEnabled, type WorktreeBinding } from './ownership.ts';
 import { admitWrite, assertReplayIntent, getWriteRequest, intentDigest } from './journal.ts';
 import { assertPersistenceAccepting, waitForWrite, writeResponse } from './service.ts';
+import { readMaintenancePublishWaitMs } from './limits.ts';
 import { preparePageMutation, prepareFileTarget } from './page-prepare.ts';
 import { prepareTakesMutation } from './takes-prepare.ts';
 import { digest } from './digest.ts';
@@ -88,11 +89,14 @@ async function validateMaintenance(engine: BrainEngine, authority: MaintenanceAu
 async function submitMaintenance(engine: BrainEngine, authority: MaintenanceAuthority, slug: string,
   intent: Record<string, unknown>, requestId: string, file = true): Promise<Record<string, unknown>> {
   await validateMaintenance(engine, authority, slug);
+  // #5854: the publish wait is operator-configurable — a busy writer
+  // (pooler, other lanes) legitimately commits a few seconds past 5s.
+  const waitMs = await readMaintenancePublishWaitMs(engine);
   const prior = await getWriteRequest(engine, authority.writer.principal, requestId);
   if (prior) {
     await authorizeStoredRequest(engine, prior);
     assertReplayIntent(prior, intentDigest({ operation: 'submit_job', sourceId: authority.writer.sourceId, slug, callerIntent: intent }));
-    return writeResponse(await waitForWrite(engine, prior, loadConfig() ?? { engine: engine.kind }));
+    return writeResponse(await waitForWrite(engine, prior, loadConfig() ?? { engine: engine.kind }, waitMs));
   }
   const snapshot = await engine.readPageSnapshot(slug, { sourceId: authority.writer.sourceId, includeDeleted: true });
   if (snapshot?.page.deleted_at) throw new OperationError('page_not_found', 'Maintenance cannot restore a deleted page.');
@@ -101,7 +105,7 @@ async function submitMaintenance(engine: BrainEngine, authority: MaintenanceAuth
     sourceId: authority.writer.sourceId, sourceIncarnation: authority.writer.sourceIncarnation, slug,
     pageId: snapshot?.page.id ?? null, authority: authority.writer, callerIntent: intent, intent,
     worktreeId: file ? authority.binding?.worktree_id : null, topologyGeneration: file ? authority.binding?.topology_generation : null });
-  return writeResponse(await waitForWrite(engine, row, loadConfig() ?? { engine: engine.kind }));
+  return writeResponse(await waitForWrite(engine, row, loadConfig() ?? { engine: engine.kind }, waitMs));
 }
 
 /** #5523: a Life Chronicle timeline row projected onto the depth page in the same publication. */

@@ -34,6 +34,14 @@ export async function readReceiptRetentionDays(engine:SqlEngine):Promise<number>
   const [row]=await engine.executeRaw<{value:string}>('SELECT value FROM config WHERE key=$1',[RECEIPT_RETENTION_KEY]);
   return row ? parseJournalConfigValue(RECEIPT_RETENTION_KEY,row.value) : DEFAULT_RECEIPT_RETENTION_DAYS;
 }
+
+export const MAINTENANCE_PUBLISH_WAIT_MS_KEY = 'persistence.maintenance_publish_wait_ms';
+export const DEFAULT_MAINTENANCE_PUBLISH_WAIT_MS = 5000;
+/** #5854: ms the managed maintenance publish path waits for the writer before write_pending. */
+export async function readMaintenancePublishWaitMs(engine:SqlEngine):Promise<number> {
+  const [row]=await engine.executeRaw<{value:string}>('SELECT value FROM config WHERE key=$1',[MAINTENANCE_PUBLISH_WAIT_MS_KEY]);
+  return row ? parseJournalConfigValue(MAINTENANCE_PUBLISH_WAIT_MS_KEY,row.value) : DEFAULT_MAINTENANCE_PUBLISH_WAIT_MS;
+}
 /** Permanent accounting a compacted receipt keeps (authority, outcome, effects); measured ~3.9 KB for put_page. */
 const RETAINED_RECEIPT_BYTES = 4096;
 const RESERVED_RECEIPT_BYTES = 16_384;

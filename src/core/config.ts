@@ -1616,7 +1616,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'persistence.limits.principal_lifetime_ids', 'persistence.limits.brain_lifetime_ids',
   'persistence.limits.principal_terminal_bytes', 'persistence.limits.brain_terminal_bytes',
   'persistence.limits.brain_recovery_bytes', 'persistence.limits.worktree_recovery_bytes',
-  'persistence.receipt_retention_days', 'persistence.unbound_write', // #5254: persistence/unbound-source.ts
+  'persistence.receipt_retention_days', 'persistence.unbound_write', 'persistence.maintenance_publish_wait_ms', // #5254 unbound-source.ts / #5854 limits.ts readMaintenancePublishWaitMs
 ];
 
 /**

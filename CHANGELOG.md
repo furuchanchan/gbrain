@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.6] - 2026-10-02
+
+### Fixed
+
+- **Managed maintenance publish (#5854):** the submit path's receipt wait is now configurable via `persistence.maintenance_publish_wait_ms` (default 5000, unchanged). Previously `submitMaintenance` waited a fixed 5s before `write_pending`; a busy writer lane (pooler, other writes) legitimately commits a few seconds later, so dream `synthesize` repeatedly failed with `SYNTH_PHASE_FAIL` on slow hosts.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**
