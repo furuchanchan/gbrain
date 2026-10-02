@@ -1,7 +1,7 @@
 {
   "id": "gbrain-context-engine",
   "name": "gbrain",
-  "version": "0.60.27.0",
+  "version": "0.60.28.7",
   "description": "Personal knowledge brain with Postgres + pgvector hybrid search",
   "family": "bundle-plugin",
   "kind": "context-engine",
@@ -106,6 +106,7 @@
   ],
   "shared_deps": [
     "skills/conventions",
+    "skills/RESOLVER.md",
     "skills/_AGENT_README.md",
     "skills/_brain-filing-rules.md",
     "skills/_brain-filing-rules.json",

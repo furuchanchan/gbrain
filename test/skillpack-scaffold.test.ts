@@ -34,7 +34,7 @@ interface GbrainFixture {
   gbrainRoot: string;
 }
 
-function scratchGbrain(opts: { withPairedSource?: boolean } = {}): GbrainFixture {
+function scratchGbrain(opts: { withPairedSource?: boolean; extraSharedDeps?: string[] } = {}): GbrainFixture {
   const root = mkdtempSync(join(tmpdir(), 'sp-scaffold-gbrain-'));
   created.push(root);
   mkdirSync(join(root, 'src', 'cli.ts').replace('cli.ts', ''), { recursive: true });
@@ -73,7 +73,7 @@ function scratchGbrain(opts: { withPairedSource?: boolean } = {}): GbrainFixture
         name: 'gbrain-test',
         version: '0.33.0-test',
         skills: ['skills/book-mirror', 'skills/query'],
-        shared_deps: ['skills/conventions', 'skills/_brain-filing-rules.md'],
+        shared_deps: ['skills/conventions', 'skills/_brain-filing-rules.md', ...(opts.extraSharedDeps ?? [])],
       },
       null,
       2,
@@ -270,6 +270,37 @@ describe('runScaffold — IRON-RULE regressions (R1, R2)', () => {
     runScaffold({ gbrainRoot, targetWorkspace: ws, skillSlug: 'book-mirror' });
 
     expect(readFileSync(join(ws, 'AGENTS.md'), 'utf-8')).not.toContain('cumulative-slugs');
+  });
+});
+
+describe('runScaffold — #5858 RESOLVER.md shared dep', () => {
+  it('the real bundle declares skills/RESOLVER.md as a shared dep so scaffold ships it', () => {
+    const root = join(import.meta.dir, '..');
+    const manifest = JSON.parse(readFileSync(join(root, 'openclaw.plugin.json'), 'utf8'));
+    expect(manifest.shared_deps).toContain('skills/RESOLVER.md');
+    expect(existsSync(join(root, 'skills', 'RESOLVER.md'))).toBe(true);
+  });
+
+  it('a RESOLVER.md shared dep lands at skills/RESOLVER.md as a plain user-owned file', () => {
+    const { gbrainRoot } = scratchGbrain({ extraSharedDeps: ['skills/RESOLVER.md'] });
+    writeFileSync(join(gbrainRoot, 'skills', 'RESOLVER.md'), '# bundled routing map\n');
+    const ws = scratchWorkspace();
+
+    runScaffold({ gbrainRoot, targetWorkspace: ws, skillSlug: 'book-mirror' });
+
+    expect(readFileSync(join(ws, 'skills', 'RESOLVER.md'), 'utf-8')).toBe('# bundled routing map\n');
+  });
+
+  it('a pre-existing workspace skills/RESOLVER.md is never overwritten', () => {
+    const { gbrainRoot } = scratchGbrain({ extraSharedDeps: ['skills/RESOLVER.md'] });
+    writeFileSync(join(gbrainRoot, 'skills', 'RESOLVER.md'), '# bundled routing map\n');
+    const ws = scratchWorkspace();
+    mkdirSync(join(ws, 'skills'), { recursive: true });
+    writeFileSync(join(ws, 'skills', 'RESOLVER.md'), '# my own routing\n');
+
+    runScaffold({ gbrainRoot, targetWorkspace: ws, skillSlug: 'book-mirror' });
+
+    expect(readFileSync(join(ws, 'skills', 'RESOLVER.md'), 'utf-8')).toBe('# my own routing\n');
   });
 });
 

@@ -12,6 +12,9 @@
  *   1. **No managed-block writes.** The host's RESOLVER.md / AGENTS.md
  *      stays untouched. Routing happens via each skill's frontmatter
  *      `triggers:` array, which downstream agents walk at runtime.
+ *      (gbrain's own `skills/RESOLVER.md` ships as a plain shared-dep
+ *      file — #5858; it is a new file the user then owns, never a
+ *      managed-block edit.)
  *   2. **Refuses to overwrite existing files.** Once a file lands, the
  *      user owns it. To update, run `gbrain skillpack reference <name>`
  *      and decide.

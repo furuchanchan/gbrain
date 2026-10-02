@@ -297,6 +297,7 @@ test/skillpack-init-pack.test.ts	runInitScaffold — cathedral default	6	readFil
 test/skillpack-install.test.ts	managed-block receipt + cumulative semantics (v0.19)	4	readFileSync
 test/skillpack-install.test.ts	planInstall + applyInstall	11	readFileSync
 test/skillpack-migrate-fence.test.ts	runMigrateFence	8	readFileSync
+test/skillpack-scaffold.test.ts	runScaffold — #5858 RESOLVER.md shared dep	3	readFileSync
 test/skillpack-scaffold.test.ts	runScaffold — IRON-RULE regressions (R1, R2)	3	readFileSync
 test/skillpack-scaffold.test.ts	runScaffold — happy path	3	readFileSync
 test/skillpack-scrub-legacy.test.ts	runScrubLegacy	8	readFileSync
