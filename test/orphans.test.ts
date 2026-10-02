@@ -190,9 +190,9 @@ describe('formatOrphansText', () => {
 
   test('groups orphans by domain', () => {
     const orphans: OrphanPage[] = [
-      { slug: 'companies/acme', title: 'Acme Corp', domain: 'companies' },
-      { slug: 'people/alice', title: 'Alice', domain: 'people' },
-      { slug: 'companies/beta', title: 'Beta Inc', domain: 'companies' },
+      { slug: 'companies/acme', title: 'Acme Corp', domain: 'companies', source_id: 'default' },
+      { slug: 'people/alice', title: 'Alice', domain: 'people', source_id: 'default' },
+      { slug: 'companies/beta', title: 'Beta Inc', domain: 'companies', source_id: 'default' },
     ];
     const out = formatOrphansText(makeResult(orphans));
     expect(out).toContain('[companies]');
@@ -205,9 +205,9 @@ describe('formatOrphansText', () => {
 
   test('sorts orphans alphabetically within each domain group', () => {
     const orphans: OrphanPage[] = [
-      { slug: 'companies/zeta', title: 'Zeta', domain: 'companies' },
-      { slug: 'companies/alpha', title: 'Alpha', domain: 'companies' },
-      { slug: 'companies/beta', title: 'Beta', domain: 'companies' },
+      { slug: 'companies/zeta', title: 'Zeta', domain: 'companies', source_id: 'default' },
+      { slug: 'companies/alpha', title: 'Alpha', domain: 'companies', source_id: 'default' },
+      { slug: 'companies/beta', title: 'Beta', domain: 'companies', source_id: 'default' },
     ];
     const out = formatOrphansText(makeResult(orphans));
     const alphaIdx = out.indexOf('companies/alpha');
@@ -219,7 +219,7 @@ describe('formatOrphansText', () => {
 
   test('includes slug and title in output', () => {
     const orphans: OrphanPage[] = [
-      { slug: 'companies/acme', title: 'Acme Corp', domain: 'companies' },
+      { slug: 'companies/acme', title: 'Acme Corp', domain: 'companies', source_id: 'default' },
     ];
     const out = formatOrphansText(makeResult(orphans));
     expect(out).toContain('companies/acme');
@@ -228,8 +228,8 @@ describe('formatOrphansText', () => {
 
   test('summary line shows correct numbers', () => {
     const orphans: OrphanPage[] = [
-      { slug: 'a/b', title: 'B', domain: 'a' },
-      { slug: 'a/c', title: 'C', domain: 'a' },
+      { slug: 'a/b', title: 'B', domain: 'a', source_id: 'default' },
+      { slug: 'a/c', title: 'C', domain: 'a', source_id: 'default' },
     ];
     const result: OrphanResult = {
       orphans,

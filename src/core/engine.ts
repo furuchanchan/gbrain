@@ -1691,6 +1691,7 @@ export interface BrainEngine {
     domain: string | null;
     type?: string | null;
     quarantined?: boolean;
+    source_id: string;
   }>>;
 
   // Tags

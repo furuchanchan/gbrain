@@ -36,6 +36,8 @@ export interface OrphanPage {
   slug: string;
   title: string;
   domain: string;
+  source_id: string;
+  type?: string | null;
 }
 
 export interface OrphanResult {
@@ -82,7 +84,7 @@ export function deriveDomain(frontmatterDomain: string | null | undefined, slug:
  */
 export async function queryOrphanPages(
   engine: BrainEngine,
-): Promise<{ slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean }[]> {
+): Promise<{ slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean; source_id: string }[]> {
   return engine.findOrphanPages();
 }
 
@@ -106,7 +108,7 @@ export async function queryOrphanPages(
  */
 export async function findOrphans(
   engine: BrainEngine,
-  opts: PageReadScope & { includePseudo?: boolean; mode?: 'inbound' | 'islanded' } = {},
+  opts: PageReadScope & { includePseudo?: boolean; mode?: 'inbound' | 'islanded'; limit?: number; offset?: number } = {},
 ): Promise<OrphanResult> {
   const includePseudo = !!opts.includePseudo;
   // v0.41.29.0: `sourceId` (scalar, from `--source` + single-source MCP
@@ -124,7 +126,7 @@ export async function findOrphans(
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
   progress.start('orphans.scan');
   const stopHb = startHeartbeat(progress, 'scanning pages for missing inbound links…');
-  let allOrphans: { slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean }[];
+  let allOrphans: { slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean; source_id: string }[];
   let total: number;
   let excludedAll: number;
   const overrides = includePseudo ? undefined : await loadOrphanPolicyOverrides(engine);
@@ -164,17 +166,26 @@ export async function findOrphans(
     ? allOrphans
     : allOrphans.filter(row => !shouldExclude(row.slug, overrides, row));
 
-  const orphans: OrphanPage[] = filtered.map(row => ({
+  const mapped: OrphanPage[] = filtered.map(row => ({
     slug: row.slug,
     title: row.title,
     domain: deriveDomain(row.domain, row.slug),
+    source_id: row.source_id,
+    type: row.type ?? null,
   }));
+
+  // #5891: `limit`/`offset` page the RETURNED rows only — `total_orphans`
+  // and friends keep describing the full filtered set, so a paged caller
+  // can see how much is left. `limit` undefined keeps the legacy
+  // return-everything shape (CLI + doctor unchanged).
+  const offset = Math.max(0, opts.offset ?? 0);
+  const orphans = opts.limit === undefined ? mapped : mapped.slice(offset, offset + opts.limit);
 
   const excluded = allOrphans.length - filtered.length;
 
   return {
     orphans,
-    total_orphans: orphans.length,
+    total_orphans: mapped.length,
     // v0.41.29.0 (Codex F6): denominator = live pages minus ALL excluded
     // pages (orphan or not), so excluded pages with inbound links no longer
     // inflate it.

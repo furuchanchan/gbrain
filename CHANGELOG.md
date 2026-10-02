@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.2] - 2026-10-02
+
+### Fixed
+- `find_orphans` no longer returns every orphan in one response: the op accepts `limit` (default 200, max 1000) and `offset` for paging, an optional `source_id` that narrows the caller's authorized scope (denied or dead sources fail loudly, never widen), and each row now carries `source_id` plus `type` so agents can route remediation without a second lookup (#5891).
+
 ## [0.60.30.1] - 2026-10-02
 
 ### Fixed
