@@ -29,6 +29,9 @@ export interface CrossModalProbeArgs {
   batchPath: string;
   summaryPath: string;
   maxUsd: number;
+  /** #5506: the install's resolved chat route — substitutes unusable default
+   *  slots so the substitute matches the model actually serving chat. */
+  substituteModel?: string;
 }
 
 /** Cross-modal batch summary shape (matches `runEvalCrossModal --batch --json`'s envelope). */
@@ -39,6 +42,9 @@ export interface CrossModalBatchSummary {
   error_count: number;
   est_cost_usd: number;
   verdict: string;
+  /** #5506: panel distinctness after substitution. */
+  panel?: { distinct_providers: number; distinct_models: number; collapsed: boolean };
+  per_question?: Array<{ question_id: string; verdict: string; error?: string }>;
 }
 
 /**
@@ -109,7 +115,7 @@ export async function runCrossModalBatchForProbe(
     PROBE_QA_DIMENSIONS.join(','),
     '--yes',
     '--json',
-  ]);
+  ], { ...(args.substituteModel ? { substituteModel: args.substituteModel } : {}) });
 
   if (!existsSync(args.summaryPath)) {
     throw new Error(

@@ -49,6 +49,24 @@ export async function runNightlyQualityProbeStep(engine: BrainEngine, cfg: GBrai
         resolveSearchConfigSnapshot: () => resolveNightlyProbeSearchConfigSnapshot(engine),
         runLongMemEval: runLongMemEvalForProbe,
         runCrossModalBatch: runCrossModalBatchForProbe,
+        // #5506: resolve the model the install actually routes chat through
+        // (models.chat → models.tier.reasoning → models.default → env →
+        // tier default → file chat_model) so a slot substitution judges the
+        // operator's real model, not the file-plane fallback.
+        resolveSubstituteModel: async () => {
+          try {
+            const { resolveModelDetailed } = await import('../core/model-config.ts');
+            const { getChatModel } = await import('../core/ai/gateway.ts');
+            const resolved = await resolveModelDetailed(engine, {
+              configKey: 'models.chat',
+              tier: 'reasoning',
+              fallback: getChatModel(),
+            });
+            return resolved.model;
+          } catch {
+            return null; // engine read failed — eval falls back to file-plane chat_model
+          }
+        },
         now: () => new Date(),
       });
     }

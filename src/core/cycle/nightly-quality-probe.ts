@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { logQualityProbeEvent, readRecentQualityProbeEvents } from '../audit-quality-probe.ts';
+import { gbrainPath } from '../config.ts';
 
 /** Run-once gate window in ms. 24h matches the "nightly" cadence. */
 const NIGHTLY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -68,7 +69,29 @@ export interface NightlyProbeDeps {
     batchPath: string;
     summaryPath: string;
     maxUsd: number;
-  }) => Promise<{ exitCode: number; summary?: { pass_count: number; fail_count: number; inconclusive_count: number; error_count: number; est_cost_usd: number; verdict: string } }>;
+    /** #5506: the install's resolved chat route (models.chat/tier chain) —
+     *  substitutes unusable default slots instead of file-plane chat_model. */
+    substituteModel?: string;
+  }) => Promise<{ exitCode: number; summary?: {
+    pass_count: number;
+    fail_count: number;
+    inconclusive_count: number;
+    error_count: number;
+    est_cost_usd: number;
+    verdict: string;
+    /** #5506: panel distinctness after substitution — a collapsed panel
+     *  (<2 distinct models) did not measure cross-modal agreement. */
+    panel?: { distinct_providers: number; distinct_models: number; collapsed: boolean };
+    per_question?: Array<{ question_id: string; verdict: string; error?: string }>;
+  } }>;
+  /**
+   * #5506: resolved chat-route model used to substitute unusable default
+   * slots — the autopilot step resolves models.chat → models.tier.reasoning →
+   * … through the engine; the CLI --batch path leaves this unset so the
+   * eval falls back to file-plane chat_model. Optional so a brain with no
+   * engine never blocks the probe.
+   */
+  resolveSubstituteModel?: () => string | null | Promise<string | null>;
   /** Now provider — overridable for tests of the 24h rate limit. */
   now: () => Date;
 }
@@ -213,10 +236,14 @@ export async function runNightlyQualityProbe(deps: NightlyProbeDeps): Promise<Ni
       ? await deps.resolveSearchConfigSnapshot()
       : undefined;
     await deps.runLongMemEval({ fixturePath, outputPath: lmeOutPath, searchConfigSnapshot });
+    const substituteModel = deps.resolveSubstituteModel
+      ? await deps.resolveSubstituteModel()
+      : null;
     const { exitCode, summary } = await deps.runCrossModalBatch({
       batchPath: lmeOutPath,
       summaryPath,
       maxUsd,
+      ...(substituteModel ? { substituteModel } : {}),
     });
 
     const outcome: NightlyProbeResult['outcome'] = (() => {
@@ -231,6 +258,33 @@ export async function runNightlyQualityProbe(deps: NightlyProbeDeps): Promise<Ni
       return 'error';
     })();
 
+    // #5506: on a non-pass outcome keep the receipt beyond the workdir rm —
+    // the summary carries per-question scores + panel info, which is the
+    // only evidence for why the run failed.
+    const parts: string[] = [];
+    if (outcome !== 'pass' && fs.existsSync(summaryPath)) {
+      try {
+        const keepPath = path.join(
+          gbrainPath('eval-receipts'),
+          `nightly-probe-${fixtureSha8}-${now.toISOString().slice(0, 10)}.json`,
+        );
+        fs.mkdirSync(path.dirname(keepPath), { recursive: true });
+        fs.copyFileSync(summaryPath, keepPath);
+        parts.push(`receipt=${keepPath}`);
+      } catch { /* best-effort: audit still carries counts */ }
+    }
+    const panel = summary?.panel;
+    if (panel) {
+      parts.push(`panel=${panel.distinct_models}models/${panel.distinct_providers}providers${panel.collapsed ? ' COLLAPSED' : ''}`);
+    }
+    const failedQids = (summary?.per_question ?? [])
+      .filter(p => p.verdict !== 'pass')
+      .map(p => p.question_id);
+    if (failedQids.length > 0 && failedQids.length <= 10) {
+      parts.push(`failed_qids=${failedQids.join(',')}`);
+    }
+    const detail = parts.length > 0 ? parts.join(' ') : undefined;
+
     logQualityProbeEvent({
       outcome,
       exit_code: exitCode,
@@ -240,9 +294,10 @@ export async function runNightlyQualityProbe(deps: NightlyProbeDeps): Promise<Ni
       error_count: summary?.error_count ?? 0,
       est_cost_usd: summary?.est_cost_usd ?? 0,
       fixture_sha8: fixtureSha8,
+      ...(detail ? { detail } : {}),
     });
 
-    return { outcome, exit_code: exitCode };
+    return { outcome, exit_code: exitCode, ...(detail ? { detail } : {}) };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[nightly-quality-probe] runtime error: ${detail}\n`);

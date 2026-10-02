@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **`eval cross-modal` slot substitution + nightly probe diagnostics** (#5506): on a
+  single-provider install, `substituteUnavailableDefaultSlots` picked the substitute
+  from file-plane `getChatModel()` — ignoring `models.chat`/`models.tier.reasoning`, so
+  the panel judged a different model than the install actually routes chat through, and
+  could collapse to one provider with no trace. The substitute now accepts the resolved
+  chat route (the autopilot probe resolves it through the engine); `BatchSummary` gains
+  `panel` (`distinct_providers`/`distinct_models`/`provider_of`/`collapsed`), a
+  collapsed panel is named on stderr and in the probe audit `detail`; and on a non-pass
+  outcome the summary receipt is copied into `eval-receipts` before the workdir cleanup
+  with the audit row naming the path and the failing `question_id`s.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

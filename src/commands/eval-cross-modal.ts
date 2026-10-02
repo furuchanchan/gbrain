@@ -303,10 +303,15 @@ function configureGatewayForCli(): boolean {
 export function substituteUnavailableDefaultSlots(
   slots: SlotConfig[],
   explicit: Record<string, string | undefined>,
+  substitute?: string,
 ): SlotConfig[] {
   let fallback: string | null = null;
   try {
-    const configured = getChatModel();
+    // #5506: the caller may pass the install's RESOLVED chat route (engine
+    // chain: models.chat → models.tier.reasoning → …) — without it this
+    // reads the file-plane chat_model only and substitutes a different
+    // model than the one actually serving chat.
+    const configured = substitute ?? getChatModel();
     if (isAvailable('chat', configured)) fallback = configured;
   } catch {
     /* gateway unconfigured — leave the defaults in place */
@@ -316,10 +321,41 @@ export function substituteUnavailableDefaultSlots(
     if (explicit[s.id] || isAvailable('chat', s.model)) return s;
     process.stderr.write(
       `[eval cross-modal] slot ${s.id} default ${s.model} has no usable provider here; ` +
-      `using the configured chat model ${fallback} instead (#4636).\n`,
+      `using the resolved chat model ${fallback} instead (#4636/#5506).\n`,
     );
     return { ...s, model: fallback as string };
   });
+}
+
+/**
+ * #5506: panel distinctness for a slot list AFTER substitution. When default
+ * slots collapse onto the same model, the run no longer measures
+ * cross-modal agreement — the caller surfaces this in the summary and the
+ * nightly-probe audit row so a 1-judge panel cannot read as 3.
+ */
+export function panelInfo(slots: SlotConfig[]): {
+  distinct_providers: number;
+  distinct_models: number;
+  provider_of: Record<string, string>;
+  /** A cross-modal verdict needs >=2 distinct judges; fewer means the run
+   *  measured one model against itself. */
+  collapsed: boolean;
+} {
+  const providerOf: Record<string, string> = {};
+  const providers = new Set<string>();
+  const models = new Set<string>();
+  for (const s of slots) {
+    const provider = s.model.split(':')[0] ?? s.model;
+    providerOf[s.id] = provider;
+    providers.add(provider);
+    models.add(s.model);
+  }
+  return {
+    distinct_providers: providers.size,
+    distinct_models: models.size,
+    provider_of: providerOf,
+    collapsed: models.size < 2,
+  };
 }
 
 /**
@@ -330,6 +366,9 @@ export function substituteUnavailableDefaultSlots(
  */
 export interface RunCrossModalOpts {
   runEval?: typeof runEval;
+  /** #5506: the caller's resolved chat route — substitutes unusable default
+   * slots with this model instead of file-plane `getChatModel()`. */
+  substituteModel?: string;
 }
 
 export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts = {}): Promise<number> {
@@ -402,11 +441,11 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
     );
     return 1;
   }
-  // #4636: swap unusable frontier defaults for the configured chat model
+  // #4636/#5506: swap unusable frontier defaults for the resolved chat model
   // (before the cost estimate so the banner prices what actually runs).
   slots = substituteUnavailableDefaultSlots(slots, {
     A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel,
-  });
+  }, opts.substituteModel);
 
   // Cost estimate (T11=B).
   const cost = estimateCost(slots, cycles, maxTokens);
@@ -560,6 +599,15 @@ export interface BatchSummary {
   slots: SlotConfig[];
   cycles_per_question: number;
   concurrent: number;
+  /** #5506: panel distinctness after slot substitution — a panel that
+   * collapsed onto one provider/model still reports verdict pass/fail, but
+   * the counts + `panel_collapsed` flag name what was actually measured. */
+  panel: {
+    distinct_providers: number;
+    distinct_models: number;
+    provider_of: Record<string, string>;
+    collapsed: boolean;
+  };
   per_question: Array<{
     question_id: string;
     verdict: 'pass' | 'fail' | 'inconclusive' | 'error' | 'upstream_error';
@@ -711,10 +759,10 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
       );
       return 1;
     }
-    // #4636: swap unusable frontier defaults for the configured chat model.
+    // #4636/#5506: swap unusable frontier defaults for the resolved chat model.
     slots = substituteUnavailableDefaultSlots(slots, {
       A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel,
-    });
+    }, opts.substituteModel);
   }
 
   // Pre-flight cost estimate. Refuse if over --max-usd without --yes.
@@ -835,6 +883,7 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
       slots,
       cycles_per_question: cycles,
       concurrent,
+      panel: panelInfo(slots),
       per_question: perQuestionResults,
     };
 
@@ -857,6 +906,14 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
       `error=${errored} upstream_error=${upstreamErrorCount} malformed=${malformedCount} ` +
       `(total ${totalDenom})\n`,
     );
+    if (summary.panel.collapsed) {
+      process.stderr.write(
+        `[eval cross-modal batch] WARNING: panel collapsed to ${summary.panel.distinct_models} ` +
+        `distinct model(s) across ${summary.panel.distinct_providers} provider(s) ` +
+        `(${slots.map(s => `${s.id}:${s.model}`).join(' ')}) — the verdict does not ` +
+        `measure cross-modal agreement (#5506).\n`,
+      );
+    }
     process.stderr.write(`[eval cross-modal batch] summary receipt: ${summaryPath}\n`);
 
     if (parsed.json) {
