@@ -450,6 +450,7 @@ const search: Operation = {
       rows => buildRetrievalResponseMeta(ctx, scope, queryText, rows, capturedMeta, { conceptHint: true, types }));
   },
   scope: 'read',
+  annotations: { title: 'search', readOnlyHint: true },
   cliHints: { name: 'search', positional: ['query'] },
 };
 
@@ -899,6 +900,7 @@ const query: Operation = {
       async rows => ({ ...(await buildRetrievalResponseMeta(ctx, querySourceScope, queryText, rows, capturedMeta, { types })), crag }));
   },
   scope: 'read',
+  annotations: { title: 'query', readOnlyHint: true },
   cliHints: { name: 'query', positional: ['query'] },
 };
 
@@ -973,6 +975,7 @@ const search_stats: Operation = {
   },
   scope: 'admin',
   area: 'search',
+  annotations: { title: 'search stats (read-only)', readOnlyHint: true },
   handler: async (ctx, p) => {
     const { withRelationGuard } = await import('./contract.ts');
     return withRelationGuard(async () => {
@@ -1015,6 +1018,7 @@ const search_modes: Operation = {
   params: {},
   scope: 'read',
   area: 'search',
+  annotations: { title: 'search modes', readOnlyHint: true },
   handler: async (ctx) => {
     const { buildModesReport, redactReadinessForRemote } = await import('../search/modes-report.ts');
     // Untrusted (remote) callers get the readiness verdict without the host's
@@ -1034,6 +1038,7 @@ const search_tune: Operation = {
   params: {},
   scope: 'admin',
   area: 'search',
+  annotations: { title: 'search tune (read-only recommendations)', readOnlyHint: true },
   handler: async (ctx) => {
     const { withRelationGuard } = await import('./contract.ts');
     return withRelationGuard(async () => {
@@ -1052,6 +1057,7 @@ const cache_stats: Operation = {
   params: {},
   scope: 'admin',
   area: 'search',
+  annotations: { title: 'cache stats (read-only)', readOnlyHint: true },
   handler: async (ctx) => {
     const { withRelationGuard } = await import('./contract.ts');
     return withRelationGuard(async () => {

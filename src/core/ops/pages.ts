@@ -205,6 +205,7 @@ const get_page: Operation = {
     };
   },
   scope: 'read',
+  annotations: { title: 'get page', readOnlyHint: true },
   cliHints: { name: 'get', positional: ['slug'] },
 };
 
@@ -276,6 +277,7 @@ const fetch_page: Operation = {
     };
   },
   scope: 'read',
+  annotations: { title: 'fetch result', readOnlyHint: true },
   cliHints: { name: 'fetch', positional: ['id'] },
 };
 
@@ -300,6 +302,7 @@ const put_page: Operation = {
   },
   mutating: true,
   scope: 'write',
+  annotations: { title: 'put page (upsert)', idempotentHint: true },
   handler: async (ctx, p) => {
     pageMutationSource(ctx, p, 'put_page');
     if (ctx.dryRun) {
@@ -369,6 +372,7 @@ const delete_page: Operation = {
   },
   mutating: true,
   scope: 'write',
+  annotations: { title: 'delete page', destructiveHint: true, idempotentHint: true },
   handler: async (ctx, p) => {
     pageMutationSource(ctx, p, 'delete_page');
     assertPurgeParams(p, ctx.remote);
@@ -396,6 +400,7 @@ const restore_page: Operation = {
   },
   mutating: true,
   scope: 'write',
+  annotations: { title: 'restore page', idempotentHint: true },
   handler: async (ctx, p) => {
     pageMutationSource(ctx, p, 'restore_page');
     if (ctx.dryRun) {
@@ -567,6 +572,7 @@ const list_pages: Operation = {
     }));
   },
   scope: 'read',
+  annotations: { title: 'list pages', readOnlyHint: true },
   cliHints: { name: 'list' },
 };
 
@@ -599,6 +605,7 @@ const capture: Operation = {
   },
   scope: 'write',
   mutating: true,
+  annotations: { title: 'capture page', idempotentHint: true },
   area: 'pages',
   // 'capture' is in CLI_ONLY (rich local UX: --file/--stdin/event sugar);
   // hidden hint per the advisor pattern.
