@@ -154,13 +154,18 @@ export async function runGather(
   // autocut: false on both legs (#4561) — autocut is default-ON in
   // balanced/tokenmax and cuts BEFORE the limit slice, so an evidence
   // gather sized for breadth (default 40) could collapse to minKeep=1 and
-  // starve synthesis. Same breadth reason as the CRAG escalation re-run in
-  // ops/search.ts; precision trimming is the synth prompt's job here.
+  // starve synthesis. adaptiveReturn: false for the same reason (#5890) —
+  // with search.adaptive_return on, the intent cap (2 for entity intent,
+  // 6 otherwise) trims the ranked pool before the limit slice, so an
+  // entity-shaped question reaches the model with 2 pages. Same breadth
+  // reason as the CRAG escalation re-run in ops/search.ts; precision
+  // trimming is the synth prompt's job here.
   const pagesPromise = (window ? Promise.all([
     hybridSearch(engine, opts.question, {
       limit: Math.min(gatherLimit * 4, 200),
       expansion: false,
       autocut: false,
+      adaptiveReturn: false,
       ...pageScope,
       decide,
     }),
@@ -183,6 +188,7 @@ export async function runGather(
     limit: gatherLimit,
     expansion: false,
     autocut: false,
+    adaptiveReturn: false,
     ...pageScope,
     decide,
   })).catch((e) => {

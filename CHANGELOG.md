@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.7] - 2026-10-02
+
+### Fixed
+- `think`/`synthesize` evidence gather no longer trimmed by `search.adaptive_return`: `runGather` now passes `adaptiveReturn: false` on both hybrid legs (mirroring the `autocut: false` pin from #4561). With `search.adaptive_return = true`, the intent cap (2 pages for entity-intent questions, 6 otherwise) was applied before the limit slice, so an entity-shaped question reached the model with 2 pages and reported gaps the brain could fill (#5890).
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**
