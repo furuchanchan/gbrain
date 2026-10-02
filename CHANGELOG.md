@@ -10,6 +10,26 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.9] - 2026-09-21
+
+### Fixed
+
+- **by-mention Hangul word-internal false links + operator exclude list
+  (#5829).** CJK body text tokenizes one character per token and the
+  mention matcher requires only adjacency, so a 2-syllable Hangul name
+  matched inside any longer word ("재지원" → "지원", "로그인하기" → "인하")
+  and across a space ("성장 인프라" → "장인") — measured at 17% of produced
+  links on a real brain. Hangul-only gazetteer entries now apply a
+  start-boundary + literal-span rule: the matched span must equal the
+  entry name modulo whitespace runs, and the character before the match
+  must not be a Hangul syllable. No end boundary — Korean particles
+  attach after names ("지원이"). Han and Kana entries keep the historical
+  strict-adjacency behavior. New config `by_mention.exclude_slugs` (JSON
+  array or comma-separated) removes a slug's title AND alias entries from
+  the gazetteer for every consumer — by-mention, the `stale_mentions`
+  doctor check, extract-ner and timeline-from-meetings share
+  `buildGazetteer`; deliberately config-only so the scan and the check
+  cannot disagree.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

@@ -71,6 +71,14 @@ export interface GazetteerEntry {
   title: string;
   /** Lowercase title tokens in order. Length 1 = single-word entity. */
   tokens: string[];
+  /**
+   * #5829: normalized Hangul-only name (the surface string that produced
+   * `tokens` — title for title entries, alias for alias entries), or
+   * undefined when the name is not Hangul-only. Hangul is word-spaced
+   * (unlike Han/Kana), so `findMentionedEntities` applies a word-boundary
+   * rule to these entries only.
+   */
+  hangulName?: string;
 }
 
 /**
@@ -91,7 +99,7 @@ export type Gazetteer = Map<string, GazetteerEntry[]>;
 export function hashGazetteer(gazetteer: Gazetteer): string {
   const entries: string[] = [];
   for (const bucket of gazetteer.values()) {
-    for (const e of bucket) entries.push(`${e.source_id}\0${e.slug}\0${e.title}\0${e.tokens.join(' ')}`);
+    for (const e of bucket) entries.push(`${e.source_id}\0${e.slug}\0${e.title}\0${e.tokens.join(' ')}\0${e.hangulName ?? ''}`);
   }
   return createHash('sha256').update(entries.sort().join('\n')).digest('hex').slice(0, 8);
 }
@@ -384,6 +392,93 @@ export function tokenizeTitle(title: string): string[] {
 }
 
 /**
+ * Hangul syllable block (U+AC00–U+D7AF) — the Hangul slice of
+ * CJK_SLUG_CHARS (src/core/cjk.ts). Han and Kana deliberately excluded:
+ * they are not word-spaced, so a boundary rule would break real matches.
+ */
+function isHangulSyllable(ch: string | undefined): boolean {
+  if (!ch) return false;
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp >= 0xac00 && cp <= 0xd7af;
+}
+
+/**
+ * #5829 — comparison form for Hangul names: NFC, lowercase, whitespace
+ * runs collapsed to one space. Applied to BOTH the gazetteer name at
+ * build time and the matched body span at match time, so an entity typed
+ * "김 지원" still matches a body that writes it that way — while
+ * "삼성카드" no longer matches "삼성 카드": the per-character tokens are
+ * identical either way, so only the literal span can tell them apart.
+ */
+function normalizeHangulName(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().normalize('NFC').toLowerCase();
+}
+
+/**
+ * #5829: `name` is Hangul-only when every non-whitespace character is a
+ * Hangul syllable — return its normalized comparison form, else
+ * undefined. Mixed names (Hangul + Latin, Hangul + Han/Kana) keep the
+ * historical strict-adjacency behavior: the boundary rule is only safe
+ * where the script spaces between words. Exported so tests can build
+ * fixtures through the same predicate the production path uses.
+ */
+export function hangulOnlyName(name: string): string | undefined {
+  let sawHangul = false;
+  for (const ch of name) {
+    if (/\s/.test(ch)) continue;
+    if (!isHangulSyllable(ch)) return undefined;
+    sawHangul = true;
+  }
+  return sawHangul ? normalizeHangulName(name) : undefined;
+}
+
+/**
+ * #5829 — Hangul boundary check. A match is accepted only when
+ * (a) the literal matched span equals the entry name modulo whitespace
+ * runs — no gap inside the name — and (b) the character immediately
+ * before the match is not a Hangul syllable. This drops word-internal
+ * matches ("재지원" → "지원", "로그인하기" → "인하") and cross-word
+ * adjacency ("성장 인프라" → "장인"). There is deliberately no END
+ * boundary: Korean particles attach directly after a name ("지원이",
+ * "지원은"), so a trailing Hangul syllable is a true mention, not noise.
+ */
+function hangulBoundaryOk(
+  entry: GazetteerEntry,
+  text: string,
+  start: number,
+  end: number,
+): boolean {
+  if (entry.hangulName === undefined) return true;
+  if (normalizeHangulName(text.slice(start, end)) !== entry.hangulName) return false;
+  return !isHangulSyllable(start > 0 ? text[start - 1] : undefined);
+}
+
+/**
+ * Operator exclude list: `by_mention.exclude_slugs` (DB-plane config; JSON
+ * array or comma/newline-separated page slugs). Excluded pages get NO
+ * gazetteer entry, neither by title nor by alias, so by-mention, the
+ * stale-mentions check, extract-ner and timeline-from-meetings all agree
+ * (they share buildGazetteer). Use it for entities whose CJK name is a
+ * common word or syllable run: a 2-syllable name such as "인하" matches
+ * inside "로그인하기" because CJK tokens are single characters with no
+ * word boundary. Config-only on purpose (no env override): an env-only
+ * switch would make the scan and the doctor check disagree — the same
+ * trap as `GBRAIN_LINK_RESOLUTION_CROSS_SOURCE`.
+ */
+async function loadExcludedSlugs(engine: BrainEngine): Promise<Set<string>> {
+  try {
+    const raw = await engine.getConfig('by_mention.exclude_slugs');
+    if (!raw || !raw.trim()) return new Set();
+    let items: unknown;
+    try { items = JSON.parse(raw); } catch { items = undefined; }
+    const list = Array.isArray(items) ? items : raw.split(/[,\n]/);
+    return new Set(list.map(s => String(s).trim()).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * Build a token-Map gazetteer from all entity-typed pages in the brain.
  *
  * Hardcoded type filter per D2 (pack-awareness is TODO-1). Soft-deleted
@@ -407,6 +502,8 @@ export async function buildGazetteer(
     [],
   );
 
+  const excludedSlugs = await loadExcludedSlugs(engine);
+
   // Pre-build the existing-slug Set so the ignore-list rule can check
   // "does this name already correspond to a real page?" in O(1).
   const existingTitles = new Set<string>();
@@ -418,6 +515,7 @@ export async function buildGazetteer(
   const gazetteer: Gazetteer = new Map();
   for (const row of rows) {
     if (!row.title) continue;
+    if (excludedSlugs.has(row.slug)) continue;
     if (!hasCJK(row.title) && row.title.length < MIN_NAME_LENGTH) continue;
     if (hasCJK(row.title) && cjkCharCount(row.title) < MIN_CJK_NAME_LENGTH) continue;
     // NOTE (v0.46.15, deliberately preserved): for TITLES this condition is
@@ -446,6 +544,7 @@ export async function buildGazetteer(
       source_id: row.source_id ?? 'default',
       title: row.title,
       tokens,
+      hangulName: hangulOnlyName(row.title),
     };
     const key = tokens[0]!;
     const bucket = gazetteer.get(key);
@@ -496,6 +595,7 @@ export async function buildGazetteer(
     for (const a of aliasRows) {
       const alias = a.alias_norm?.trim();
       if (!alias || !a.title) continue;
+      if (excludedSlugs.has(a.slug)) continue;
       const src = a.source_id ?? 'default';
       if (alias.length < MIN_NAME_LENGTH && !hasCJK(alias)) continue;
       if (hasCJK(alias) && cjkCharCount(alias) < MIN_CJK_NAME_LENGTH) continue;
@@ -508,7 +608,10 @@ export async function buildGazetteer(
       const tokens = tokenizeTitle(alias);
       if (tokens.length === 0) continue;
       if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
-      const entry: GazetteerEntry = { slug: a.slug, source_id: src, title: a.title, tokens };
+      const entry: GazetteerEntry = {
+        slug: a.slug, source_id: src, title: a.title, tokens,
+        hangulName: hangulOnlyName(alias),
+      };
       const key = tokens[0]!;
       const bucket = gazetteer.get(key);
       if (bucket) bucket.push(entry);
@@ -596,6 +699,7 @@ export function findMentionedEntities(
     let matchedTokens = 0;
     for (const entry of bucket) {
       if (entry.tokens.length === 1) {
+        if (!hangulBoundaryOk(entry, stripped, head.offset, head.offset + head.length)) continue;
         matched = entry;
         matchedTokens = 1;
         break;
@@ -610,6 +714,8 @@ export function findMentionedEntities(
         }
       }
       if (allMatch) {
+        const last = tokens[i + entry.tokens.length - 1]!;
+        if (!hangulBoundaryOk(entry, stripped, head.offset, last.offset + last.length)) continue;
         matched = entry;
         matchedTokens = entry.tokens.length;
         break;

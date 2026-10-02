@@ -1538,6 +1538,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'link_resolution',
   'link_resolution.global_basename',
   'link_resolution.cross_source',
+  // #5829 — slugs (JSON array or comma-separated) that buildGazetteer must
+  // not turn into mention targets (ambiguous short CJK names). DB-plane,
+  // shared by the scan, extract-ner, and the stale_mentions doctor check.
+  'by_mention.exclude_slugs',
   // Spend controls (v0.42.42.0, issue #2139). Previously `--force`-only — the
   // operator had to discover these by reading source. Registered so `config
   // set` accepts them directly. See docs/operations/spend-controls.md.
