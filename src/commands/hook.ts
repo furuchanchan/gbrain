@@ -1484,6 +1484,10 @@ async function hookStop(io: HookIo): Promise<number> {
         allowOversize: true,
       });
       if (!conf.ok) return `transcript_${conf.reason}`;
+      // #5820: the same self-capture guard the SessionEnd lane applies
+      // (#5413) — a claude-cli subprocess session must not bank its own prompt.
+      const wbWs = io.cwd ?? (typeof j?.cwd === 'string' ? (j.cwd as string) : process.cwd());
+      if (isClaudeCliSelfTranscriptPath(conf.path) || isClaudeCliSelfTranscriptPath(wbWs)) return 'self_transcript';
       const findLastUser = (parsed: ReturnType<typeof parseTranscript>): WindowTurn | undefined => {
         const index = parsed.genuineUserTurnIndexes.at(-1);
         return index === undefined ? undefined : parsed.turns[index];
@@ -1560,7 +1564,7 @@ async function hookStop(io: HookIo): Promise<number> {
     // skipped-vs-failed counters and any alerting stay honest.
     const wbByDesign =
       wbReason === 'wb_scheduled' || wbReason === 'wb_banked' || wbReason === 'wb_dup' ||
-      wbReason === 'no_user_turn' || wbReason.startsWith('flush_skip_') ||
+      wbReason === 'no_user_turn' || wbReason === 'self_transcript' || wbReason.startsWith('flush_skip_') ||
       (WRITEBACK_SKIP_REASONS as readonly string[]).includes(wbReason);
     await writeHeartbeat(io, {
       ts: new Date().toISOString(),

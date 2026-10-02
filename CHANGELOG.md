@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.29.2] - 2026-09-21
+
+### Fixed
+
+- Stop-hook ambient write-back no longer banks gbrain's own claude-cli
+  subprocess sessions into the session corpus (#5820). The Stop lane now
+  applies the same self-transcript guard the SessionEnd lane has had since
+  #5413 — the scratch-cwd fingerprint in the transcript path or the
+  payload cwd — and the serve-side writeback harvest terminal-sidecars a
+  banked turn whose session id is a claude-cli self session (`self_capture`,
+  same classification as the sweep). Before this, every gbrain extraction
+  call that ran under a hook-bearing harness banked its own prompt as a
+  "conversation" (618 files in 6h on the reporter's brain), each queued
+  harvest spawned a NEW claude-cli session — unbounded by
+  `WRITEBACK_SESSION_CAP` — and `doctor` warned `self_capture` every run.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

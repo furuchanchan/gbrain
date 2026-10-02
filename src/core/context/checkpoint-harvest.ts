@@ -422,6 +422,20 @@ async function runWritebackTurn(job: HarvestJob, full: string, ingestedPath: str
     await writeFile(ingestedPath, writebackOffSidecarJson());
     return { outcome: 'ok', reason: 'writeback_off' };
   }
+  // #5820: the same self-capture guard the sweep applies — a banked turn
+  // whose session is gbrain's own claude-cli subprocess. Extracting it
+  // spawns another claude-cli call, each call is a NEW session, so
+  // WRITEBACK_SESSION_CAP cannot bound the loop. Terminal sidecar: the
+  // session-id classification is permanent, same lifecycle as the sweep's
+  // self_capture skip.
+  const { claudeCliSelfSessionIds } = await import('../ai/providers/claude-cli-scratch.ts');
+  if (claudeCliSelfSessionIds().has(job.sessionId)) {
+    await writeFile(
+      ingestedPath,
+      JSON.stringify({ ingested_at: new Date().toISOString(), skipped: 'self_capture' }) + '\n',
+    );
+    return { outcome: 'ok', reason: 'self_capture' };
+  }
   const { extractionAvailableForEngine } = await import('../facts/extraction-availability.ts');
   if (!(await extractionAvailableForEngine(job.engine, job.capabilities))) {
     return { outcome: 'degraded', reason: 'keyless' };
