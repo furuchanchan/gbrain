@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **The `do-anything-now` sanitize pattern no longer redacts the Spanish verb "dan" (#5910).** The jailbreak pattern was case-insensitive, so every fact-extraction and Gmail loop-extraction turn replaced "dan" ("they give") with `[redacted]`, mangling Spanish-language content before the LLM saw it. The acronym now matches case-sensitively (all-caps `DAN` — the jailbreak form) while the `do anything now` / `developer mode enabled` phrase alternatives stay case-insensitive; "dan", "Dan", and "DANIEL" pass through untouched.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
