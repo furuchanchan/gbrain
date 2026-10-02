@@ -111,7 +111,7 @@ export async function getTimeline(exec: LegacyUnscopedRead, slug: string, opts?:
       WHERE p.slug = ${slug} ${sourceCond} ${afterCond} ${beforeCond}
         ${opts?.excludePrivate ? trustedSql(`AND ${privatePagesFilterFragment('p')}
           AND ${privateTimelineEventFilterFragment('te')}`) : sqlFragment``}
-      ORDER BY te.date DESC LIMIT ${limit}`)).rows;
+      ORDER BY te.date DESC, te.id DESC LIMIT ${limit}`)).rows;
     return rows as unknown as TimelineEntry[];
   }
 

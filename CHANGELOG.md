@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.3] - 2026-10-02
+
+### Fixed
+- `get_timeline` (and the engine `getTimeline` read behind it) now orders `te.date DESC, te.id DESC`, so same-date entries have a deterministic order and a `limit` keeps a stable subset instead of a planner-arbitrary one — matching the tie-breaker the chronicle reads already used (#5883).
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**
