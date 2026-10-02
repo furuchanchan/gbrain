@@ -51,6 +51,13 @@ one-of-one, sui generis to a single source.
 If the content has a clear primary subject (a person, company, concept, policy
 issue), it does NOT go in sources/. Period.
 
+## What `inbox/` Is Actually For
+
+`inbox/` is the `gbrain capture` landing zone — untriaged drops that have not
+been classified yet. It is a holding pen, not a destination: a page that has a
+clear primary subject should be re-filed under that subject's directory (and
+cross-linked). A page that lives permanently in `inbox/` was never triaged.
+
 ## Notability Gate
 
 Not everything deserves a brain page. Before creating a new entity page:

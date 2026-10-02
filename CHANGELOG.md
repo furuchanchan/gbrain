@@ -10,6 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+- **bundled skillpack adoption** — `capture` declared `writes_pages:` as a destination glob list and `schema-author` as `[]`; publication/privacy markers accept only string `true/false/yes/no`, so either file throws `approval_required` and aborts the single-mutation `adoptSharedSkillpack` for the whole bundled pack. `capture` now uses `writes_pages: true` with the `inbox/*` glob moved to `writes_to`, and `schema-author` declares `writes_pages: true`. A regression test runs `skillMetadata` over every bundled `skills/*/SKILL.md` (#5476).
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
