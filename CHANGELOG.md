@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **Managed sync now stamps `sources.chunker_version` on a completed `--full` run (#5566).** The legacy path wrote the stamp on every sync, but the managed checkpoint never did, so a quiet source (frozen import, archive, snapshot) could never satisfy `doctor sync_freshness`'s chunker match and aged into WARN at 24 h / FAIL at 72 h even right after a successful re-chunk. The checkpoint publication writes `String(CHUNKER_VERSION)` only when the run was `--full` — an incremental checkpoint never visited the unchanged files, so stamping there would falsely certify a partially-stale corpus (managed discovery has no chunker-gate forcing a re-walk the way legacy preflight does).
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
