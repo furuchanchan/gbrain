@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.26.2] - 2026-10-01
+
+### Fixed
+
+- `gbrain backup` remote verification now isolates spawned git from inherited repository-selection and config-injection environment: `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`/`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_ALTERNATE_OBJECT_DIRECTORIES`/`GIT_NAMESPACE` can no longer retarget the probe (or `discoverGitRoot`) at a decoy repo, and `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` can no longer rewrite `origin` via `url.<base>.insteadOf` or redirect the config files — both previously let a same-HEAD decoy produce an indistinguishable `verified` verdict (hooks inherit `GIT_CONFIG_PARAMETERS` via `git -c`). `HOME`/`PATH` and credential helpers are preserved, and the no-prompt overrides (`GIT_TERMINAL_PROMPT=0`, empty askpass, `SSH_ASKPASS_REQUIRE=never`) are unchanged (#5794).
 ## [0.60.26.0] - 2026-10-01
 
 **System One: a fast decision model can now make some of your brain's small judgment calls, starting with which chats are worth remembering and which facts replace older ones. If you have a TypeSafe key installed, upgrading turns those two on.**
