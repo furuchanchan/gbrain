@@ -1389,7 +1389,11 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
         // slipped past `isReservedSkillBundlePath`, letting the
         // --include-gitignored / non-git fallback route import — or block
         // managed import on — files the git fast path skips; #5852).
-        const rel = relative(dir, full);
+        // `relative()` returns OS separators — `docs\README.md` on Windows —
+        // while every gate downstream (segment splits, `SYNC_SKIP_FILES`
+        // basenames, isSyncable parity) speaks canonical '/' rel paths.
+        // Normalize here, same convention as github-source.ts.
+        const rel = relative(dir, full).replace(/\\/g, '/');
         if (hasMalformedPathSegment(rel)) { opts.onExcluded?.(rel); continue; }
         if (!isCollectibleForWalker(rel, strategy, multimodalOn, opts.includeHidden)) continue;
         files.push(full);

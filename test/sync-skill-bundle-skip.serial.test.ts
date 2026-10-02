@@ -170,6 +170,31 @@ describe('#5852 — sync skips reserved skillpack paths instead of blocking', ()
     }
   });
 
+  test('filesystem walker normalizes Windows separators before the gates (regression: SYNC_SKIP_FILES basename)', async () => {
+    // `path.relative()` returns `docs\README.md` on Windows; the shared
+    // gates speak canonical '/' rel paths, so `SYNC_SKIP_FILES`'s basename
+    // check would see `docs\README.md` (not `README.md`) and admit a nested
+    // metafile the git fast path excludes. On POSIX a literal '\' in a
+    // filename exercises the same code path (`relative()` output with a
+    // backslash reaching the gate) — the file named `windocs\README.md`
+    // normalizes to `windocs/README.md` and must be excluded as a metafile,
+    // while `windocs\page.md` must still collect.
+    const nonGit = mkdtempSync(join(tmpdir(), 'gbrain-skillpack-winsep-'));
+    try {
+      writeFileSync(join(nonGit, 'windocs\\README.md'), '# readme\n');
+      writeFileSync(join(nonGit, 'windocs\\index.md'), '# index\n');
+      writeFileSync(join(nonGit, 'windocs\\page.md'), '# page\n');
+      const { collectSyncableFiles } = await import('../src/commands/import.ts');
+      const files = collectSyncableFiles(nonGit, { strategy: 'markdown' });
+      const rels = files.map(f => f.slice(nonGit.length + 1));
+      expect(rels).toContain('windocs\\page.md');
+      expect(rels).not.toContain('windocs\\README.md');
+      expect(rels).not.toContain('windocs\\index.md');
+    } finally {
+      rmSync(nonGit, { recursive: true, force: true });
+    }
+  });
+
   test('a publisher-owned page under skills/ survives classic re-sync after its file is edited', async () => {
     const { performSync } = await import('../src/commands/sync.ts');
     const first = await performSync(engine, { repoPath, full: true, noPull: true, noEmbed: true });
