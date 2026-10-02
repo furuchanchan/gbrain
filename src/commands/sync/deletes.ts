@@ -61,8 +61,12 @@ export async function sweepUnsyncableModified(
     // imports those paths), so "the file was modified" is not evidence
     // the page is stale. Deleting here silently destroyed put-created
     // pages every time their materialized file landed in a commit.
+    // #5852: same for 'skill-bundle' — pages under reserved skillpack
+    // paths belong to the shared skill publisher (pack materialization or
+    // put_skill), whose lifecycle owns them; the walker never imported
+    // the file, so a modified skills/ file is not staleness evidence.
     const reason = unsyncableReason(path, syncOpts);
-    if (reason === 'metafile' || reason === 'pruned-dir') continue;
+    if (reason === 'metafile' || reason === 'pruned-dir' || reason === 'skill-bundle') continue;
     // Bare-bracket markdown (pre-gate imports like `notes [draft].md`) keeps
     // its row — only the poison signature (`](`/control chars) is sweepable.
     // Deleting a legit page's row while its file sits on disk is data loss.

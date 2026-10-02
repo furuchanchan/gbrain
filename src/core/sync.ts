@@ -18,6 +18,7 @@ import { SLUG_WORD_CHARS, SLUG_VARIATION_SELECTORS_RE } from './cjk.ts';
 import { existsSync, statSync, realpathSync } from 'fs';
 import { join as pathJoin, resolve as pathResolve } from 'path';
 import type { BrainEngine } from './engine.ts';
+import { isReservedSkillBundlePath } from './skill-reserved-paths.ts';
 
 export interface SyncManifest {
   added: string[];
@@ -463,7 +464,8 @@ export type SyncableReason =
   | 'pruned-dir'
   | 'include-glob-miss'
   | 'exclude-glob-hit'
-  | 'malformed-path';
+  | 'malformed-path'
+  | 'skill-bundle';
 
 /**
  * Path segments that can never be legitimate page filenames: square brackets
@@ -550,6 +552,14 @@ export const SYNC_SKIP_FILES = ['schema.md', 'index.md', 'log.md', 'README.md', 
  */
 function classifySync(path: string, opts: SyncableOptions = {}): SyncableReason | null {
   const strategy = opts.strategy || 'markdown';
+
+  // Reserved skillpack paths (`skills/**`, `skillpack.json` at any depth) are
+  // owned by the shared skill publisher — `managedImportContent` refuses them
+  // with `skill_bundle_required`, so admitting them here would block the run
+  // on a file the importer always rejects (#5852). Path-shaped reservation:
+  // it precedes the strategy gate so the tagged reason (and the deletes-sweep
+  // preservation that keys on it) is the same under every strategy.
+  if (isReservedSkillBundlePath(path)) return 'skill-bundle';
 
   if (!isAllowedByStrategy(path, strategy)) return 'strategy';
 

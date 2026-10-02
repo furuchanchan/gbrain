@@ -22,6 +22,7 @@ import {
   SYNC_SKIP_FILES,
   type SyncStrategy,
 } from '../core/sync.ts';
+import { isReservedSkillBundlePath } from '../core/skill-reserved-paths.ts';
 import { sortNewestFirst } from '../core/sort-newest-first.ts';
 import {
   loadCheckpoint,
@@ -1218,6 +1219,12 @@ function isCollectibleForWalker(
   const segments = path.split('/');
   const basename = segments[segments.length - 1] || '';
   if ((SYNC_SKIP_FILES as readonly string[]).includes(basename)) return false;
+
+  // Reserved skillpack paths (`skills/**`, `skillpack.json`) are refused by
+  // managedImportContent (`skill_bundle_required`) — collecting them blocks
+  // the run on a file the importer always rejects (#5852). Same predicate as
+  // incremental sync's classifySync so full and incremental agree.
+  if (isReservedSkillBundlePath(path)) return false;
 
   switch (strategy) {
     case 'code':
