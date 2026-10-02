@@ -408,7 +408,10 @@ async function main() {
     // `eval brainbench` ships a published foreign-runner flag surface — its
     // own usage() must win over the generic eval stub (codex P3). Fall
     // through to handleCliOnly's no-DB brainbench route, which prints it.
-    const selfHelpSub = command === 'eval' && subArgs[0] === 'brainbench';
+    // #5559: `eval suspected-contradictions --help` gets the same
+    // exception — the probe's own usage must win over the generic eval
+    // stub, and its help path never touches the engine.
+    const selfHelpSub = command === 'eval' && (subArgs[0] === 'brainbench' || subArgs[0] === 'suspected-contradictions');
     const op = cliOps.get(command) ?? cliAliases.get(command);
     if (op && !selfHelpSub) {
       printOpHelp(op, command);
@@ -424,6 +427,13 @@ async function main() {
     // exits 1 with "No brain configured", and the handler's own help block is
     // unreachable. That is the state a reader is most likely to be in.
     if (await printSelfHelpWithoutEngine(command, subArgs)) return;
+    // #5559: the probe's help guard runs before any engine work, so a
+    // placeholder engine answers `--help` even with no brain configured.
+    if (command === 'eval' && subArgs[0] === 'suspected-contradictions') {
+      const { runEvalSuspectedContradictions } = await import('./commands/eval-suspected-contradictions.ts');
+      await runEvalSuspectedContradictions(null as never, subArgs.slice(1));
+      return;
+    }
   }
 
   if (command === 'sources' && subArgs[0] === 'inspect') {

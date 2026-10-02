@@ -131,7 +131,7 @@ inspect findings without re-running the probe.
 
 ## Cost model
 
-Default judge is `claude-haiku-4-5` at ~$1/Mtok in, $5/Mtok out. With
+The judge resolves through `resolveModel()`: an explicit `--judge MODEL` flag wins, then the `models.eval.contradictions_judge` config key, then the utility tier (so on an install with a configured utility tier the judge is that model, e.g. `claude-cli:claude-sonnet-5`). At utility-tier prices (`claude-haiku-4-5`: ~$1/Mtok in, $5/Mtok out): With
 the default truncation at 1500 chars per pair (`--max-pair-chars`), ~500 input + 80 output
 tokens per judge call. Budget cap defaults to $5 in TTY / $1 non-TTY.
 

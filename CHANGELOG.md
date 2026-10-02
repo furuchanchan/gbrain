@@ -124,6 +124,7 @@ The release also absorbs 62 open community pull requests, each re-checked agains
 - **#5341** `check-backlinks fix` managed-worktree refusal.
 - **#5330** shared conversation-facts eligibility (`isConversationFactsEligiblePage` and its SQL twin in `src/core/facts/conversation-types.ts`).
 - **#5329** `chronicle_backfill` idempotency keys and paging, no schema change. The issue's other parts (a cadence gate, extraction idempotency for direct `chronicle_extract` runs, the no-sub-events page, the judge output cap) remain open.
+- **#5559** `gbrain eval suspected-contradictions --help` prints the probe's own usage (was the generic `eval` stub); `capabilities.md` no longer claims the probe runs inside the dream cycle — it needs its own schedule, and the documented cadence uses `--from-capture`.
 
 #### Memory capture (#5888, #5887)
 

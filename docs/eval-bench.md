@@ -935,9 +935,9 @@ brain surfaces conflicting answers.
 ### Recommended nightly cadence
 
 ```bash
-# Once a day, against your top 50 most-frequent queries:
+# Once a day, against the queries gbrain captured (eval.capture):
 gbrain eval suspected-contradictions \
-  --queries-file ~/.gbrain/queries.jsonl \
+  --from-capture \
   --top-k 5 \
   --budget-usd 5 \
   --output ~/.gbrain/probe-runs/$(date +%Y-%m-%d).json
