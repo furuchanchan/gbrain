@@ -278,7 +278,11 @@ const traverse_graph: Operation = {
     // walks stay within the auth'd client's accessible sources. Pre-fix,
     // traverseGraph / traversePaths happily followed edges into pages from
     // foreign sources, leaking topology + page metadata via the graph op.
-    const scope = await readPolicyOpts(ctx);
+    // #5827: linkReadScopeOpts — no-grant scalar callers widen to the
+    // transport-computed federated read set (same guards as search), and a
+    // remote scalar promotes to the all-endpoint sourceIds[] branch so the
+    // walk can't leak a foreign far/origin endpoint.
+    const scope = await readPolicyOpts(ctx, linkReadScopeOpts(ctx));
     // Backward compat: trusted local no-filter callers keep the legacy
     // GraphNode[] shape used by `gbrain graph`. Remote MCP callers need the
     // natural no-filter invocation to surface inbound-only typed edges too,

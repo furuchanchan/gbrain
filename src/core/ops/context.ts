@@ -573,9 +573,30 @@ export function thinkSourceScopeOpts(ctx: OperationContext): {
  * scalar scope to a single-element `sourceIds:[id]`, routing them through the
  * all-endpoint branch. Trusted local CLI (`ctx.remote === false`) keeps the scalar
  * cross-source view, and a federated array passes through unchanged.
+ *
+ * #5827: before the single-element promotion, an unqualified scalar scope with
+ * no OAuth grant widens to `ctx.localFederatedSourceIds` (>1 entries) under the
+ * same guards `federatedSearchScope` uses — a no-grant caller's link reads then
+ * cover the sources their search sees, instead of the page-less fallback scalar.
  */
 export function linkReadScopeOpts(ctx: OperationContext): { sourceId?: string; sourceIds?: string[] } {
   const scope = sourceScopeOpts(ctx);
+  // #5827: an unqualified scalar scope widens to the transport-computed
+  // federated read set — the same guards `federatedSearchScope` applies to
+  // search — so a no-grant caller (a legacy bearer token, or a local CLI
+  // resolving to the page-less routing source on a multi-federated brain)
+  // sees the link graph for the sources their search already returns,
+  // instead of an empty edge set pinned to their fallback scalar. A grant
+  // (`ctx.auth.allowedSources`) still governs and is never widened.
+  if (
+    ctx.auth?.allowedSources === undefined &&
+    scope.sourceId !== undefined &&
+    scope.sourceIds === undefined &&
+    ctx.localFederatedSourceIds !== undefined &&
+    ctx.localFederatedSourceIds.length > 1
+  ) {
+    return { sourceIds: ctx.localFederatedSourceIds };
+  }
   if (ctx.remote !== false && scope.sourceId && !scope.sourceIds) {
     return { sourceIds: [scope.sourceId] };
   }
@@ -688,7 +709,9 @@ export function parseSourceIdParam(
  *
  * Deliberately NOT inside `sourceScopeOpts`: code-intel ops collapse a
  * multi-element scope to an error (`resolveCodeIntelScope`), and the remaining
- * scalar reads (get_links, get_chunks, …) keep their long-standing behavior.
+ * scalar reads (get_chunks, …) keep their long-standing behavior. The link ops
+ * get the same widening one level down, inside `linkReadScopeOpts` (#5827),
+ * because their engine endpoints already scope all three edge endpoints.
  */
 export function federatedSearchScope(
   ctx: OperationContext,

@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.0] - 2026-09-21
+
+### Fixed
+
+- `get_links` / `get_backlinks` / `traverse_graph` widened to the transport-computed federated read set for no-grant callers on multi-source federated brains, matching `search`/`get_page` (#5827): a legacy token or unqualified local call resolving to a page-less routing source saw an empty link graph while search returned the same pages. The engine's `sourceIds[]` branch already scopes all three edge endpoints, so the widening is privacy-correct.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**
