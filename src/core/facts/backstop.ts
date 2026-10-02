@@ -37,7 +37,7 @@
  * commit 13 wires it.
  */
 
-import type { BrainEngine, FactInsertStatus, NewFact } from '../engine.ts';
+import type { BrainEngine, FactInsertStatus, NewFact, FactRow } from '../engine.ts';
 import type { ResolutionSource } from '../entities/resolve.ts';
 import { isFactsBackstopEligible } from './eligibility.ts';
 import type { PageType } from '../types.ts';
@@ -49,6 +49,7 @@ import { withAIInvocationPreflight } from '../ai/invocation-guard.ts';
 import { decideSingleFact } from './single-prepare.ts';
 import { appendContextNote, type InferredVia } from './subject-infer.ts';
 import { inferenceNote, inferMissingSubjects } from './subject-infer-write.ts';
+import type { ExtractedFact } from './extract.ts';
 
 /**
  * Notability-filter vocabulary shared by the durable facts-absorb payload
@@ -167,8 +168,63 @@ interface ParsedPageInput {
  */
 const DEDUP_THRESHOLD = 0.95;
 
+/**
+ * #5888: drop extracted facts that duplicate an active fact written inside
+ * the recent window regardless of entity (see the call-site note). One
+ * bounded unscoped fetch — the same-session flag is per-row, so narrowing
+ * candidates by session first would hide cross-session matches the strict
+ * bar still dedups.
+ */
+async function dropRecentWriteDuplicates(
+  ctx: FactsBackstopCtx,
+  facts: ExtractedFact[],
+  visibility: 'private' | 'world',
+): Promise<{ kept: ExtractedFact[]; duplicateIds: number[] }> {
+  const since = new Date(Date.now() - RECENT_WRITE_DEDUP_WINDOW_MS);
+  const candidates = await ctx.engine.listFactsSince(ctx.sourceId, since, {
+    activeOnly: true, limit: RECENT_WRITE_DEDUP_LIMIT, visibility: [visibility],
+  });
+  if (candidates.length === 0) return { kept: facts, duplicateIds: [] };
+  const { cosineSimilarity } = await import('./classify.ts');
+  const { normalizeLoweredClaim } = await import('./withdrawal-schema.ts');
+  const duplicateIds: number[] = [];
+  const kept: ExtractedFact[] = [];
+  for (const f of facts) {
+    const normalized = normalizeLoweredClaim(f.fact.toLowerCase());
+    let matched: number | null = null;
+    for (const c of candidates) {
+      if (normalized === normalizeLoweredClaim(c.fact.toLowerCase())) { matched = c.id; break; }
+      if (f.entity_inferred || !f.embedding || !c.embedding || c.embedding_model !== f.embedding_model) continue;
+      const score = cosineSimilarity(f.embedding, c.embedding);
+      const sameSession = ctx.sessionId !== null && c.source_session === ctx.sessionId;
+      if (score >= (sameSession ? RECENT_SESSION_DEDUP_THRESHOLD : DEDUP_THRESHOLD)) { matched = c.id; break; }
+    }
+    if (matched === null) kept.push(f); else duplicateIds.push(matched);
+  }
+  return { kept, duplicateIds };
+}
+
 /** k for findCandidateDuplicates — ceiling on candidates considered. */
 const DEDUP_CANDIDATE_LIMIT = 5;
+
+/**
+ * #5888: the hook:writeback lane re-extracts a user turn roughly 30–70 s
+ * after the agent's own `remember`/put call saved the same statement —
+ * possibly filed on another entity, which the per-entity dedup above can
+ * never compare. The writeback lane therefore also checks active facts
+ * written inside this window regardless of entity.
+ */
+const RECENT_WRITE_DEDUP_WINDOW_MS = 10 * 60 * 1000;
+const RECENT_WRITE_DEDUP_LIMIT = 50;
+
+/**
+ * Same-session rows inside the recent window are almost always the agent's
+ * own just-saved statement. The measured remember/writeback pair range is
+ * cosine 0.895–0.941 — below the storage dedup bar — so the same-session
+ * tier uses a looser paraphrase threshold; the recency + session bound
+ * keeps that bar from folding unrelated older claims.
+ */
+const RECENT_SESSION_DEDUP_THRESHOLD = 0.88;
 
 /**
  * Once-per-process stderr warning memo. v0.32.2 uses this to surface
@@ -657,13 +713,35 @@ async function runPipelineBodyInner(
   // facts.default_visibility (fail-closed to 'private').
   const { resolveDefaultVisibility } = await import('./visibility.ts');
   const visibility = ctx.visibility ?? (await resolveDefaultVisibility(ctx.engine));
-  const facts = await inferMissingSubjects(ctx, outcome.facts, visibility, input.pageSlug, managed);
-  if (managed) return publishManagedFacts(ctx.engine, managed, ctx, facts, visibility, input.pageSlug);
+  let facts = await inferMissingSubjects(ctx, outcome.facts, visibility, input.pageSlug, managed);
+
+  // #5888: the hook:writeback lane re-extracts a user turn shortly after
+  // the agent's own `remember`/put call saved the same statement — possibly
+  // on another entity, which the per-entity dedup both publish paths run
+  // can never compare. The writeback lane drops a fact that matches an
+  // active fact written inside a small recent window regardless of entity:
+  // normalized-text equality, or cosine at the shared bar — loosened for
+  // same-session rows, which are almost always the agent's own just-saved
+  // phrasing of the same turn (the measured remember/writeback pair range
+  // is 0.895–0.941, below the storage dedup bar). Entity-inferred facts
+  // match on exact text only, consistent with the per-entity rule. The
+  // lane is scoped to hook:writeback so import/remember dedup semantics
+  // are byte-identical.
+  let recentDuplicateIds: number[] = [];
+  if (ctx.source === 'hook:writeback' && facts.length > 0) {
+    const dropped = await dropRecentWriteDuplicates(ctx, facts, visibility);
+    facts = dropped.kept;
+    recentDuplicateIds = dropped.duplicateIds;
+  }
+  if (managed) {
+    const managedResult = await publishManagedFacts(ctx.engine, managed, ctx, facts, visibility, input.pageSlug);
+    return { ...managedResult, duplicate: managedResult.duplicate + recentDuplicateIds.length, fact_ids: [...managedResult.fact_ids, ...recentDuplicateIds] };
+  }
 
   let inserted = 0;
-  let duplicate = 0;
+  let duplicate = recentDuplicateIds.length;
   let superseded = 0;
-  const fact_ids: number[] = [];
+  const fact_ids: number[] = [...recentDuplicateIds];
   // Cathedral 5: slugs whose fence-write actually inserted a fact this run.
   const fencedSlugs = new Set<string>();
 

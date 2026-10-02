@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- `memory.auto_writeback`: the Stop-hook writeback harvest no longer stores a second copy of a statement the agent just saved with `remember`. The extraction lane now compares each candidate fact against active facts written in the last ten minutes regardless of entity — a remembered row filed on another entity was invisible to the per-entity dedup — matching on normalized text, or cosine ≥ 0.95 for cross-session rows and ≥ 0.88 for same-session rows (the measured remember/writeback pair range was 0.895–0.941, below the storage bar). Duplicate matches are reported through the existing `duplicate`/`fact_ids` counters, and `_meta.brain_hot_memory` now collapses near-duplicate phrasings of one statement before injection, keeping the most confident row instead of showing 3–4 copies side by side. (#5888)
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

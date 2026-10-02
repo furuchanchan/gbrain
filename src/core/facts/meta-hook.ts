@@ -21,9 +21,23 @@
 import type { OperationContext } from './../operations.ts';
 import type { FactRow } from './../engine.ts';
 import { effectiveConfidence } from './decay.ts';
+import { cosineSimilarity } from './classify.ts';
+import { normalizeLoweredClaim } from './withdrawal-schema.ts';
 
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_TOP_K = 10;
+
+/**
+ * #5888: ambient writeback can store a second copy of a statement the agent
+ * already saved with `remember` (a same-turn re-extraction, sometimes filed
+ * on another entity), and hot memory used to inject every stored copy side
+ * by side. Display rows collapse on normalized-text equality or, when both
+ * carry an embedding of the same model, a cosine bar looser than the
+ * storage dedup threshold — the measured same-statement pair range is
+ * 0.895–0.941. A collapsed row only hides a phrasing for this injection;
+ * no fact is deleted or superseded.
+ */
+const HOT_MEMORY_NEAR_DUP_THRESHOLD = 0.85;
 
 /**
  * Hard bound on cache entries. The key folds caller-controlled
@@ -170,10 +184,21 @@ export async function getBrainHotMemoryMeta(
     return undefined;
   }
 
-  // Sort by effective confidence (decayed) before truncating.
+  // Sort by effective confidence (decayed), collapse near-duplicate
+  // phrasings of one statement (#5888 — the survivor is the most confident
+  // row in its cluster), then truncate.
   const now = new Date();
   rows.sort((a, b) => effectiveConfidence(b, now) - effectiveConfidence(a, now));
-  rows = rows.slice(0, topK);
+  const collapsed: FactRow[] = [];
+  for (const row of rows) {
+    const dup = collapsed.some(kept =>
+      normalizeLoweredClaim(kept.fact.toLowerCase()) === normalizeLoweredClaim(row.fact.toLowerCase())
+      || (kept.embedding !== null && row.embedding !== null && kept.embedding_model === row.embedding_model
+        && cosineSimilarity(kept.embedding, row.embedding) >= HOT_MEMORY_NEAR_DUP_THRESHOLD));
+    if (!dup) collapsed.push(row);
+    if (collapsed.length >= topK) break;
+  }
+  rows = collapsed;
 
   const payload = {
     brain_hot_memory: {

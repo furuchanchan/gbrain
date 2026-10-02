@@ -42,7 +42,7 @@ src/core/cycle/patterns.ts	runPhasePatterns	303	seed: W5 baseline, refactor wave
 src/core/cycle/propose-takes.ts	ProposeTakesPhase.process	427	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/cycle/synthesize-concepts.ts	runPhaseSynthesizeConcepts	447	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/cycle/synthesize.ts	runPhaseSynthesizeInner	1043	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
-src/core/facts/backstop.ts	runPipelineBodyInner	358	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
+src/core/facts/backstop.ts	runPipelineBodyInner	379	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1); +21 #5888: writeback-lane recent-write dedup — dispatch call + duplicate-count merge on the managed/unmanaged return paths (helper dropRecentWriteDuplicates extracted at module level)
 src/core/import-file.ts	importFromContent	857	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/minions/handlers/subagent-oneshot.ts	runSubagentOneshot	377	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/minions/handlers/subagent.ts	makeSubagentHandler	884	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
