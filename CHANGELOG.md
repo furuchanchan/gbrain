@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **Deleting the skipped twin of a slug collision no longer wedges managed sync (#5565).** Since #5694 two tracked files that slugify to one page skip the loser instead of failing the sync — but `git rm`-ing the skipped file still threw `page_identity_changed: A different origin occupies the imported slug` on the next incremental sync (and same for a rename of the loser), because the `delete` entry's slug resolved to the kept twin's page. A `delete` entry whose path never owned the slug now retires instead of refusing — removing that file carries no page identity. Deleting the kept twin still soft-deletes its page, and a mismatched import still refuses.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

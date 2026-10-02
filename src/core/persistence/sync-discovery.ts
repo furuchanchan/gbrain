@@ -231,6 +231,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
   }
   // Imports whose origin has no page yet claim their slug; claims are settled after every entry has one.
   const claims = new Map<string, SyncEntry[]>();
+  const retired = new Set<SyncEntry>();
   for (const entry of selected) {
     const legacy = legacySyncOrigin(originScope, syncOriginPath(entry.sourcePath));
     const origins = [...byPath.get(syncOriginPath(entry.sourcePath)) ?? [],
@@ -246,6 +247,12 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     }
     const page = origins[0] ?? bySlug.get(slug);
     if (page?.source_path != null && !sameSyncOrigin(page.source_path, entry.sourcePath, originScope, page.slug)) {
+      // #5565: a DELETE entry whose path never owned this slug (e.g. the
+      // skipped twin of a slug collision) removes no page identity — retiring
+      // it keeps the sync honest instead of throwing, which wedged the source
+      // with no supported repair. The mismatched-IMPORT case below still
+      // throws: adopting a new origin is a real identity change.
+      if (entry.action === 'delete') { retired.add(entry); continue; }
       const error = new OperationError('page_identity_changed', 'A different origin occupies the imported slug.',
         `Page ${slug} in source ${sourceId} records the origin '${page.source_path}', but sync found it at '${entry.sourcePath}'. On the brain host, rename or move one of the two files so each page has one origin, commit, then run gbrain sync --source ${sourceId} --no-pull --retry-failed.`);
       error.detail = 'sync_origin_mismatch';
@@ -259,7 +266,6 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
   // Origins that differ only by case or separator spelling may be one file on another platform; refuse rather than
   // guess. The one exception is a case-only respelling whose old file this very sync removes.
   const spelling = (origin: string) => origin.replaceAll('\\', '/').toLowerCase();
-  const retired = new Set<SyncEntry>();
   const collisions: SyncSlugCollision[] = [];
   const gitPath = (entry: SyncEntry) => relative(nativeGitRoot, join(nativeRoot, entry.path)).split(sep).join('/');
   for (const [slug, candidates] of claims) {
