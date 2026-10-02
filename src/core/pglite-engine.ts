@@ -1492,7 +1492,17 @@ export class PGLiteEngine implements BrainEngine {
     // FTS config name (e.g. 'english', 'pt_br'). Validated by getFtsLanguage()
     // — safe to interpolate into raw SQL.
     const ftsLang = getFtsLanguage();
-    const titleVector = requiresSafeChunks(opts) ? `to_tsvector('${ftsLang}', COALESCE(p.title, ''))` : 'p.search_vector';
+    const safeTitle = requiresSafeChunks(opts);
+    const titleVector = safeTitle ? `to_tsvector('${ftsLang}', COALESCE(p.title, ''))` : 'p.search_vector';
+    // On the title-only remote vector an unnormalized ts_rank_cd gives every
+    // title containing the query word once the same score, so tie order (the
+    // slug-prefix factor, then page id) decides — and a page whose title IS
+    // the query can sit below thousands of longer matches, outside the rows
+    // the exact-lookup tier reads. Length normalization (flag 2) ranks the
+    // shortest matching titles first.
+    const titleRank = safeTitle
+      ? `ts_rank_cd(${titleVector}, websearch_to_tsquery('${ftsLang}', $1), 2)`
+      : `ts_rank_cd(${titleVector}, websearch_to_tsquery('${ftsLang}', $1))`;
 
     const params: unknown[] = [boundWebsearchQuery(query), limit, offset];
     let extraFilter = '';
@@ -1542,7 +1552,7 @@ export class PGLiteEngine implements BrainEngine {
          COALESCE(rep.chunk_index, 0) as chunk_index,
          COALESCE(rep.chunk_text, '') as chunk_text,
          COALESCE(rep.chunk_source, 'compiled_truth') as chunk_source,
-         ts_rank_cd(${titleVector}, websearch_to_tsquery('${ftsLang}', $1)) * ${sourceFactorCase} AS score,
+         ${titleRank} * ${sourceFactorCase} AS score,
          CASE WHEN p.updated_at < (
            SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id
          ) THEN true ELSE false END AS stale

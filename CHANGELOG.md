@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.31.4] - 2026-10-02
+
+### Fixed
+
+- Remote `search` no longer buries a page whose title IS the query. Since 0.48.3.0 remote callers (`requireSafeChunks`) ranked the title arm on a title-only vector with an unnormalized `ts_rank_cd`: every title containing the query word once scored identically, ties fell to page id, and the exact-title page could land outside the rows the exact-lookup tier reads — remote `search` returned it far down while the CLI returned it first. The remote title vector now ranks with length normalization (`ts_rank_cd(..., 2)`), putting the shortest matching titles first; the local `p.search_vector` arm is unchanged. (#5889)
+
+## [0.60.31.4] - 2026-10-02
+
+### Fixed
+
+- Remote `search` no longer buries a page whose title IS the query. Since 0.48.3.0 remote callers (`requireSafeChunks`) ranked the title arm on a title-only vector with an unnormalized `ts_rank_cd`: every title containing the query word once scored identically, ties fell to page id, and the exact-title page could land outside the rows the exact-lookup tier reads — remote `search` returned it far down while the CLI returned it first. The remote title vector now ranks with length normalization (`ts_rank_cd(..., 2)`), putting the shortest matching titles first; the local `p.search_vector` arm is unchanged. (#5889)
+
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
