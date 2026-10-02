@@ -158,9 +158,17 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   // `deepseek-chat` was retired by DeepSeek 2026-07-24 (#1255); kept so
   // historical usage/audit rows still price. New calls use the v4 names.
   'deepseek:deepseek-chat':               { input:  0.14, output:  0.28 },
-  // DeepSeek v4 (verified 2026-07-27 at api-docs.deepseek.com): cache-miss rates.
-  'deepseek:deepseek-v4-flash':           { input:  0.14, output:  0.28 },
-  'deepseek:deepseek-v4-pro':             { input:  0.435, output: 0.87 },
+  // DeepSeek v4 (verified 2026-10-05 at api-docs.deepseek.com/quick_start/pricing):
+  // DeepSeek bills on a peak/off-peak schedule (off-peak = half; peak hours are
+  // 01:00-04:00 + 06:00-10:00 UTC Mon-Fri). Like the Anthropic intro discount,
+  // the table carries the PEAK cache-miss rate so metered estimates stay
+  // conservative — an undershoot could meter past a real spend cap.
+  // `deepseek-v4-flash` is the retired spelling of `deepseek-flash`: the vendor
+  // still accepts it but serves V4.1-Flash and bills at the Flash price, so the
+  // two rows must stay in lockstep (the drift guard asserts they agree).
+  'deepseek:deepseek-flash':              { input:  0.30, output:  1.20 },
+  'deepseek:deepseek-v4-flash':           { input:  0.30, output:  1.20 },
+  'deepseek:deepseek-v4-pro':             { input:  1.32, output:  3.96 },
   // ── Z.ai / GLM (via LiteLLM proxy) ───────────────────────────────────
   // GLM-5.2 from Z.ai: $1.40/M input, $4.40/M output (verified 2026-08-16
   // against OpenRouter provider listings — z.ai's own direct rates).

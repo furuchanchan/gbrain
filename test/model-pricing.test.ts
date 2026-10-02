@@ -82,6 +82,21 @@ describe('CANONICAL_PRICING — table integrity', () => {
     expect(CANONICAL_PRICING['google:gemini-2.5-flash-lite']).toEqual({ input: 0.1, output: 0.4 });
   });
 
+  // #5847: DeepSeek renamed `deepseek-v4-flash` → `deepseek-flash` (the legacy
+  // id still works but is served by V4.1-Flash and billed at the Flash price —
+  // the vendor's own footnote). Peak cache-miss rates from
+  // api-docs.deepseek.com (2026-10-05); off-peak is half, and the table keeps
+  // the conservative (peak) figure per its no-discount convention.
+  test('DeepSeek current id deepseek-flash priced; legacy v4-flash in lockstep (#5847)', () => {
+    expect(canonicalLookup('deepseek:deepseek-flash')).toEqual({ input: 0.3, output: 1.2 });
+    expect(canonicalLookup('deepseek:deepseek-v4-flash')).toEqual(
+      CANONICAL_PRICING['deepseek:deepseek-flash'],
+    );
+    expect(canonicalLookup('deepseek:deepseek-v4-pro')).toEqual({ input: 1.32, output: 3.96 });
+    // The retired pre-v4 id stays priced for historical usage/audit rows.
+    expect(canonicalLookup('deepseek:deepseek-chat')).toEqual({ input: 0.14, output: 0.28 });
+  });
+
   // #4218 drift guard extension: cache_read/cache_write are DERIVED from the
   // input rate via the exported multipliers — a hand-edited cache number that
   // drifts from input*mult fails here.

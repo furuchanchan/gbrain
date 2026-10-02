@@ -88,8 +88,10 @@ export const deepseek: Recipe = {
     // validation locally; the provider rejects them at call time.
     expansion: {
       models: ['deepseek-v4-flash'],
-      cost_per_1m_tokens_usd: 0.14,
-      price_last_verified: '2026-07-27',
+      // V4.1-Flash peak cache-miss input rate (off-peak is half) — matches the
+      // canonical `deepseek:deepseek-flash`/`deepseek-v4-flash` rows (#5847).
+      cost_per_1m_tokens_usd: 0.30,
+      price_last_verified: '2026-10-05',
     },
     chat: {
       models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
@@ -107,9 +109,11 @@ export const deepseek: Recipe = {
       // that size output caps must grant reasoning headroom (gbrain#4172).
       thinking_by_default: true,
       max_context_tokens: 1_000_000,
-      cost_per_1m_input_usd: 0.14, // deepseek-v4-flash cache-miss baseline
-      cost_per_1m_output_usd: 0.28,
-      price_last_verified: '2026-07-27',
+      // V4.1-Flash peak cache-miss rates (off-peak is half) — matches the
+      // canonical deepseek rows (#5847); the listed ids are still accepted.
+      cost_per_1m_input_usd: 0.30,
+      cost_per_1m_output_usd: 1.20,
+      price_last_verified: '2026-10-05',
     },
   },
   setup_hint: 'Get an API key at https://platform.deepseek.com/api_keys, then `export DEEPSEEK_API_KEY=...`',

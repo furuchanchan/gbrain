@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.4] - 2026-10-05
+
+### Fixed
+
+- **DeepSeek pricing table updated for the `deepseek-flash` rename and the V4.1 re-price (#5847).** `CANONICAL_PRICING` gained `deepseek:deepseek-flash` (DeepSeek-V4.1-Flash), so brains whose dream judge or chat model uses the current model id no longer hit `BUDGET_METER_NO_PRIZING` and fall back to the Sonnet-tier rate. The legacy `deepseek-v4-flash` id is still accepted by the vendor but is now served by V4.1-Flash and billed at the Flash price — its row was updated to match (peak cache-miss $0.30/$1.20 per MTok; off-peak is half), and `deepseek-v4-pro` was re-verified to the current $1.32/$3.96. Both the canonical table and the deepseek recipe baselines carry the peak rate so metered estimates stay conservative against spend caps.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**
