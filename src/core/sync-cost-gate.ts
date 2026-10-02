@@ -59,7 +59,7 @@ export function estimateSourceTreeTokens(
   let tokens = 0;
   let files = 0;
   try {
-    const fileList = collectSyncableFiles(localPath, { strategy, includeGitignored: opts.includeGitignored });
+    const fileList = collectSyncableFiles(localPath, { strategy, includeGitignored: opts.includeGitignored, skipReservedSkillPaths: true });
     for (const fullPath of fileList) {
       try {
         const stat = statSync(fullPath);

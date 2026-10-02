@@ -215,6 +215,14 @@ export async function runImport(
      */
     includeGitignored?: boolean;
     /**
+     * #5852: set by sync callers (performFullSync and friends) so reserved
+     * skillpack paths are classified non-syncable by the collector — a
+     * background sync must not block on files the importer refuses. A direct
+     * `gbrain import` leaves this unset: the explicit refusal
+     * (`skill_bundle_required`) is the operator-facing contract.
+     */
+    skipReservedSkillPaths?: boolean;
+    /**
      * #753/#774 monorepo subdir-source support: when set, slugs and
      * `source_path` are computed relative to this root (the git repo root)
      * instead of `dir` (the sync scope), so `wiki/page1.md` lands as slug
@@ -503,6 +511,7 @@ export async function runImport(
     strategy, includeGitignored,
     includeHidden: opts.includeHidden,
     onExcluded: (rel) => { malformedExcluded.push(rel); },
+    skipReservedSkillPaths: opts.skipReservedSkillPaths,
   });
   console.error(
     `[gbrain phase] import.collect_files done ${Date.now() - _walkT0}ms files=${allFiles.length}`,
@@ -1169,6 +1178,14 @@ interface CollectOpts {
   onExcluded?: (relPath: string) => void;
   /** See `RunImportOpts.includeHidden` — same repeatable-glob semantics. */
   includeHidden?: string[];
+  /**
+   * #5852: sync routes set this so reserved skillpack paths (`skills/**`,
+   * `skillpack.json`) are classified non-syncable instead of handed to an
+   * importer that refuses them. Left unset by a direct `gbrain import` — an
+   * explicit import of a skills/ dir must keep its loud `skill_bundle_required`
+   * refusal (an operator action, not a background walker).
+   */
+  skipReservedSkillPaths?: boolean;
 }
 
 /**
@@ -1193,6 +1210,7 @@ function isCollectibleForWalker(
   strategy: SyncStrategy,
   multimodalOn: boolean,
   includeHidden?: string[],
+  skipReservedSkillPaths?: boolean,
 ): boolean {
   // #2607: apply the SAME segment-level prune gate as incremental sync's
   // `classifySync` (core/sync.ts) — via the shared `isPathPruned`, so this
@@ -1222,10 +1240,12 @@ function isCollectibleForWalker(
   if ((SYNC_SKIP_FILES as readonly string[]).includes(basename)) return false;
 
   // Reserved skillpack paths (`skills/**`, `skillpack.json`) are refused by
-  // managedImportContent (`skill_bundle_required`) — collecting them blocks
-  // the run on a file the importer always rejects (#5852). Same predicate as
-  // incremental sync's classifySync so full and incremental agree.
-  if (isReservedSkillBundlePath(path)) return false;
+  // managedImportContent (`skill_bundle_required`) — collecting them blocks a
+  // sync on a file the importer always rejects (#5852). Same predicate as
+  // incremental sync's classifySync so full and incremental agree. Sync
+  // callers pass skipReservedSkillPaths; a direct `gbrain import` does not —
+  // explicit operator imports keep the loud refusal.
+  if (skipReservedSkillPaths && isReservedSkillBundlePath(path)) return false;
 
   switch (strategy) {
     case 'code':
@@ -1260,6 +1280,7 @@ function gitListSyncableFiles(
   multimodalOn: boolean,
   onExcluded?: (relPath: string) => void,
   includeHidden?: string[],
+  skipReservedSkillPaths?: boolean,
 ): string[] | null {
   let stdout: string;
   try {
@@ -1278,7 +1299,7 @@ function gitListSyncableFiles(
     // exclusion is reportable — other filters (strategy, prune, metafile)
     // are silent by design; this one hides renameable content.
     if (hasMalformedPathSegment(rel)) { onExcluded?.(rel); continue; }
-    if (!isCollectibleForWalker(rel, strategy, multimodalOn, includeHidden)) continue;
+    if (!isCollectibleForWalker(rel, strategy, multimodalOn, includeHidden, skipReservedSkillPaths)) continue;
     const full = join(dir, rel);
     let st;
     try {
@@ -1323,7 +1344,7 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
   // PLUS untracked-not-ignored, so uncommitted source is still indexed. Non-git
   // dirs (or git unavailable) fall through to the FS walk below.
   if (!opts.includeGitignored) {
-    const gitFiles = gitListSyncableFiles(dir, strategy, multimodalOn, opts.onExcluded, opts.includeHidden);
+    const gitFiles = gitListSyncableFiles(dir, strategy, multimodalOn, opts.onExcluded, opts.includeHidden, opts.skipReservedSkillPaths);
     if (gitFiles) return gitFiles;
   }
 
@@ -1395,7 +1416,7 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
         // Normalize here, same convention as github-source.ts.
         const rel = relative(dir, full).replace(/\\/g, '/');
         if (hasMalformedPathSegment(rel)) { opts.onExcluded?.(rel); continue; }
-        if (!isCollectibleForWalker(rel, strategy, multimodalOn, opts.includeHidden)) continue;
+        if (!isCollectibleForWalker(rel, strategy, multimodalOn, opts.includeHidden, opts.skipReservedSkillPaths)) continue;
         files.push(full);
       }
     }

@@ -19,7 +19,7 @@ src/commands/eval-longmemeval.ts	runEvalLongMemEval	740	seed: W5 baseline, refac
 src/commands/extract-conversation-facts.ts	processPage	307	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/commands/extract-conversation-facts.ts	runExtractConversationFactsCore	372	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1); +1 #5757: managed flag threaded into ExtractCoreState
 src/commands/extract.ts	runExtract	398	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
-src/commands/import.ts	runImport	959	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
+src/commands/import.ts	runImport	964	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1); +5 #5852: skipReservedSkillPaths opt threading (collector arg + doc comments on the collect call)
 src/commands/mcp-expose.ts	runPublish	443	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/commands/migrate-embeddings.ts	runMigrateEmbeddings	325	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/commands/migrate-engine.ts	runMigrateEngine	405	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)

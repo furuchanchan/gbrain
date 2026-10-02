@@ -106,6 +106,9 @@ export async function performFullSync(
       includeHidden: opts.includeHidden,
       includeGitignored: opts.includeGitignored,
       slugRoot,
+      // #5852: a background sync skips the seeded skillpack rather than
+      // blocking on the importer's refusal; `gbrain import` keeps refusing.
+      skipReservedSkillPaths: true,
       // issue #1939: performFullSync owns the failure ledger + bookmark via the
       // shared gate below; don't let runImport double-record or write its own.
       managedBookmark: true,
@@ -229,6 +232,7 @@ function fullSyncDryRun(syncScopeRoot: string, headCommit: string, opts: SyncOpt
     includeGitignored: opts.includeGitignored,
     onExcluded: (rel) => { dryRunMalformed.push(rel); },
     includeHidden: opts.includeHidden,
+    skipReservedSkillPaths: true,
   });
   if (opts.exclude && opts.exclude.length > 0) {
     allFiles = allFiles.filter(abs => !matchesAnyGlob(relative(syncScopeRoot, abs), opts.exclude));
@@ -380,6 +384,7 @@ async function reconcileFullSyncDeletes(
       strategy: opts.strategy ?? 'markdown',
       includeGitignored: opts.includeGitignored,
       includeHidden: opts.includeHidden,
+      skipReservedSkillPaths: true,
     })
       .map(abs => relative(slugRoot ?? syncScopeRoot, abs));
     const rows = await engine.executeRaw<{ slug: string; source_path: string | null }>(

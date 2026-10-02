@@ -146,7 +146,7 @@ describe('#5852 — sync skips reserved skillpack paths instead of blocking', ()
     // skills/brain-router/SKILL.md was judged as 'SKILL.md' and slipped past
     // isReservedSkillBundlePath. Force the fallback with includeGitignored.
     const { collectSyncableFiles } = await import('../src/commands/import.ts');
-    const files = collectSyncableFiles(repoPath, { strategy: 'markdown', includeGitignored: true });
+    const files = collectSyncableFiles(repoPath, { strategy: 'markdown', includeGitignored: true, skipReservedSkillPaths: true });
     const rels = files.map(f => f.slice(repoPath.length + 1));
     expect(rels).toContain('topics/foo.md');
     expect(rels).not.toContain('skills/brain-router/SKILL.md');
@@ -159,12 +159,29 @@ describe('#5852 — sync skips reserved skillpack paths instead of blocking', ()
     try {
       seedClassic(nonGit); // no git init — forces the recursive FS walk
       const { collectSyncableFiles } = await import('../src/commands/import.ts');
-      const files = collectSyncableFiles(nonGit, { strategy: 'markdown' });
+      const files = collectSyncableFiles(nonGit, { strategy: 'markdown', skipReservedSkillPaths: true });
       const rels = files.map(f => f.slice(nonGit.length + 1));
       expect(rels).toContain('topics/foo.md');
       expect(rels).not.toContain('skills/brain-router/SKILL.md');
       expect(rels).not.toContain('skillpack.json');
       expect(rels).not.toContain('docs/skills/nested.md');
+    } finally {
+      rmSync(nonGit, { recursive: true, force: true });
+    }
+  });
+
+  test('the import route keeps reserved paths so `gbrain import` reaches the loud refusal', async () => {
+    // Without skipReservedSkillPaths the collector still hands skills/ files
+    // to the importer — an explicit `gbrain import` must refuse loudly
+    // (`skill_bundle_required`), never silently drop operator-requested files.
+    const nonGit = mkdtempSync(join(tmpdir(), 'gbrain-skillpack-import-'));
+    try {
+      seedClassic(nonGit);
+      const { collectSyncableFiles } = await import('../src/commands/import.ts');
+      const files = collectSyncableFiles(nonGit, { strategy: 'markdown' });
+      const rels = files.map(f => f.slice(nonGit.length + 1));
+      expect(rels).toContain('skills/brain-router/SKILL.md');
+      expect(rels).toContain('docs/skills/nested.md');
     } finally {
       rmSync(nonGit, { recursive: true, force: true });
     }
@@ -208,7 +225,7 @@ describe('#5852 — sync skips reserved skillpack paths instead of blocking', ()
       frontmatter: { type: 'skill', id: 'brain-router' },
     });
     writeFileSync(join(repoPath, 'skills/brain-router/SKILL.md'), '---\nname: brain-router\ndescription: edited\n---\n\n# Brain Router v2\n');
-    execSync('git add -A && git commit -qm "edit skill"', { cwd: repoPath, stdio: 'pipe' });
+    commit(repoPath, 'edit skill');
 
     const second = await performSync(engine, { repoPath, noPull: true, noEmbed: true });
     expect(['synced', 'up_to_date']).toContain(second.status);

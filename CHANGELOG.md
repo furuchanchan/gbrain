@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **`gbrain sync` no longer blocks on the seeded skillpack (#5852).** Reserved skillpack paths (`skills/**` files and `skillpack.json`, at any depth) are owned by the shared skill publisher and refused by managed import with `skill_bundle_required`; the sync walkers now classify them `skill-bundle` and skip them on both the incremental/managed and full-sync import routes. Fixes fresh `init --content-root --git` brains whose first `sync` was blocked by gbrain's own seeded `gbrain-memory` pack — and stops the classic route from importing pack files as ordinary pages (which could also overwrite a publisher-owned page on file edits). An explicit `gbrain import` of a skills/ directory keeps its loud `skill_bundle_required` refusal — the skip applies to sync callers only.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

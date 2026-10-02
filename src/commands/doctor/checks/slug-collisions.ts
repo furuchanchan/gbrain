@@ -27,7 +27,7 @@ export async function slugCollisionsCheck(engine: BrainEngine): Promise<Check> {
       if (!source.local_path || !existsSync(source.local_path)) continue;
       walked++;
       const bySlug = new Map<string, string[]>();
-      for (const file of collectSyncableFiles(source.local_path, { strategy: source.config?.strategy ?? 'markdown' })) {
+      for (const file of collectSyncableFiles(source.local_path, { strategy: source.config?.strategy ?? 'markdown', skipReservedSkillPaths: true })) {
         const rel = relative(source.local_path, file).replace(/\\/g, '/');
         const slug = isImageFilePath(rel) ? rel.toLowerCase() : resolveSlugForPath(rel);
         bySlug.set(slug, [...(bySlug.get(slug) ?? []), rel]);
