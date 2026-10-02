@@ -1125,6 +1125,12 @@
         },
         {
           "category": "brain",
+          "message": "All active facts carry an embedding.",
+          "name": "facts_embedding_coverage",
+          "status": "ok"
+        },
+        {
+          "category": "brain",
           "message": "Single-source brain (no federation to check)",
           "name": "source_routing_health",
           "status": "ok"

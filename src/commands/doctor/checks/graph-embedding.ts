@@ -390,6 +390,70 @@ export async function checkFactsEmbeddingWidthConsistency(engine: BrainEngine): 
   }
 }
 
+/**
+ * #5188 facts_embedding_coverage — active facts with a NULL embedding are
+ * invisible to dedup and auto-supersession (`findCandidateDuplicates` skips
+ * NULL-vector rows), and nothing health-surfaced that state until now: the
+ * reporter lost 452 fact vectors in a routine maintenance window while every
+ * check stayed green. Counts, per source, eligible facts (`eligibleFactEmbedding`:
+ * non-expired, non-superseded, non-withdrawn, non-audit, on a live source and
+ * a non-deleted page) with `embedding IS NULL`. Warns with the bounded
+ * recovery command; ok at zero, on a pre-facts-embedding schema, and on
+ * embedding-disabled (keyless) brains where NULL vectors are by design.
+ * `localOnly`-equivalent: like its width sibling, DB-only and safe on a
+ * remote report only insofar as the count is a read — kept in the local
+ * registry block like the rest of this cluster.
+ */
+export async function checkFactsEmbeddingCoverage(engine: BrainEngine): Promise<Check> {
+  try {
+    if (loadConfigFileOnly()?.embedding_disabled === true) {
+      return { name: 'facts_embedding_coverage', status: 'ok', message: 'Embeddings disabled — NULL fact vectors are by design on a keyless brain.' };
+    }
+    const { readFactsEmbeddingDim } = await import('../../../core/embedding-dim-check.ts');
+    const col = await readFactsEmbeddingDim(engine);
+    if (!col.exists) {
+      return { name: 'facts_embedding_coverage', status: 'ok', message: 'facts.embedding column not present (pre-v40 brain or migration pending).' };
+    }
+    const { AUDIT_ROW_SOURCES } = await import('../../../core/facts/audit-sources.ts');
+    // eligibleFactEmbedding's withdrawal clause calls gbrain_fact_fingerprint*,
+    // which only exist on Postgres (withdrawals are Postgres-only; the
+    // fact_withdrawals table stays empty on PGLite). Postgres gets the full
+    // predicate; PGLite runs the same shape minus that clause.
+    const eligible = engine.kind === 'postgres'
+      ? (await import('../../../core/facts/embedding-identity.ts')).eligibleFactEmbedding
+      : `f.expired_at IS NULL AND f.superseded_by IS NULL
+         AND (f.valid_until IS NULL OR f.valid_until>now())
+         AND NOT (f.source = ANY($2::text[]))
+         AND EXISTS (SELECT 1 FROM sources s WHERE s.id=f.source_id AND NOT s.archived)
+         AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.source_id=f.source_id
+           AND p.slug=f.source_markdown_slug AND p.deleted_at IS NOT NULL)`;
+    const rows = await engine.executeRaw<{ source_id: string; missing: number }>(
+      `SELECT f.source_id, count(*)::int AS missing FROM facts f
+       WHERE ($1::text IS NULL OR f.source_id = $1) AND ${eligible} AND f.embedding IS NULL
+       GROUP BY f.source_id ORDER BY missing DESC, f.source_id`,
+      [null, [...AUDIT_ROW_SOURCES]],
+    );
+    const total = rows.reduce((n, r) => n + Number(r.missing), 0);
+    if (total === 0) {
+      return { name: 'facts_embedding_coverage', status: 'ok', message: 'All active facts carry an embedding.' };
+    }
+    const detail = rows.slice(0, 5).map(r => `${r.source_id}: ${r.missing}`).join(', ');
+    const first = rows[0].source_id;
+    return {
+      name: 'facts_embedding_coverage',
+      status: 'warn',
+      message:
+        `${total} active fact(s) have no embedding across ${rows.length} source(s) (${detail}${rows.length > 5 ? ', …' : ''}) — ` +
+        `NULL-vector rows are invisible to dedup and auto-supersession. ` +
+        `Preview the repair, then run it bounded: \`gbrain embed --stale --facts --source ${first} --dry-run\`, ` +
+        `then \`gbrain embed --stale --facts --source ${first} --yes --max-facts 100\`.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { name: 'facts_embedding_coverage', status: 'warn', message: `Could not check facts embedding coverage: ${msg}` };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // #4222 junk_entity_hubs — near-empty entity pages with huge edge counts
 // ---------------------------------------------------------------------------

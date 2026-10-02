@@ -619,6 +619,10 @@
       },
       {
         "category": "brain",
+        "name": "facts_embedding_coverage"
+      },
+      {
+        "category": "brain",
         "name": "source_routing_health"
       },
       {

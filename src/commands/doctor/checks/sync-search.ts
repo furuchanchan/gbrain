@@ -27,6 +27,7 @@ import {
   checkBrainstormHealth,
   checkEmbeddingWidthConsistency,
   checkFactsEmbeddingWidthConsistency,
+  checkFactsEmbeddingCoverage,
 } from './graph-embedding.ts';
 import {
   checkBatchRetryHealth,
@@ -182,6 +183,10 @@ async function runSearchMode(ctx: DoctorContext): Promise<Check[]> {
     // parity check. Same drift class as content_chunks, separate column.
     progress.heartbeat('facts_embedding_width_consistency');
     checks.push(await checkFactsEmbeddingWidthConsistency(engine));
+    // #5188 facts_embedding_coverage — NULL-vector facts are invisible to
+    // dedup; count them per source and name the bounded repair.
+    progress.heartbeat('facts_embedding_coverage');
+    checks.push(await checkFactsEmbeddingCoverage(engine));
 
     // v0.37.7.0 doctor checks (#1167, #1166, #1226) — fast-mode skipped
     // since these touch DB queries with cost on large brains.
@@ -235,6 +240,7 @@ export const searchModeEntry: DoctorEntry = {
     'link_resolution_opportunity',
     'embedding_width_consistency',
     'facts_embedding_width_consistency',
+    'facts_embedding_coverage',
     'source_routing_health',
     'oauth_confidential_client_health',
     'oauth_client_scope_health',

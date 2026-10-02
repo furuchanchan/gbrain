@@ -10,6 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+- `gbrain doctor` gains a `facts_embedding_coverage` check (#5188): counts active facts whose `embedding` is NULL per source — rows invisible to dedup and auto-supersession — and names the bounded recovery (`embed --stale --facts --source <id> --dry-run` then `--yes --max-facts N`), so a silent fact-vector loss no longer stays green for days.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
