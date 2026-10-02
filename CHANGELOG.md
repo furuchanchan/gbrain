@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.3] - 2026-10-02
+
+### Fixed
+
+- **doctor `extract_health` (#5863):** the ", today" / ", Nd ago" suffix on high-halt-rate kinds now ages the last *halt*, not the last rollup write. `updated_at` moves on every rollup row including clean runs, so a healthy run used to make an old halt look current. The rollup query now computes `last_halt_at` separately (`MAX(updated_at) FILTER (WHERE halt_count > 0)`) and the suffix reads "last halt today" / "last halt Nd ago".
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

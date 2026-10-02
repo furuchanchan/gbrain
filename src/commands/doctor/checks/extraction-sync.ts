@@ -989,6 +989,7 @@ export async function computeExtractHealthCheck(
       expected_limit_count: number;
       rollup_write_failures: number;
       last_updated_at: Date | string | null;
+      last_halt_at: Date | string | null;
     };
 
     // #4482: expected_limit_count (migration v141) counts runs that stopped
@@ -1005,7 +1006,8 @@ export async function computeExtractHealthCheck(
          SUM(round_completed_count) AS round_completed_count,
          ${withExpected ? 'SUM(expected_limit_count)' : '0'} AS expected_limit_count,
          SUM(rollup_write_failures) AS rollup_write_failures,
-         MAX(updated_at) AS last_updated_at
+         MAX(updated_at) AS last_updated_at,
+         MAX(updated_at) FILTER (WHERE halt_count > 0) AS last_halt_at
        FROM extract_rollup_7d
        WHERE day >= CURRENT_DATE - 7
        GROUP BY kind
@@ -1041,6 +1043,7 @@ export async function computeExtractHealthCheck(
       expected_limit_count: number;
       halt_rate: number;
       last_updated_at: string | null;
+      last_halt_at: string | null;
     };
 
     const kinds: KindAggregate[] = rows.map(r => {
@@ -1061,9 +1064,8 @@ export async function computeExtractHealthCheck(
         round_completed_count: completed,
         expected_limit_count: expectedLimits,
         halt_rate: total > 0 ? halts / total : 0,
-        last_updated_at: r.last_updated_at
-          ? new Date(r.last_updated_at).toISOString()
-          : null,
+        last_updated_at: r.last_updated_at ? new Date(r.last_updated_at).toISOString() : null,
+        last_halt_at: r.last_halt_at ? new Date(r.last_halt_at).toISOString() : null,
       };
     });
 
@@ -1083,16 +1085,17 @@ export async function computeExtractHealthCheck(
       // high halt rate from entirely historical failures with nothing
       // currently wrong — the operator has no way to tell "actively
       // failing" from "hasn't run since a bug that's already fixed" without
-      // this. last_updated_at is already computed (MAX(updated_at) above)
-      // but wasn't surfaced in the message text, only in `details`.
+      // this. The suffix ages the last HALT: updated_at moves on every
+      // rollup row including clean runs, so MAX(updated_at) alone made an
+      // old halt look current (#5863).
       const top3 = [...highHaltKinds]
         .sort((a, b) => b.halt_rate - a.halt_rate)
         .slice(0, 3)
         .map(k => {
-          const ageDays = k.last_updated_at
-            ? Math.floor((Date.now() - new Date(k.last_updated_at).getTime()) / 86_400_000)
+          const ageDays = k.last_halt_at
+            ? Math.floor((Date.now() - new Date(k.last_halt_at).getTime()) / 86_400_000)
             : null;
-          const ageSuffix = ageDays === null ? '' : ageDays <= 0 ? ', today' : `, ${ageDays}d ago`;
+          const ageSuffix = ageDays === null ? '' : ageDays <= 0 ? ', last halt today' : `, last halt ${ageDays}d ago`;
           return `${k.kind}=${(k.halt_rate * 100).toFixed(1)}%${ageSuffix}`;
         })
         .join(', ');

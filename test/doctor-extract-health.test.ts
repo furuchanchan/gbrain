@@ -102,6 +102,25 @@ describe('computeExtractHealthCheck — WARN paths', () => {
     expect(check.message).not.toContain('0d ago');
   });
 
+  test('#5863: a later clean run does not make an old halt look current', async () => {
+    await clearRollup();
+    // Halts 6 days ago + a clean run today on the same kind. The rate stays
+    // above threshold only because the halted days are still inside the
+    // 7-day window — the suffix must report the last HALT, not the last
+    // rollup write.
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('atoms', 'chatgpt', CURRENT_DATE - 6, 5.00, 0, 0, 90, 5, 0, NOW() - INTERVAL '6 days'),
+              ('atoms', 'chatgpt', CURRENT_DATE, 0.10, 0, 0, 0, 5, 0, NOW())`,
+      [],
+    );
+    const check = await computeExtractHealthCheck(engine);
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('atoms');
+    expect(check.message).toContain('last halt 6d ago');
+    expect(check.message).not.toContain('last halt today');
+  });
+
   test('multiple kinds with high halt rate: top-3 listed in message', async () => {
     await clearRollup();
     await engine.executeRaw(
