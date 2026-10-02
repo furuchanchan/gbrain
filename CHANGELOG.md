@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- `gbrain bootstrap verify`'s `facts_visibility` line now discloses that `facts.default_visibility` governs extraction-path writes only — `remember` always defaults to `world` regardless of the key — so an operator who sets `private` no longer reads the banner as a brain-wide visibility posture (#5605).
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
