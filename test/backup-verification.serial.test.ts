@@ -222,6 +222,72 @@ test('an inherited GIT_DIR/GIT_WORK_TREE cannot redirect the local helper to a d
   }
 });
 
+// Both ambient `-c` config carriers (GIT_CONFIG_PARAMETERS and
+// GIT_CONFIG_COUNT/KEY/VALUE) can rewrite origin at a decoy remote —
+// `remote get-url` returns the rewritten URL and `ls-remote origin` probes
+// the decoy, so a diverged decoy head surfaces as a false 'mismatch'.
+const CONFIG_CARRIER_KEYS = [
+  'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
+  'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+];
+async function withConfigPoison<T>(assignments: Record<string, string>, run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of CONFIG_CARRIER_KEYS) saved[key] = process.env[key];
+  try {
+    for (const key of CONFIG_CARRIER_KEYS) delete process.env[key];
+    for (const [key, value] of Object.entries(assignments)) process.env[key] = value;
+    // await inside try — restoring before the async git spawns would
+    // neutralize the poison before it reaches the child env.
+    return await run();
+  } finally {
+    for (const key of CONFIG_CARRIER_KEYS) delete process.env[key];
+    for (const [key, value] of Object.entries(saved)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  }
+}
+async function decoyRemote(): Promise<{ decoy: string; remote: string }> {
+  const { remote } = await repository();
+  const decoy = (await repository('decoy')).remote;
+  return { decoy, remote };
+}
+
+test('an inherited GIT_CONFIG_PARAMETERS cannot rewrite origin to a decoy remote (#5794)', async () => {
+  const { decoy, remote } = await decoyRemote();
+  const decoyWork = join(tmp, 'decoy');
+  // Diverge the decoy remote: without isolation the probe resolves it and a
+  // different remote head reports 'mismatch' — or worse, a same-head decoy
+  // reports a false 'verified'.
+  git(decoyWork, 'commit', '--allow-empty', '-m', 'decoy divergence');
+  git(decoyWork, 'push', 'origin', 'main');
+  const expectedHead = git(join(tmp, 'source'), 'rev-parse', 'HEAD');
+  const result = await withConfigPoison(
+    { GIT_CONFIG_PARAMETERS: `url.${decoy}.insteadof=${remote}` },
+    () => computeBackupCoverage(engine([join(tmp, 'source')]), verified),
+  );
+  expect(result.assets[0].verification?.state).toBe('verified');
+  expect(result.assets[0].verification?.remote_commit).toBe(expectedHead);
+});
+
+test('an inherited GIT_CONFIG_COUNT/KEY/VALUE cannot rewrite origin to a decoy remote (#5794)', async () => {
+  const { decoy, remote } = await decoyRemote();
+  const decoyWork = join(tmp, 'decoy');
+  git(decoyWork, 'commit', '--allow-empty', '-m', 'decoy divergence');
+  git(decoyWork, 'push', 'origin', 'main');
+  const expectedHead = git(join(tmp, 'source'), 'rev-parse', 'HEAD');
+  const result = await withConfigPoison(
+    {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: `url.${decoy}.insteadOf`,
+      GIT_CONFIG_VALUE_0: remote,
+    },
+    () => computeBackupCoverage(engine([join(tmp, 'source')]), verified),
+  );
+  expect(result.assets[0].verification?.state).toBe('verified');
+  expect(result.assets[0].verification?.remote_commit).toBe(expectedHead);
+});
+
 test('timeouts spend a sweep-wide deadline, return no credentials, and never verify offline remotes', async () => {
   const roots = await Promise.all(Array.from({ length: 5 }, async (_, i) => (await repository(`offline-${i}`)).root));
   const timeouts: number[] = [];

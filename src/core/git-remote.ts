@@ -189,6 +189,14 @@ export const GIT_REPO_ISOLATION = {
   GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_COMMON_DIR: undefined,
   GIT_INDEX_FILE: undefined, GIT_OBJECT_DIRECTORY: undefined,
   GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined, GIT_NAMESPACE: undefined,
+  // Inherited `-c` config can rewrite origin (url.<decoy>.insteadOf) at a
+  // decoy repo with an indistinguishable verdict; hooks inherit the same
+  // carrier via GIT_CONFIG_PARAMETERS. Dropping COUNT deactivates the
+  // KEY/VALUE entries; GLOBAL/SYSTEM/NOSYSTEM would redirect the config
+  // files themselves (credential helpers read the real HOME-resolved ones).
+  GIT_CONFIG_PARAMETERS: undefined, GIT_CONFIG_COUNT: undefined,
+  GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_SYSTEM: undefined,
+  GIT_CONFIG_NOSYSTEM: undefined,
 } as const;
 
 export function buildGitEnv(
