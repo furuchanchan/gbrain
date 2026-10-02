@@ -1202,10 +1202,11 @@ function isCollectibleForWalker(
   // filtered only by extension — so `sync --full` imported (and resurrected
   // previously-deleted) pages under dot-dirs / vendored trees that incremental
   // sync excludes. Full and incremental must agree on the exclusion set.
-  // (In the FS-walk route `path` is a basename, so `includeHidden` has no
-  // segment to waive there — that route's directory-level prune already ran
-  // via unmodified `pruneDir` before a file entry is ever reached; see
-  // `isPathPruned`'s doc comment for that scope note.)
+  // (On the FS-walk route `path` is the source-relative path, but leading-dot
+  // and PRUNE_DIR_NAMES segments never reach here: `pruneDir` already pruned
+  // them at descent — with no includeHidden waiver — so `includeHidden` can
+  // only waive hidden segments for the git fast path; see `isPathPruned`'s
+  // doc comment for that scope note.)
   if (isPathPruned(path, includeHidden)) return false;
 
   // Malformed filenames (brackets / control chars — markdown-link syntax as a
@@ -1379,12 +1380,18 @@ export function collectSyncableFiles(dir: string, opts: CollectOpts = {}): strin
         visitedInodes.set(inodeKey, true);
         walk(full, depth + 1);
       } else if (stat.isFile()) {
-        // Malformed check on the RELATIVE path (this route's
-        // isCollectibleForWalker only sees the basename, which can't catch a
-        // bracket directory segment above a clean-named markdown file).
+        // Malformed check on the RELATIVE path first (separately from the
+        // collectible gate) so the exclusion is reportable — and the
+        // collectible gate below must see the same RELATIVE path too: a
+        // basename can't catch a bracket directory segment above a
+        // clean-named markdown file, and it misses the reserved-skillpack
+        // segment (`skills/brain-router/SKILL.md` classified as `SKILL.md`
+        // slipped past `isReservedSkillBundlePath`, letting the
+        // --include-gitignored / non-git fallback route import — or block
+        // managed import on — files the git fast path skips; #5852).
         const rel = relative(dir, full);
         if (hasMalformedPathSegment(rel)) { opts.onExcluded?.(rel); continue; }
-        if (!isCollectibleForWalker(entry, strategy, multimodalOn)) continue;
+        if (!isCollectibleForWalker(rel, strategy, multimodalOn, opts.includeHidden)) continue;
         files.push(full);
       }
     }

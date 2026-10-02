@@ -141,6 +141,35 @@ describe('#5852 — sync skips reserved skillpack paths instead of blocking', ()
     expect(await engine.getPage('docs/skills/nested', { sourceId: f.id })).toBeNull();
   }), 60_000);
 
+  test('filesystem walker skips reserved paths on --include-gitignored (regression: basename-only classification)', async () => {
+    // The FS-walk fallback classified each entry by BASENAME — a file at
+    // skills/brain-router/SKILL.md was judged as 'SKILL.md' and slipped past
+    // isReservedSkillBundlePath. Force the fallback with includeGitignored.
+    const { collectSyncableFiles } = await import('../src/commands/import.ts');
+    const files = collectSyncableFiles(repoPath, { strategy: 'markdown', includeGitignored: true });
+    const rels = files.map(f => f.slice(repoPath.length + 1));
+    expect(rels).toContain('topics/foo.md');
+    expect(rels).not.toContain('skills/brain-router/SKILL.md');
+    expect(rels).not.toContain('skillpack.json');
+    expect(rels).not.toContain('docs/skills/nested.md');
+  });
+
+  test('filesystem walker skips reserved paths in a non-git directory (FS fallback route)', async () => {
+    const nonGit = mkdtempSync(join(tmpdir(), 'gbrain-skillpack-nongit-'));
+    try {
+      seedClassic(nonGit); // no git init — forces the recursive FS walk
+      const { collectSyncableFiles } = await import('../src/commands/import.ts');
+      const files = collectSyncableFiles(nonGit, { strategy: 'markdown' });
+      const rels = files.map(f => f.slice(nonGit.length + 1));
+      expect(rels).toContain('topics/foo.md');
+      expect(rels).not.toContain('skills/brain-router/SKILL.md');
+      expect(rels).not.toContain('skillpack.json');
+      expect(rels).not.toContain('docs/skills/nested.md');
+    } finally {
+      rmSync(nonGit, { recursive: true, force: true });
+    }
+  });
+
   test('a publisher-owned page under skills/ survives classic re-sync after its file is edited', async () => {
     const { performSync } = await import('../src/commands/sync.ts');
     const first = await performSync(engine, { repoPath, full: true, noPull: true, noEmbed: true });
