@@ -36,6 +36,7 @@ import { acquireCorpusClaim, CORPUS_CLAIM_SUFFIX, CORPUS_INGESTED_SUFFIX } from 
 import { appendCheckpointManifest } from './session-state.ts';
 import { corpusFileSessionId, corpusTextForExtraction, readSegmentLedger, selfCaptureSidecarJson, HARVEST_RECEIPT_SUFFIX } from './corpus-segments.ts';
 import { isClaudeCliSelfSessionId } from '../ai/providers/claude-cli-scratch.ts';
+import { OperationError } from '../ops/contract.ts';
 import { writeHeartbeat } from './hook-heartbeat.ts';
 
 /** Bounded queue — overflow is a typed skip; the sweep backstop extracts later. */
@@ -183,6 +184,25 @@ export async function __drainCheckpointHarvestForTests(): Promise<void> {
   }
 }
 
+/**
+ * #5557: heartbeat reasons name the refusing gate, not just the exception
+ * class — an OperationError keeps its `code` (`writer_lock_unavailable`,
+ * `idempotency_conflict`, ...) so doctor/reporters can tell WHY a turn was
+ * refused instead of every failure collapsing to `operationerror`.
+ */
+export function harvestErrorReason(e: unknown): string {
+  if (e instanceof OperationError) return `operationerror:${e.code}`;
+  if (e instanceof Error) return (e.name || 'Error').toLowerCase();
+  return 'error';
+}
+
+/** First-occurrence-per-process stderr surface, bounded against a hostile or
+ * drifting reason space: each distinct reason warns once per serve run, and
+ * the set stops growing past the cap (a serve never re-warns the same gate,
+ * and never holds unbounded reason strings). */
+const HARVEST_ERROR_WARN_CAP = 32;
+const harvestErrorWarned = new Set<string>();
+
 async function pump(): Promise<void> {
   if (inFlight) return;
   const job = queue.shift();
@@ -209,7 +229,14 @@ async function pump(): Promise<void> {
     links = r.links;
   } catch (e) {
     outcome = 'error';
-    reason = e instanceof Error ? (e.name || 'Error').toLowerCase() : 'error';
+    reason = harvestErrorReason(e);
+    // First-occurrence stderr line per serve run — the heartbeat tail is the
+    // only surface otherwise, and nobody reads it until doctor runs.
+    if (!harvestErrorWarned.has(reason)) {
+      if (harvestErrorWarned.size < HARVEST_ERROR_WARN_CAP) harvestErrorWarned.add(reason);
+      const laneEvent = job.lane === 'writeback' ? 'writeback' : 'checkpoint-harvest';
+      console.error(`[${laneEvent}] harvest failed (${reason}): ${e instanceof Error ? e.message : String(e)}`);
+    }
   } finally {
     inFlight = false;
     await writeHeartbeat({

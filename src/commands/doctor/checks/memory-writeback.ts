@@ -303,6 +303,25 @@ export async function buildMemoryWritebackCheck(engine: BrainEngine | null): Pro
         // was declined (cap/queue policy) — the sweep extracts it later.
         turns_banked: bank.filter((e) => e.reason === 'wb_scheduled' || e.reason === 'wb_banked' || e.reason?.startsWith('flush_skip_')).length,
       };
+      // #5557: a structural refusal share — every turn refused BEFORE
+      // extraction (the reporter saw ~40%) — was a silent `failed` counter.
+      // Warn once the share is structural, and always expose the reason
+      // histogram so the gate's code is diagnosable without log scraping.
+      const failedN = harvest.filter((e) => e.outcome === 'error').length;
+      if (failedN > 0) {
+        const reasons = new Map<string, number>();
+        for (const e of harvest) {
+          if (e.outcome !== 'error') continue;
+          const r = e.reason ?? 'unknown';
+          reasons.set(r, (reasons.get(r) ?? 0) + 1);
+        }
+        const ranked = [...reasons.entries()].sort((a, b) => b[1] - a[1]);
+        (details.backstop_7d as Record<string, unknown>).error_reasons = Object.fromEntries(ranked.slice(0, 5));
+        if (harvest.length >= 10 && failedN / harvest.length > 0.2) {
+          const top = ranked.slice(0, 3).map(([r, n]) => `${r} (${n})`).join(', ');
+          problems.push(`${failedN}/${harvest.length} writeback harvests failed over 7d (top: ${top}) — the reason carries the refusing gate's code (e.g. operationerror:writer_lock_unavailable)`);
+        }
+      }
     } catch { /* heartbeat unreadable — counters stay absent */ }
 
     return {

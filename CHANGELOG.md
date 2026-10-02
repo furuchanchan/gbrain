@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **Writeback harvest errors now name the refusing gate, and doctor warns on a structural failure share** — a serve-side harvest that throws recorded only the exception class (`operationerror`), so a gate refusing turns before extraction (the lock, the writer authority, an idempotency conflict) was indistinguishable from any other fault and doctor's `memory_writeback` stayed green while every turn failed. The heartbeat reason now carries the OperationError code (`operationerror:writer_lock_unavailable`), the first occurrence of each reason reaches stderr once per serve run (32-reason bounded), and `memory_writeback` always exposes `backstop_7d.error_reasons` and warns when failures exceed 20% of ≥10 attempts. ([#5557](https://github.com/garrytan/gbrain/issues/5557))
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
