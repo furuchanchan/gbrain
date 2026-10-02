@@ -263,3 +263,37 @@ body`;
     expect(nb?.line).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('filePathIsSlug (issue #5840)', () => {
+  const fence = '---';
+  const md = `${fence}\ntype: note\ntitle: Synthetic task list\n${fence}\n\n# Synthetic task list\n\nSynthetic test content.\n`;
+
+  test('an already-resolved extension-bearing slug is preserved verbatim', () => {
+    const parsed = parseMarkdown(md, 'examples/tasks.md', {
+      validate: true, expectedSlug: 'examples/tasks.md', filePathIsSlug: true,
+    });
+    expect(parsed.slug).toBe('examples/tasks.md');
+    expect(parsed.errors ?? []).toEqual([]);
+  });
+
+  test('filename input still strips one terminal .md (unchanged path)', () => {
+    const parsed = parseMarkdown(md, 'examples/tasks.md.md', { validate: true });
+    expect(parsed.slug).toBe('examples/tasks.md');
+  });
+
+  test('an explicitly conflicting frontmatter slug still fails closed', () => {
+    const conflict = `${fence}\ntype: note\ntitle: T\nslug: other/page\n${fence}\n\nbody\n`;
+    const parsed = parseMarkdown(conflict, 'examples/tasks.md', {
+      validate: true, expectedSlug: 'examples/tasks.md', filePathIsSlug: true,
+    });
+    expect(parsed.slug).toBe('other/page');
+    expect(parsed.errors!.map(e => e.code)).toContain('SLUG_MISMATCH');
+  });
+
+  test('ordinary resolved slugs behave identically with or without the flag', () => {
+    const plain = parseMarkdown(md, 'examples/tasks', { validate: true });
+    const flagged = parseMarkdown(md, 'examples/tasks', { validate: true, filePathIsSlug: true });
+    expect(flagged.slug).toBe(plain.slug);
+    expect(flagged.slug).toBe('examples/tasks');
+  });
+});

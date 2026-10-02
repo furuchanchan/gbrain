@@ -399,3 +399,34 @@ test('continuous foreground arrivals cannot starve a bounded sync batch', async 
     }finally{stopping=true;clearInterval(timer);await Promise.all(admitted);await disposePersistenceConsumer(engine);}
   }
 }),120_000);
+
+// issue #5840 — a stored slug that itself ends in `.md` (canonical path
+// `examples/tasks.md.md`, no explicit frontmatter slug) was re-parsed as a
+// filename inside managed sync preparation: `parseMarkdown(content, row.slug)`
+// filename-normalized `examples/tasks.md` → `examples/tasks`, mismatching
+// `resolveSlugForPath('examples/tasks.md.md')` and failing terminal
+// `invalid_params` (source → blocked_by_failures). The neighboring
+// `examples/tasks` page (path `examples/tasks.md`) must stay distinct.
+test('a stored slug ending in .md survives managed sync and stays distinct from its extension-free sibling (#5840)', async () => withEnv({GBRAIN_HOME:home},async()=>{
+  for(const engine of engines){
+    const dotted='---\ntype: note\ntitle: Synthetic task list\n---\n\n# Synthetic task list\n\nSynthetic test content.\n';
+    const plain='---\ntype: note\ntitle: Extension-free page\n---\n\n# Extension-free page\n\nDifferent sibling content.\n';
+    const f=await fixture(engine,{'examples/tasks.md.md':dotted,'examples/tasks.md':plain});
+    const result=await performManagedSync(engine,{sourceId:f.id,noPull:true});
+    // first sync of a fresh source reports 'first_sync'; the failing shape
+    // pre-fix is 'blocked_by_failures' with invalid_params on the .md slug.
+    expect(result.status).toBe('first_sync');
+    expect(result.filesImported).toBe(2);
+    const dotPage=await engine.getPage('examples/tasks.md',{sourceId:f.id});
+    const plainPage=await engine.getPage('examples/tasks',{sourceId:f.id});
+    expect(dotPage?.slug).toBe('examples/tasks.md');
+    expect(plainPage?.slug).toBe('examples/tasks');
+    expect(dotPage?.compiled_truth).toContain('Synthetic test content.');
+    expect(plainPage?.compiled_truth).toContain('Different sibling content.');
+    // Re-sync is a clean no-op — the identity survives the canonical overlay
+    // comparison path too (sync-prepare.ts's second resolved-slug parse).
+    const again=await performManagedSync(engine,{sourceId:f.id,noPull:true});
+    expect(again.status).toBe('up_to_date');
+    expect((await engine.getPage('examples/tasks.md',{sourceId:f.id}))?.slug).toBe('examples/tasks.md');
+  }
+}),120_000);

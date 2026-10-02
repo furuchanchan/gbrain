@@ -26,6 +26,15 @@ export interface ParseOpts {
    *  match expectedSlug, emits SLUG_MISMATCH. */
   expectedSlug?: string;
   /**
+   * #5840: when true, `filePath` is an ALREADY-RESOLVED page slug (a stored
+   * identity), not a filesystem path — the parser must not filename-normalize
+   * it again. Without this flag a stored slug like `examples/tasks.md` is
+   * re-parsed as a filename and its terminal `.md` stripped to
+   * `examples/tasks`, corrupting the identity managed sync and reconcile are
+   * trying to verify. Explicit frontmatter `slug:` still takes precedence.
+   */
+  filePathIsSlug?: boolean;
+  /**
    * v0.39 T1.5 — active schema pack to drive type inference. When set,
    * `inferType` uses the pack's `page_types[].path_prefixes` instead of
    * the hardcoded gbrain-base table. When unset, falls back to the
@@ -311,7 +320,10 @@ export function parseMarkdown(
     inferTitleFromEmbeddedFrontmatter(body) ||
     inferTitle(filePath);
   const tags = extractTags(frontmatter);
-  const slug = coerceFrontmatterString(frontmatter.slug) || inferSlug(filePath);
+  // #5840: resolved-slug input is identity — use it verbatim; filename
+  // input keeps the path-normalizing inference (strips one `.md`).
+  const slug = coerceFrontmatterString(frontmatter.slug)
+    || (opts?.filePathIsSlug ? (filePath ?? 'untitled') : inferSlug(filePath));
 
   const cleanFrontmatter = { ...frontmatter };
   delete cleanFrontmatter.type;

@@ -108,7 +108,7 @@ export async function readReconcileState(engine: BrainEngine, sourceId: string, 
   if (!Buffer.from(text).equals(raw)) throw new OperationError('invalid_params', 'The canonical file must contain valid UTF-8.');
   try { parseDataFrontmatter(text); }
   catch { throw new OperationError('invalid_params', 'Canonical file metadata cannot be parsed losslessly; repair its syntax before previewing.'); }
-  const parsed = parseMarkdown(text, slug, { validate: true, expectedSlug: slug });
+  const parsed = parseMarkdown(text, slug, { validate: true, expectedSlug: slug, filePathIsSlug: true });
   const errors = parsed.errors?.filter(e => !['MISSING_OPEN', 'MISSING_CLOSE', 'EMPTY_FRONTMATTER'].includes(e.code)) ?? [];
   if (errors.length || parsed.errors?.some(e => e.code === 'MISSING_CLOSE') || parsed.slug !== slug) {
     throw new OperationError('invalid_params', 'Canonical file metadata cannot be parsed losslessly; repair its syntax before previewing.');

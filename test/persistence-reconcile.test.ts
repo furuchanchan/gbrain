@@ -12,6 +12,7 @@ import { parseMarkdown, serializePageToMarkdown } from '../src/core/markdown.ts'
 import { acceptWriterTransfer, acquireWorktree, claimWorktree, getWorktreeBinding, prepareWriterTransfer } from '../src/core/persistence/ownership.ts';
 import { registerLocalWriter, withVerifiedLocalRegistration, type LocalRegistration } from '../src/core/persistence/identity.ts';
 import { runReconcileApply, runReconcileBackups, runReconcilePreview, assertReconcileOutputPath } from '../src/core/persistence/reconcile.ts';
+import { readReconcileState } from '../src/core/persistence/reconcile-state.ts';
 import { prepareFileTarget } from '../src/core/persistence/page-prepare.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
 import { admitWrite, claimNextWrite, compactWriteReceipts, getWriteRequest } from '../src/core/persistence/journal.ts';
@@ -643,4 +644,41 @@ test('candidate-origin fanout stops at a bounded verification limit rather than 
       code: 'source_changed', message: 'Too many candidate page origins to verify this exact file safely.' });
     expect(await engine.executeRaw('SELECT id FROM persistence_requests WHERE source_id=$1', [f.id])).toHaveLength(0);
   });
+}), 120_000);
+
+// issue #5840 — readReconcileState passed the stored slug to parseMarkdown's
+// filename argument, so an extension-bearing page identity (`examples/tasks.md`,
+// canonical path `examples/tasks.md.md`, no explicit frontmatter slug) was
+// normalized a second time to `examples/tasks` and reconciliation refused with
+// 'Canonical file metadata cannot be parsed losslessly' — a message that
+// blames a frontmatter `slug:` that does not exist.
+test('reconciliation preserves an extension-bearing stored slug (#5840)', async () => withEnv({ GBRAIN_HOME: home }, async () => {
+  for (const engine of engines) {
+    await disposePersistenceConsumer(engine);
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    const id = `reconcile-md-${randomUUID().slice(0, 12)}`, root = join(home, id), slug = 'examples/tasks.md';
+    mkdirSync(join(root, 'examples'), { recursive: true });
+    await engine.executeRaw('INSERT INTO sources(id,name,local_path,config) VALUES($1,$1,$2,\'{}\')', [id, root]);
+    const content = '---\ntype: note\ntitle: Synthetic task list\n---\n\n# Synthetic task list\n\nSynthetic test content.\n';
+    await importFromContent(engine, slug, content, { sourceId: id, sourcePath: 'examples/tasks.md.md', noEmbed: true });
+    writeFileSync(join(root, 'examples/tasks.md.md'), content);
+    await claimWorktree(engine, id, root);
+    await registerLocalWriter(engine, 'cli');
+    {
+      const state = await readReconcileState(engine, id, slug);
+      expect(state.pins.slug).toBe('examples/tasks.md');
+      expect(state.pins.relative_path).toBe('examples/tasks.md.md');
+      // A distinct extension-free sibling keeps its own identity — no
+      // cross-page merge or collapse toward 'examples/tasks'.
+      const sibling = '---\ntype: note\ntitle: Extension-free page\n---\n\n# Extension-free page\n\nDifferent sibling content.\n';
+      await importFromContent(engine, 'examples/tasks', sibling, { sourceId: id, sourcePath: 'examples/tasks.md', noEmbed: true });
+      writeFileSync(join(root, 'examples/tasks.md'), sibling);
+      const stateAgain = await readReconcileState(engine, id, slug);
+      expect(stateAgain.pins.slug).toBe('examples/tasks.md');
+      const siblingState = await readReconcileState(engine, id, 'examples/tasks');
+      expect(siblingState.pins.slug).toBe('examples/tasks');
+      expect(siblingState.pins.relative_path).toBe('examples/tasks.md');
+    }
+    await engine.executeRaw('DELETE FROM sources WHERE id=$1', [id]);
+  }
 }), 120_000);

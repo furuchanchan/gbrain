@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.6] - 2026-10-05
+
+### Fixed
+
+- **Managed sync/reconcile no longer strip a terminal `.md` from an already-resolved page slug (#5840)** — `parseMarkdown(content, row.slug)` filename-normalized a stored slug like `examples/tasks.md` to `examples/tasks`, so sync preparation failed terminal `invalid_params` (source → `blocked_by_failures`) and reconciliation refused with "repair its syntax" pointing at a nonexistent frontmatter `slug:`. `parseMarkdown` gains a `filePathIsSlug` opt — resolved-slug input is used verbatim (explicit frontmatter `slug:` still wins, `SLUG_MISMATCH` still fires); managed sync's preparation + canonical-overlay parses and `readReconcileState` pass it. Ordinary filename input is unchanged.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

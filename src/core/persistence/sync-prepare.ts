@@ -192,7 +192,7 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
   if (renamed && (base?.page.id !== renamed.pageId || base.revision !== renamed.revision || base.page.deleted_at != null)) {
     throw new OperationError('revision_conflict', 'The renamed page changed after sync admission.');
   }
-  const parsedInput = parseMarkdown(p.content, row.slug, { activePack });
+  const parsedInput = parseMarkdown(p.content, row.slug, { activePack, filePathIsSlug: true });
   const expectedSlug = resolveSlugForPath(p.sourcePath);
   const retainedWindowsOrigin = process.platform === 'win32' && snapshot?.page.source_path != null &&
     syncOriginPath(snapshot.page.source_path) === syncOriginPath(p.sourcePath) && parsedInput.slug === snapshot.page.slug;
@@ -224,7 +224,7 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
     // guarded proof about the other identity. Keep the cursor explicitly blocked.
     throw new OperationError('revision_conflict', 'A different page already owns this file identity; resolve the duplicate before syncing.');
   }
-  const parsed = parseMarkdown(p.content, row.slug, { activePack });
+  const parsed = parseMarkdown(p.content, row.slug, { activePack, filePathIsSlug: true });
   const tags = [...new Set([...(base?.tags ?? []), ...ready.parsedPage.tags])].sort();
   const renderedPage = { ...(base?.page ?? { id: 0, source_id: row.source_id, created_at: new Date(), updated_at: new Date() }), ...ready.parsedPage } as Page;
   if (renamed && parsedInput.typeExplicit !== true) renderedPage.type = parsedInput.type;
