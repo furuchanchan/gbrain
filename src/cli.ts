@@ -5,6 +5,7 @@ import { deliveryVersionSkewWarning } from './core/search/evidence-delivery.ts';
 import { installSigchldHandler } from './core/zombie-reap.ts';
 installSigchldHandler();
 import { installCleanupSignalHandlers } from './core/serve-invocation.ts';
+import { installAiSdkWarningLogger } from './core/console-prefix.ts';
 
 import { readFileSync, existsSync, unlinkSync, fstatSync } from 'fs';
 import { spawn } from 'child_process';
@@ -3149,6 +3150,8 @@ if (import.meta.main) {
   // (bun test runners died mid-suite when a test emitted a synthetic SIGTERM).
   // Spawned/compiled CLI processes are entrypoints, so they still install.
   installCleanupSignalHandlers();
+  // #5892: keep the AI SDK warning banner off stdout (--json envelope).
+  installAiSdkWarningLogger();
   // #4383: CLI_ONLY payloads (console.log / bare process.stdout.write) get
   // delivery-exact serialized writes; `serve` keeps native streaming stdout.
   if (shouldForceExitAfterMain()) installStdoutPipeDelivery();

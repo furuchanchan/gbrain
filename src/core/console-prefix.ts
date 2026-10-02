@@ -212,3 +212,49 @@ function prefixLines(text: string, prefix: string): string {
   const tag = `[${prefix}] `;
   return text.split('\n').map((line) => tag + line).join('\n');
 }
+
+/**
+ * #5892 — route AI SDK warnings to stderr. The SDK (`ai` 6.x) wraps
+ * LanguageModelV2 models (the claude-cli provider) in a compatibility
+ * proxy and, on the first warning, prints a one-time banner via
+ * `console.info` — stdout — before writing the warning itself to stderr.
+ * That banner was the first stdout line of `gbrain query --json` /
+ * `gbrain dream --json`, breaking JSON parsing. Installing
+ * `globalThis.AI_SDK_LOG_WARNINGS` as a function makes the SDK hand us
+ * the warnings instead of printing anything itself; we forward them to
+ * stderr. Called once from the CLI entrypoint; the stdio serve path
+ * already reroutes console.info wholesale. An operator-set value
+ * (`false` opt-out or a custom logger) is never clobbered.
+ */
+export function installAiSdkWarningLogger(): void {
+  const g = globalThis as {
+    AI_SDK_LOG_WARNINGS?: unknown;
+  };
+  if (g.AI_SDK_LOG_WARNINGS !== undefined) return;
+  g.AI_SDK_LOG_WARNINGS = (options: {
+    warnings: Array<{ type: string; feature?: string; details?: string; message?: string }>;
+    provider?: string;
+    model?: string;
+  }) => {
+    const prefix = `AI SDK Warning (${options.provider} / ${options.model}):`;
+    for (const warning of options.warnings ?? []) {
+      let message: string;
+      switch (warning.type) {
+        case 'unsupported':
+          message = `${prefix} The feature "${warning.feature}" is not supported.`;
+          if (warning.details) message += ` ${warning.details}`;
+          break;
+        case 'compatibility':
+          message = `${prefix} The feature "${warning.feature}" is used in a compatibility mode.`;
+          if (warning.details) message += ` ${warning.details}`;
+          break;
+        case 'other':
+          message = `${prefix} ${warning.message}`;
+          break;
+        default:
+          message = `${prefix} ${JSON.stringify(warning)}`;
+      }
+      serr(message);
+    }
+  };
+}

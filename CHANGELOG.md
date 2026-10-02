@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.4] - 2026-10-02
+
+### Fixed
+- `--json` stdout is clean again when a `claude-cli:*` model runs: the AI SDK's one-time warning banner (printed via `console.info` for the v2-model compatibility wrapper) is now installed as an `AI_SDK_LOG_WARNINGS` function logger at CLI startup, so warnings go to stderr and the JSON envelope stays parseable (#5892).
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**
