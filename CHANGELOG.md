@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.29.1] - 2026-09-21
+
+### Fixed
+
+- **Atom pages and the facts backstop (#5831)**: `atom` is out of the facts-backstop eligibility list. Atom pages are derived digests of pages that already went through extraction — each one spent an LLM call re-extracting derived text, and atom bodies (short lessons) produced facts with no `entity_slug`, which `consolidate` can never drain. `gbrain recall --pending` also stopped counting entity-less unconsolidated facts, matching what the consolidator can actually read.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

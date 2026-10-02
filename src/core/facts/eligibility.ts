@@ -67,12 +67,21 @@ const RESCUE_SLUG_PREFIXES = ['meetings/', 'personal/', 'daily/'] as const;
 // Pack-aware async lookup via extractableTypesFromPack(pack) deferred to
 // v0.43+ once an async eligibility-check signature is feasible across all
 // call sites (operations.ts + import-file.ts + others).
+//
+// #5831: `atom` is excluded. Atom pages are derived digests of pages that
+// already went through the backstop — extracting facts from them re-spends
+// an LLM call on derived text, and atom bodies (2–4 sentence lessons)
+// mostly yield facts with no entity_slug, which `consolidate` (entity-
+// bucketed) can never drain. gbrain-base-v2 agrees: it declares `atom`
+// without `extractable` (the annotation IS the extracted unit). The
+// v0.41.22 blanket union added it alongside the genuinely extractable
+// canonical types.
 const ELIGIBLE_TYPES: PageType[] = [
   // gbrain-base (legacy) types
   'note', 'meeting', 'slack', 'email', 'calendar-event', 'source', 'writing',
   // gbrain-base-v2 canonical types declared extractable in the pack
-  // (concept deliberately omitted — see above)
-  'media', 'tweet', 'atom', 'analysis',
+  // (concept and atom deliberately omitted — see above)
+  'media', 'tweet', 'analysis',
 ];
 
 const MIN_BODY_CHARS = 80;

@@ -462,12 +462,16 @@ export async function countUnconsolidatedFacts(exec: LegacyUnscopedRead, source_
     // Validity-lapsed rows are excluded too: the consolidator reads via
     // listFactsByEntity(activeOnly), which filters them at read time — counting
     // them here would report a backlog the consolidator can never drain.
+    // #5831: entity_slug IS NULL rows are excluded for the same reason —
+    // consolidate buckets strictly on (source_id, entity_slug), so a
+    // null-entity row is a pending count it can never reach.
     const rows = (await exec.run<{ count: number }>(sqlFragment`
       SELECT COUNT(*)::int AS count FROM facts
       WHERE source_id = ${source_id}
         AND consolidated_at IS NULL
         AND expired_at IS NULL
         AND (valid_until IS NULL OR valid_until > now())
+        AND entity_slug IS NOT NULL
         AND source != ALL(${AUDIT_ROW_SOURCES}::text[])
     `)).rows;
     return Number(rows[0]?.count ?? 0);
