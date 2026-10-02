@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.1] - 2026-10-02
+
+### Fixed
+
+- **`takes_supersede` recorded the pointer on the wrong row (#5886)**: the struck (old) take's source cell now carries `superseded by #N`, matching the documented fence shape, and the new row keeps the caller's own source instead of a self-referential `superseded by #N`. On a managed brain the canonical projection reads `superseded_by` only from an inactive row's source, so previously the pointer was NULL from the first write and every later publication of the page re-projected it as NULL — the supersession chain is now preserved across commits and re-projections.
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**

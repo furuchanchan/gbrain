@@ -538,9 +538,13 @@ export function supersedeRow(
   const oldClaim = takes[idx].claim;
   const newRowNum = takes.length > 0 ? Math.max(...takes.map(t => t.rowNum)) + 1 : 1;
 
-  // Mark old row inactive; append new row.
+  // Mark old row inactive — the supersession pointer lives in ITS source
+  // cell, as the documented fence shows (`~~claim~~ | ... | superseded by
+  // #N`): the canonical projection derives `superseded_by` only from an
+  // inactive row's source, so putting the pointer on the new row's source
+  // both self-points it and loses the chain (#5886).
   const updatedTakes: ParsedTake[] = takes.map((t, i) =>
-    i === idx ? { ...t, active: false } : t,
+    i === idx ? { ...t, active: false, source: `superseded by #${newRowNum}` } : t,
   );
   updatedTakes.push({
     rowNum: newRowNum,
@@ -550,7 +554,7 @@ export function supersedeRow(
     weight: replacement.weight,
     sinceDate: replacement.sinceDate,
     untilDate: replacement.untilDate,
-    source: replacement.source ?? `superseded by #${newRowNum}`,
+    source: replacement.source,
     active: true,
   });
   void oldClaim; // Reserved for future "show what changed" diff helper.
