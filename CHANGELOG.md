@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- `gbrain init --help` thin-client example now shows the flags `initRemoteMcp` actually reads (`--issuer-url`, `--mcp-url`, `--oauth-client-id`, `--oauth-client-secret`) instead of `--url`, which is accepted but ignored in `--mcp-only` mode; `docs/INSTALL.md` names the four required inputs (#5800).
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
