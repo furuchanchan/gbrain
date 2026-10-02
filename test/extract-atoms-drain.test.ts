@@ -23,7 +23,11 @@ function seq(values: Array<number | null>): () => Promise<number | null> {
   return async () => values[Math.min(i++, values.length - 1)];
 }
 
-const passThroughLock: ExtractAtomsDrainDeps['withLock'] = (work) => work();
+// withLock impls hand `work` the lock-loss signal (withRefreshingLock
+// aborts it with LockStolenError); the pass-through supplies one so
+// the drain's abort checks exercise a real AbortSignal.
+const passThroughLock: ExtractAtomsDrainDeps['withLock'] = (work) =>
+  work(new AbortController().signal);
 
 describe('runExtractAtomsDrain (issue #1678)', () => {
   it('drains to empty and reports stopped=drained', async () => {
@@ -198,7 +202,7 @@ describe('shared wiring helper holds the cycle lock (5A)', () => {
   // not from `r.status` (which collapses partial and total failure into the
   // same 'warn' value — the exact discard the issue reports).
   it('runBatch derives providerFailure from failures.length + zero processed items, not r.status', () => {
-    const runBatchBlock = src.slice(src.indexOf('runBatch: async () => {'));
+    const runBatchBlock = src.slice(src.indexOf('runBatch: async (signal) => {'));
     expect(runBatchBlock).toContain('d.failures');
     expect(runBatchBlock).toContain('transcripts_processed');
     expect(runBatchBlock).toContain('pages_processed');
@@ -285,5 +289,82 @@ describe('#2144: zero-yield tombstone progress semantics', () => {
     expect(result.batches).toBe(1);
     expect(result.remaining).toBe(5);
     expect(batches).toBe(1);
+  });
+});
+
+// issue #5832 — withRefreshingLock hands `work` a signal it aborts with
+// LockStolenError the instant the lease is lost. A drain that ignores it keeps
+// writing atoms for the rest of a possibly hours-long batch while another
+// holder runs the same source's cycle. The loop must stop scheduling NEW
+// batches at the next boundary and propagate the abort reason.
+describe('drain observes the lock-loss signal (issue #5832)', () => {
+  it('stops at the next batch boundary when the lock signal aborts mid-drain', async () => {
+    const lockCtl = new AbortController();
+    const lost = new Error('lock stolen mid-batch');
+    let batches = 0;
+    const run = runExtractAtomsDrain(
+      {
+        withLock: (work) => work(lockCtl.signal),
+        // backlog never drains — without the signal check the loop would
+        // run until maxBatches/window instead of stopping on lock loss.
+        countRemaining: seq([3, 3, 3, 3, 3]),
+        runBatch: async () => {
+          batches++;
+          if (batches === 1) lockCtl.abort(lost);
+          return { extracted: 1, skipped: 0 };
+        },
+        now: () => 0,
+      },
+      { windowMs: 1_000_000 },
+    );
+    await expect(run).rejects.toThrow('lock stolen mid-batch');
+    expect(batches).toBe(1);
+  });
+
+  it('rejects before the first batch when the caller signal is pre-aborted', async () => {
+    const caller = new AbortController();
+    caller.abort(new Error('job cancelled'));
+    let batches = 0;
+    const run = runExtractAtomsDrain(
+      {
+        withLock: passThroughLock,
+        countRemaining: seq([5, 5]),
+        runBatch: async () => { batches++; return { extracted: 1, skipped: 0 }; },
+        now: () => 0,
+      },
+      { windowMs: 1_000_000, signal: caller.signal },
+    );
+    await expect(run).rejects.toThrow('job cancelled');
+    expect(batches).toBe(0);
+  });
+
+  it('hands runBatch the combined signal so caller abort reaches the batch', async () => {
+    const caller = new AbortController();
+    let batchSignal: AbortSignal | null = null;
+    const run = runExtractAtomsDrain(
+      {
+        withLock: passThroughLock,
+        // backlog is empty after batch 1 — but the abort check runs at the
+        // loop top BEFORE the remaining-count check, so a signalled drain
+        // propagates the abort instead of reporting a tidy 'drained' that
+        // would mask the lost lease. (withRefreshingLock likewise rethrows
+        // the lock-loss error after work() returns, however it ended.)
+        countRemaining: seq([2, 0]),
+        runBatch: async (signal) => {
+          batchSignal = signal;
+          caller.abort(new Error('cancelled during batch'));
+          // The batch observes the caller's abort through ITS signal arg —
+          // this is what stops runPhaseExtractAtoms' item loop mid-batch.
+          expect(signal.aborted).toBe(true);
+          return { extracted: 1, skipped: 0 };
+        },
+        now: () => 0,
+      },
+      { windowMs: 1_000_000, signal: caller.signal },
+    );
+    // In-flight batch completes cooperatively; the next loop top propagates.
+    await expect(run).rejects.toThrow('cancelled during batch');
+    expect(batchSignal).not.toBeNull();
+    expect(batchSignal!.aborted).toBe(true);
   });
 });

@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.5] - 2026-10-05
+
+### Fixed
+
+- **extract-atoms drain honors the cycle-lock loss signal (#5832)** — `withRefreshingLock` aborts its work signal with `LockStolenError` the instant a `gbrain-cycle:<source>` lease is lost, but `runExtractAtomsDrain` never looked at it: a drain kept writing atoms for the rest of a possibly hours-long batch while another holder ran the same source's cycle alongside it. The drain now merges the lock-loss signal with the caller's own `signal` via `AbortSignal.any` (same pattern as `sync`), checks it at every batch boundary, and threads it into `runPhaseExtractAtoms`, whose item loop stops scheduling new items once the signal fires. Abort is cooperative — an in-flight `chat()` may finish — and the abort reason propagates (`LockStolenError` reaches the Minion handler's retry path rather than being swallowed).
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

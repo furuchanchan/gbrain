@@ -214,6 +214,12 @@ export interface ExtractAtomsOpts {
    * `heartbeat()` on the passed reporter.
    */
   progress?: ProgressReporter;
+  /**
+   * #5832: cooperative abort — checked at each item boundary before any new
+   * `chat()` call. The drain threads the combined lock-loss + caller signal
+   * here; abort is not transactional (an in-flight item may finish).
+   */
+  signal?: AbortSignal;
 }
 
 interface ExtractedAtom {
@@ -1075,6 +1081,8 @@ export async function runPhaseExtractAtoms(
 
   await withBudgetTracker(budgetTracker, async () => {
   for (const item of work) {
+    // #5832: stop scheduling new items once the drain's combined signal fires.
+    if (opts.signal?.aborted) break;
     await maybeYield();
     if (budgetExhausted || budgetTracker.totalSpent >= budgetCap) {
       if (item.kind === 'transcript') transcriptsSkipped++;
