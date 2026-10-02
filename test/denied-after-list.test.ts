@@ -133,9 +133,11 @@ describe('real envelopes through dispatchToolCall', () => {
   });
 
   test('bound-client fence OP-level deny (unfenceable write op) → counted', async () => {
-    // forget_fact writes by numeric fact id (not a slug) — never available
-    // to slug-bound clients; the dispatch fence denies at the op level.
-    const res = await dispatchToolCall(engine, 'forget_fact', { id: 1 }, { ...HTTP, auth: boundAuth() });
+    // extract_facts writes to slugs derived from extracted entities — no
+    // resolvable slug to fence on, so it stays op-denied to bound clients
+    // (forget_fact was promoted to arg-fenced by #5913; it resolves the
+    // fact's page slug and fences on that).
+    const res = await dispatchToolCall(engine, 'extract_facts', { turn_text: 'x' }, { ...HTTP, auth: boundAuth() });
     expect(res.isError).toBe(true);
     const p = parsed(res);
     expect(p.error).toBe('permission_denied');

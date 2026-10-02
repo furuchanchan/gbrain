@@ -10,6 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+- `remember`, `forget` and `forget_fact` now work for OAuth clients bound by `bound_slug_prefixes` (#5913). Each already resolved a concrete slug and ran the client slug fence on it — but none was in `CLIENT_FENCED_WRITE_OPS`, so the dispatch gate denied a prefix-bound client before its fence could run (the issue's `bound_slug_prefixes=["notes/"]` + explicit remember authority case). The resolved slug is the fence: entities or fact pages outside the binding still deny `permission_denied`, and the `memory/unattributed` fallback stays closed to bound clients. `extract_entities`/`extract_facts`/`ontology_propose` remain op-denied — they have no resolvable slug to fence.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

@@ -173,9 +173,11 @@ describe('client slug fence (bound_slug_prefixes on direct writes)', () => {
     const bound = boundAuth(['emp-alice/']);
     const unbound = boundAuth(undefined);
 
-    // These write by a key other than a slug (derived entity names, numeric
-    // fact ids), so no per-op fence can confine them.
-    for (const name of ['extract_entities', 'extract_facts', 'forget_fact', 'ontology_propose']) {
+    // These write by a key other than a resolvable slug (derived entity
+    // names), so no per-op fence can confine them. remember/forget/forget_fact
+    // resolve a concrete slug (entity, unattributed, or the fact's page) and
+    // fence on it — they are listed in CLIENT_FENCED_WRITE_OPS (#5913).
+    for (const name of ['extract_entities', 'extract_facts', 'ontology_propose']) {
       test(`${name} is denied for a bound client`, () => {
         const o = operations.find(x => x.name === name);
         if (!o) throw new Error(`${name} missing`);

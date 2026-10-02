@@ -326,6 +326,15 @@ export const CLIENT_FENCED_WRITE_OPS: ReadonlySet<string> = new Set([
   'get_write_request', 'list_write_requests', 'cancel_write_request',
   'takes_add', 'takes_update', 'takes_resolve', 'takes_supersede',
   'put_skill', 'delete_skill',
+  // #5913: the fact-verb mutations key on a fact or entity, not a slug param,
+  // but resolve a concrete target slug before admission — remember plans
+  // entitySlug ?? 'memory/unattributed', forget/forget_fact resolve the
+  // fact's page — and each calls enforceClientSlugFence on that slug. They
+  // were dispatch-denied before the fence could ever run, so a prefix-bound
+  // client could not remember at all. Listing them makes the resolved slug
+  // the fence: out-of-prefix entities and unattributed memory still deny
+  // (fail-closed — a bound client cannot smear 'memory/unattributed').
+  'remember', 'forget', 'forget_fact',
 ]);
 
 /**
