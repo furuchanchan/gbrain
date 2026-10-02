@@ -43,6 +43,7 @@ import type { BrainEngine } from '../../core/engine.ts';
 import { loadConfig, toEngineConfig } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import { formatFenceDate, parseFactsFence, renderFactsTable, replaceOrInsertFactsFence } from '../../core/facts-fence.ts';
+import { dedupeFenceExtractedFacts, extractFactsFromFenceText } from '../../core/facts/extract-from-fence.ts';
 import { resolvePageWriteTarget } from '../../core/write-through.ts';
 import { serializePageToMarkdown } from '../../core/markdown.ts';
 import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
@@ -510,7 +511,12 @@ async function phaseCVerify(
         body = readFileSync(target.filePath, 'utf-8');
       }
       const parsed = parseFactsFence(body);
-      const fenceCount = parsed.facts.length;
+      // #5814: the extract-facts reconcile indexes duplicate ACTIVE rows
+      // once (#1781), so a raw fence-row count always reads a duplicated
+      // fence as drifted — the verify applies the same dedupe rule.
+      const fenceCount = dedupeFenceExtractedFacts(
+        extractFactsFromFenceText(parsed.facts, g.source_markdown_slug, g.source_id),
+      ).length;
       const dbCount = parseInt(g.n, 10);
       if (fenceCount !== dbCount) {
         mismatches.push(`${g.source_markdown_slug} (fence=${fenceCount}, db=${dbCount})`);

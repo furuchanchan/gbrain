@@ -375,7 +375,11 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
       notability: 'medium', source: 'mcp:put_page',
     }).body);
     await seedLegacyFact({ entity_slug: slug, fact: 'Same claim' });
-    await seedLegacyFact({ entity_slug: slug, fact: 'Same claim', visibility: 'world' });
+    const secondId = await seedLegacyFact({ entity_slug: slug, fact: 'Same claim', visibility: 'world' });
+    // #5814: identical claim+source rows are a #1781 duplicate the verify
+    // now counts once — give this pair different provenance so the
+    // collision scenario stays outside the dup rule it isn't testing.
+    await engine.executeRaw(`UPDATE facts SET source = 'api:ingest' WHERE id = $1`, [secondId]);
     expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
     expect(parseFactsFence(readFileSync(path, 'utf8')).facts.map(f => f.rowNum)).toEqual([5, 6]);
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
@@ -391,7 +395,11 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
       `INSERT INTO facts (source_id, entity_slug, fact, kind, source, row_num, source_markdown_slug)
        VALUES ('default', $1, 'Shared claim', 'fact', 'mcp:put_page', 4, $1)`, [slug],
     );
-    await seedLegacyFact({ entity_slug: slug, fact: 'Shared claim', visibility: 'world' });
+    const secondId = await seedLegacyFact({ entity_slug: slug, fact: 'Shared claim', visibility: 'world' });
+    // #5814: same claim + same source would be a #1781 duplicate — keep
+    // the appended row's provenance distinct so the dup rule doesn't
+    // collapse the pair this test is asserting survives verbatim.
+    await engine.executeRaw(`UPDATE facts SET source = 'api:ingest' WHERE id = $1`, [secondId]);
     expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
     const facts = parseFactsFence(readFileSync(path, 'utf8')).facts;
     expect(facts).toHaveLength(2);
@@ -532,6 +540,89 @@ describe('phaseCVerify', () => {
     const r = await __testing.phaseCVerify(engine, OPTS);
     expect(r.status).toBe('complete');
     expect(r.detail).toContain('pages_checked=1');
+  });
+});
+
+describe('phaseCVerify — #5814 duplicate-active dedupe', () => {
+  const slug = 'people/alice';
+
+  async function fencePage(rows: Array<Partial<Parameters<typeof upsertFactRow>[1]> & { claim: string }>): Promise<void> {
+    let body = '# People\n';
+    for (const row of rows) {
+      body = upsertFactRow(body, {
+        kind: 'fact', confidence: 1, visibility: 'private',
+        notability: 'medium', source: 'mcp:put_page', ...row,
+      }).body;
+    }
+    await engine.putPage(slug, {
+      type: 'person', title: 'Alice Example', compiled_truth: body, frontmatter: {}, source_path: `${slug}.md`,
+    }, { sourceId: 'default' });
+    const filePath = join(brainDir, `${slug}.md`);
+    mkdirSync(join(filePath, '..'), { recursive: true });
+    writeFileSync(filePath, body, 'utf-8');
+  }
+
+  async function dbFact(rowNum: number, claim: string, opts: { expired?: boolean } = {}): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug, expired_at)
+       VALUES ('default', $1, $2, 'fact', 'private', 'medium',
+               now(), 'mcp:put_page', 1.0, $3, $1, ${opts.expired ? 'now()' : 'NULL'})`,
+      [slug, claim, rowNum],
+    );
+  }
+
+  test('a fence with duplicate active rows verifies against a deduped DB count', async () => {
+    // The reconcile indexes duplicate ACTIVE rows once (#1781); the DB has
+    // one row per unique (claim, source). The reporter's drift case.
+    await fencePage([
+      { claim: 'Same claim' }, { claim: 'Same claim' }, { claim: 'Distinct claim' },
+    ]);
+    await dbFact(1, 'Same claim');
+    await dbFact(3, 'Distinct claim');
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('pages_checked=1');
+  });
+
+  test('a struck duplicate still counts separately — struck history never collapses', async () => {
+    await fencePage([
+      { claim: 'Same claim' },
+      { claim: 'Same claim', active: false, context: 'superseded by #1' },
+    ]);
+    await dbFact(1, 'Same claim');
+    await dbFact(2, 'Same claim', { expired: true });
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('pages_checked=1');
+  });
+
+  test('the same claim from a different source is not a duplicate', async () => {
+    await fencePage([
+      { claim: 'Same claim', source: 'mcp:put_page' },
+      { claim: 'Same claim', source: 'api:ingest' },
+    ]);
+    await dbFact(1, 'Same claim');
+    await dbFact(2, 'Same claim');
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('pages_checked=1');
+  });
+
+  test('genuine drift still flags after the dedupe rule', async () => {
+    await fencePage([
+      { claim: 'Same claim' }, { claim: 'Same claim' }, { claim: 'Distinct claim' },
+    ]);
+    await dbFact(1, 'Same claim'); // DB missing 'Distinct claim'
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('drifted');
+    expect(r.detail).toContain(slug);
   });
 });
 

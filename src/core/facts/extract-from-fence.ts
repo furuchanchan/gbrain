@@ -257,3 +257,24 @@ export function extractFactsFromFenceText(
     return row;
   });
 }
+
+/**
+ * #1781 dedupe rule, shared by the extract-facts reconcile and the
+ * v0.32.2 verify phase (#5814): duplicate ACTIVE rows (same claim and
+ * source) index once — a struck history row never collapses with an
+ * active row that carries the same text, so a claim that reverts to an
+ * earlier value stays active. The DB row count after a reconcile is
+ * `dedupeFenceExtractedFacts(extractFactsFromFenceText(fence)).length`;
+ * anywhere that compares fence rows to DB rows must apply this or a
+ * duplicate active fence row reads as drift.
+ */
+export function dedupeFenceExtractedFacts(rows: FenceExtractedFact[]): FenceExtractedFact[] {
+  const activeKeys = new Set<string>();
+  return rows.filter(f => {
+    if (f.expired_at != null) return true;
+    const key = `${f.fact}\u0000${f.source}`;
+    if (activeKeys.has(key)) return false;
+    activeKeys.add(key);
+    return true;
+  });
+}
