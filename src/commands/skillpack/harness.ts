@@ -37,6 +37,7 @@ import {
   removeHarnessBridge,
   verifySlugsServable,
   assertDestNotSymlink,
+  bridgeWrittenSlugs,
   type BridgeHarness,
 } from '../../core/skillpack/harness-bridge.ts';
 import {
@@ -552,8 +553,8 @@ export async function cmdReferenceHarness(args: string[]): Promise<void> {
       ? [positional]
       : a.skills.length > 0
         ? a.skills
-        : entry && Object.keys(entry.written).length > 0
-          ? Object.keys(entry.written).sort()
+        : entry && bridgeWrittenSlugs(entry).length > 0
+          ? bridgeWrittenSlugs(entry)
           : resolveSlugs(gbrainRoot, a).slugs;
 
     if (a.applyCleanHunks) {
@@ -704,9 +705,7 @@ export function collectBridgesStatus(gbrainRoot: string): BridgesStatusEntry[] {
   const state = loadBridgeState();
   const out: BridgesStatusEntry[] = [];
   for (const entry of state.entries) {
-    const slugs = Object.keys(entry.written)
-      .filter(s => s !== '_shared')
-      .sort();
+    const slugs = bridgeWrittenSlugs(entry);
     let identical = 0;
     let differs = 0;
     let missing = 0;
