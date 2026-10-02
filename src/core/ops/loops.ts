@@ -285,8 +285,9 @@ const open_loops: Operation = {
     'completeness: when it is "partial", some mail in the window is held after repeated import failures; present the ' +
     'answer as partial and name the held items and their retry command.',
   params: {
+    id: { type: 'number', description: 'Look up one loop by id, across statuses unless `status` is also passed.' },
     group_by: { type: 'string', enum: ['counterparty', 'none'], description: "Default 'counterparty' (ranked groups)." },
-    status: { type: 'string', enum: ['open', 'done', 'dropped', 'stale'], description: "Default 'open'." },
+    status: { type: 'string', enum: ['open', 'done', 'dropped', 'stale'], description: "Default 'open'; ignored when `id` is given alone (an id lookup spans statuses)." },
     loop_type: { type: 'string', enum: ['commitment_owed_by_me', 'commitment_owed_to_me', 'unanswered_inbound', 'unanswered_outbound', 'decision_pending'], description: 'Filter to one loop type.' },
     counterparty: { type: 'string', description: 'Filter to one counterparty (slug or email).' },
     limit: { type: 'number', description: 'Grouped: max groups (default 3). Flat: max loops (default 50). The internal fetch is capped at 500 rows; `truncated: true` marks a hit.' },
@@ -299,7 +300,9 @@ const open_loops: Operation = {
   handler: async (ctx, p) => {
     const trusted = ctx.remote === false;
     const groupBy = (p.group_by as string | undefined) ?? 'counterparty';
-    const status = ((p.status as string | undefined) ?? 'open') as LoopStatus;
+    // An id lookup spans statuses (#5870); an explicit status still narrows.
+    const loopId = typeof p.id === 'number' && Number.isSafeInteger(p.id) && p.id > 0 ? p.id : undefined;
+    const status = (p.status ?? (loopId === undefined ? 'open' : undefined)) as LoopStatus | undefined;
     // Per-call scope via the canonical trust+grant resolver: an MCP caller
     // whose transport is bound to another source can point this read at the
     // google source (`source_id`) or, trusted-local, span the brain
@@ -342,6 +345,7 @@ const open_loops: Operation = {
       ...(scope.sourceIds ? { sourceIds: scope.sourceIds } : {}),
       ...(scope.sourceId ? { sourceIds: [scope.sourceId] } : {}),
       status,
+      ...(loopId !== undefined ? { id: loopId } : {}),
       ...(p.loop_type ? { loopType: p.loop_type as LoopType } : {}),
       ...(p.counterparty ? { counterparty: p.counterparty as string } : {}),
       limit: 500,

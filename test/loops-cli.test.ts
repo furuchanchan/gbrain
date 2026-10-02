@@ -28,6 +28,7 @@ import {
 } from '../src/core/cli-force-exit.ts';
 import {
   addSuppression,
+  closeOpenLoop,
   listOpenLoops,
   loadSuppressions,
   upsertOpenLoop,
@@ -305,6 +306,16 @@ describe('runLoops', () => {
   test('show with an unknown id sets verdict 1', async () => {
     const r = await captured(() => runLoops(engine, ['show', '999']));
     expect(r.verdict).toBe(1);
+  });
+
+  test('#5870 show <id> finds the loop across statuses (id lookup, not an open-only page scan)', async () => {
+    const { id } = await upsertOpenLoop(engine, loop());
+    await closeOpenLoop(engine, 'default', id, 'done', 'manual');
+    const r = await captured(() => runLoops(engine, ['show', String(id)]));
+    expect(r.out).toContain(`#${id}`);
+    expect(r.out).toContain('done');
+    expect(r.err).not.toContain('No loop');
+    expect(r.verdict).toBe(0);
   });
 
   test('done closes the loop; the --json envelope reports ok/status; re-close fails honestly', async () => {

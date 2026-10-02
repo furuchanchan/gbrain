@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.10] - 2026-10-01
+
+### Fixed
+- `gbrain loops show <id>` looked the loop up inside the first 200 ranked open loops, so an open loop below the fold — or any closed loop — reported "No loop <id>" and exited 1. `open_loops` now accepts an `id` param that does a direct single-row lookup across statuses (explicit `status` still narrows), and `loops show` uses it. (#5870)
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**

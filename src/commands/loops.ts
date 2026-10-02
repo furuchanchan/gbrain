@@ -165,6 +165,7 @@ export async function runLoops(engine: BrainEngine, args: string[]): Promise<voi
       'open_loops',
       {
         group_by: 'none',
+        ...(sub === 'show' ? { id: Number(rest.find((a) => /^\d+$/.test(a))) } : {}),
         limit: 200,
         ...(statusIdx !== -1 ? { status: rest[statusIdx + 1] } : {}),
         ...(typeIdx !== -1 ? { loop_type: rest[typeIdx + 1] } : {}),

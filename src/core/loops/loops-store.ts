@@ -208,6 +208,8 @@ export interface ListLoopsOpts {
   status?: LoopStatus;
   loopType?: LoopType;
   counterparty?: string;
+  /** Single-row lookup across statuses unless `status` is also set (#5870). */
+  id?: number;
   limit?: number;
 }
 
@@ -222,6 +224,7 @@ export async function listOpenLoops(
        AND ($2::text IS NULL OR status = $2)
        AND ($3::text IS NULL OR loop_type = $3)
        AND ($4::text IS NULL OR counterparty_slug = $4 OR counterparty_email = $4)
+       AND ($5::bigint IS NULL OR id = $5)
      ORDER BY last_activity_at DESC, id DESC
      LIMIT ${limit}`,
     [
@@ -229,6 +232,7 @@ export async function listOpenLoops(
       opts.status ?? null,
       opts.loopType ?? null,
       opts.counterparty ?? null,
+      opts.id ?? null,
     ],
   );
   return rows.map(normalizeRow);
