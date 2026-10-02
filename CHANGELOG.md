@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **`extract-conversation-facts --json` works as the flag registry advertises** — the generated registry listed `--json`, but the command's parser rejected it with `Unknown flag` and exited 1, so a wrapper script adding the flag got no output at all. The flag now parses and prints the run's counters as one JSON object on stdout (`{dry_run, outcome, sources, pages_considered, ..., spent_usd, budget_exhausted}`), replacing the prose `Done:` summary; exit-code semantics are unchanged (1 on page failures, 3 on lock-skipped). ([#5448](https://github.com/garrytan/gbrain/issues/5448))
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

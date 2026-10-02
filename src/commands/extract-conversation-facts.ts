@@ -1789,6 +1789,8 @@ interface ParsedArgs {
   overrideDisabled?: boolean;
   /** v0.41.15.0 (D9): in-process parallel workers per source. */
   workers?: number;
+  /** #5448: emit the Done: counters as one JSON line instead of prose. */
+  json?: boolean;
   yes?: boolean;
   help?: boolean;
   error?: string;
@@ -1802,6 +1804,7 @@ function parseArgs(args: string[]): ParsedArgs {
     if (a === '--dry-run') { out.dryRun = true; continue; }
     if (a === '--force') { out.force = true; continue; }
     if (a === '--yes' || a === '-y') { out.yes = true; continue; }
+    if (a === '--json') { out.json = true; continue; }
     if (a === '--override-disabled') { out.overrideDisabled = true; continue; }
     if (a === '--slug') { out.slug = args[++i]; continue; }
     if (a === '--source-id') { out.sourceId = args[++i]; continue; }
@@ -1891,6 +1894,7 @@ Options:
                          silently clamps to 1 (single-writer engine). Cross-process
                          safety is guaranteed by the per-page advisory lock + replay
                          safety (delete-orphans-first on each page claim).
+  --json                 Print the Done: counters as one JSON object on stdout (exit codes unchanged).
   --override-disabled    Bypass facts.extraction_enabled=false brain-wide kill-switch.
   --background           Submit as a Minion job; print job_id; exit (use 'gbrain jobs follow').
   --yes                  Auto-confirm cost preview in non-TTY contexts.
@@ -2056,6 +2060,18 @@ export async function runExtractConversationFacts(
   const outcome = parsed.dryRun
     ? '(dry run) segmentation only; no facts extracted'
     : `extracted ${aggregate.facts_extracted} facts (${aggregate.facts_inserted} inserted)`;
+  if (parsed.json) {
+    // #5448: the registry advertises --json; wrappers that parse stdout need
+    // exactly one machine-readable line carrying the same counters.
+    console.log(JSON.stringify({
+      dry_run: !!parsed.dryRun,
+      outcome: parsed.dryRun ? 'segmentation_only' : 'extracted',
+      sources: sourceIds,
+      ...aggregate,
+      spent_usd: Number(totalSpent.toFixed(6)),
+      budget_exhausted: anyBudgetExhausted,
+    }));
+  } else {
   console.log(
     `\nDone: ${outcome} across ${aggregate.segments_processed} segments ` +
     `from ${aggregate.pages_processed}/${aggregate.pages_considered} pages ` +
@@ -2104,6 +2120,7 @@ export async function runExtractConversationFacts(
   }
   if (anyBudgetExhausted) {
     console.log(`  Budget cap reached. Re-run with a higher --max-cost-usd to continue.`);
+  }
   }
 
   // v0.41.15.0 (codex #3): exit 3 when pages were skipped due to
