@@ -368,10 +368,12 @@ export async function runPhaseDrift(
     if (maintenance) {
       const snapshot = await engine.readPageSnapshot(reportSlug, { sourceId: 'default' });
       await publishMaintenancePage(engine, maintenance, reportSlug, serializeMarkdown({}, buildReportBody(judged, config, modelId), '',
-        { type: 'report', title: `Drift report ${cycleDate}`, tags: [] }), { expectedRevision: snapshot?.revision ?? null, file: false });
+        // `note` is the default pack's declared catch-all type; `report` is
+        // not declared by gbrain-base-v2 and surfaced as undeclared drift.
+        { type: 'note', title: `Drift report ${cycleDate}`, tags: [] }), { expectedRevision: snapshot?.revision ?? null, file: false });
     } else {
       await engine.putPage(reportSlug, {
-        type: 'report',
+        type: 'note',
         title: `Drift report ${cycleDate}`,
         compiled_truth: buildReportBody(judged, config, modelId),
       });

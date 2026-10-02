@@ -119,8 +119,9 @@ source_url: "..."              # link back to the source platform, if any
   from it into the brain.
 
 Retain the raw transcript when the source provides one: file it as a sidecar
-page (e.g. `meetings/YYYY-MM-DD-{slug}-transcript`) or keep the source file
-reachable, and link it from the meeting page. The transcript is the canonical
+page (e.g. `meetings/YYYY-MM-DD-{slug}-transcript` with `type: meeting` — a
+declared type in the default pack) or keep the source file reachable, and
+link it from the meeting page. The transcript is the canonical
 evidence for every quote and claim check downstream.
 
 **Redact before you retain.** A raw transcript routinely captures pasted

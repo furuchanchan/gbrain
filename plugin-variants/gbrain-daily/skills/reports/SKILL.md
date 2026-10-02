@@ -39,12 +39,15 @@ This skill guarantees:
    ```yaml
    ---
    title: {report title}
-   type: report
+   type: note
+   report_type: {category name}
    category: {category name}
    date: {YYYY-MM-DD}
    time: {HH:MM PT}
    ---
    ```
+   (`type: note` is the declared catch-all in the default pack; `report` is
+   not a declared type and the page would surface as undeclared drift.)
 2. **Load latest.** Given a category, find the most recent report file.
 3. **Keyword routing.** Map common queries to report categories:
    - "email" / "inbox" → ea-inbox-sweep

@@ -92,7 +92,7 @@ Current behavior and load-bearing invariants; history belongs in Git and CHANGEL
 
 - `skills/media-ingest/SKILL.md` — Video/audio/PDF/book with entity extraction
 
-- `skills/meeting-ingestion/SKILL.md` — Transcripts with attendee enrichment chaining
+- `skills/meeting-ingestion/SKILL.md` — Transcripts with attendee enrichment chaining; the raw-transcript sidecar page is typed `meeting` (a type the default pack declares, #5881)
 
 - `skills/migrations/` — Version migration files with feature_pitch YAML frontmatter
 

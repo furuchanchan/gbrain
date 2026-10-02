@@ -63,9 +63,12 @@ export async function runReport(args: string[]) {
   const reportDir = join(brainDir, 'reports', reportType);
   mkdirSync(reportDir, { recursive: true });
 
+  // `note` is the default pack's declared catch-all type; `report` is not
+  // declared by gbrain-base-v2 and surfaced as undeclared drift (#5881).
+  // The report kind stays distinguishable via `report_type`.
   const page = `---
 title: "${title} -- ${dateStr}"
-type: report
+type: note
 report_type: ${reportType}
 date: ${dateStr}
 time: "${timePretty}"

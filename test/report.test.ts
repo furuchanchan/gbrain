@@ -32,7 +32,7 @@ describe('report output format', () => {
 
     const page = `---
 title: "${title} -- ${date}"
-type: report
+type: note
 report_type: ${reportType}
 date: ${date}
 time: "${time}"
@@ -43,7 +43,7 @@ time: "${time}"
 Report content here.
 `;
 
-    expect(page).toContain('type: report');
+    expect(page).toContain('type: note');
     expect(page).toContain('report_type: enrichment-sweep');
     expect(page).toContain('# Enrichment Sweep');
   });

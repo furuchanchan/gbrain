@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.31.10] - 2026-10-02
+
+### Fixed
+
+- gbrain's own writes no longer store page types the default `gbrain-base-v2` pack leaves undeclared: the drift phase and `gbrain report` stamp `type: note` (the pack's declared catch-all; the kind stays on `report_type`), the reports skill's frontmatter template does the same, and meeting-ingestion names `type: meeting` for the raw-transcript sidecar, so these pages no longer surface as `stored_type_undeclared` drift on every conformance surface. (#5881)
+
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
