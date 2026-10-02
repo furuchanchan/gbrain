@@ -10,6 +10,8 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+- `gbrain timeline-add` / `ontology-add`: an op that declares its own `source` parameter now owns `--source` on the local CLI route — previously `makeContext` consumed it as the scope flag, so a provenance ref either failed shape validation (`Invalid --source value`) or was silently swallowed as scope with the write recorded under empty provenance (#5087). The thin-client route already exempted these ops; the local route now masks the flag for context resolution the same way.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

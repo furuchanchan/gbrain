@@ -43,7 +43,7 @@ import { conceptNudge } from './core/search/query-intent.ts';
 import { redactRetrievalOutput } from './core/search/output-redaction.ts';
 import type { CliOptions } from './core/cli-options.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult, extractResponseMeta } from './core/mcp-client.ts';
-import { assertSingleSourceScopeFlag, checkHostHonoredParams, hintAmbientNarrowing, type AmbientSourceBinding } from './cli/source-scope.ts';
+import { assertSingleSourceScopeFlag, checkHostHonoredParams, hintAmbientNarrowing, paramsForContextBuild, type AmbientSourceBinding } from './cli/source-scope.ts';
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
 import { CLI_FLAG_REGISTRY } from './core/cli-flag-registry.generated.ts';
 import { migrationCliArgumentError } from './core/embedding-migration-cli.ts';
@@ -646,7 +646,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     let ctx: Awaited<ReturnType<typeof makeContext>>;
     try {
       ctx = await withTimeout(
-        makeContext(engine, params),
+        makeContext(engine, paramsForContextBuild(op, params)), // op-declared `source` is the op's arg, not scope (#5087)
         wallclockMs,
         `gbrain ${command}: context`,
       );

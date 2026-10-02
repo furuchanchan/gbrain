@@ -23,6 +23,23 @@ export function assertSingleSourceScopeFlag(op: Operation, params: Record<string
   }
 }
 
+/**
+ * #5087: an op that declares its own `source` parameter owns --source on
+ * the local route too — it is the op's argument (e.g. add_timeline_entry's
+ * provenance ref), never the scope flag. The thin-client path already
+ * exempts these ops (applyThinClientSourceScope's early return); the local
+ * path resolves params.source through the scope tiers in makeContext, so
+ * a provenance ref either failed shape validation or was silently consumed
+ * as scope. Mask it for the context build only; op.handler still receives
+ * the untouched params. Ambient tiers (GBRAIN_SOURCE / .gbrain-source /
+ * path-match / default) still scope ctx.sourceId.
+ */
+export function paramsForContextBuild(op: Operation, params: Record<string, unknown>): Record<string, unknown> {
+  if (!('source' in op.params) || params.source === undefined) return params;
+  const { source: _opOwned, ...rest } = params;
+  return rest;
+}
+
 /** Per-call scope params a thin client must never see silently dropped. */
 const SCOPE_WIRE_PARAMS = ['source_id', 'all_sources'];
 
