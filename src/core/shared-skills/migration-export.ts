@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -21,6 +22,7 @@ import type { Page } from '../types.ts';
 import { slugifyPath } from '../sync.ts';
 import { assertPackagedSkillSource } from './setup-source-policy.ts';
 import { approvedSchemaIdentity, loadActivePackForEngine, type ApprovedSchemaIdentity } from '../schema-pack/engine-resolution.ts';
+import { MIGRATION_ORCHESTRATION_LOCK_ID } from '../migration-orchestration-lock.ts';
 
 export interface DatabaseContentExportOptions {
   root: string;
@@ -135,7 +137,17 @@ export async function exportDatabaseContent(ctx: OperationContext, options: Data
   const [source] = await ctx.engine.executeRaw<{ incarnation: string; local_path: string | null }>('SELECT incarnation,local_path FROM sources WHERE id=$1 AND NOT archived', [options.sourceId]);
   if (!brain || !source) throw new OperationError('source_changed', 'The selected brain/source is not active.');
   await assertPackagedSkillSource(ctx.engine, options.sourceId);
-  if (!options.dryRun && options.confirmQuiesced && ((await ctx.engine.executeRaw('SELECT id FROM gbrain_cycle_locks LIMIT 1')).length ||
+  // #5842: on Postgres the apply-migrations runner itself holds a
+  // gbrain_cycle_locks row (id MIGRATION_ORCHESTRATION_LOCK_ID) for the whole
+  // run — counting it unconditionally made every non-dry-run export refuse as
+  // "active maintenance". Exclude only the caller's OWN lease (matched on id +
+  // holder_pid + holder_host): a foreign apply-migrations run's row under the
+  // same id is real maintenance activity and still fails closed, as does
+  // every other lock. (PGLite's orchestration lock is a file, which is why
+  // the blanket count only broke on Postgres.)
+  if (!options.dryRun && options.confirmQuiesced && ((await ctx.engine.executeRaw(
+    'SELECT id FROM gbrain_cycle_locks WHERE NOT (id = $1 AND holder_pid = $2 AND holder_host = $3) LIMIT 1',
+    [MIGRATION_ORCHESTRATION_LOCK_ID, process.pid, hostname()])).length ||
     (await ctx.engine.executeRaw("SELECT id FROM persistence_requests WHERE state IN ('queued','running','recovering') OR recovery IS NOT NULL LIMIT 1")).length)) {
     throw new OperationError('writer_not_quiesced', 'Active maintenance locks or durable writes remain; finish or recover them before exporting.');
   }

@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.7] - 2026-10-05
+
+### Fixed
+
+- `apply-migrations --export-db-only` (and any shared-skills export running under the migrations orchestrator) no longer refuses with `writer_not_quiesced` on Postgres (#5842). Both quiescence gates — the export preflight in `exportDatabaseContent` and the legacy-writer-lock check inside writer activation — counted every row in `gbrain_cycle_locks`, including the runner's own `gbrain-apply-migrations` lease, so a Postgres export could never proceed. Each gate now excludes only the caller's own orchestration lease (matched on id + holder pid + holder host); a foreign apply-migrations row and every other lock still fail closed.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

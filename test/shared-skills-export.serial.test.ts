@@ -141,3 +141,25 @@ test('a source schema change during export refuses binding and remains a checkpo
   expect(resumed.status).toBe('conflict');
   expect(resumed.conflicts[0].reason).toContain('source schema or ingestion policy changed');
 }), 120_000);
+
+// issue #5842 — on Postgres, apply-migrations holds a gbrain_cycle_locks row
+// (id `gbrain-apply-migrations`) for the whole run; the export's quiescence
+// gate counted ANY row and always refused with writer_not_quiesced. The
+// runner's own orchestration lease must be excluded while every other lock
+// still fails closed.
+test('export quiescence excludes the runner\'s own orchestration lock but refuses other lock rows (#5842)', () => fixture(async (ctx, home) => {
+  const options = { sourceId: 'default', root: join(home, 'content'), confirmQuiesced: true, backup: 'operator_verified' as const };
+  const { tryAcquireDbLock } = await import('../src/core/db-lock.ts');
+  const { MIGRATION_ORCHESTRATION_LOCK_ID } = await import('../src/core/migration-orchestration-lock.ts');
+  const own = await tryAcquireDbLock(ctx.engine, MIGRATION_ORCHESTRATION_LOCK_ID, 60);
+  expect(own).not.toBeNull();
+  const result = await exportDatabaseContent(ctx, options);
+  expect(result.status).toBe('complete');
+  await own!.release();
+  const foreign = await tryAcquireDbLock(ctx.engine, 'gbrain-cycle:default', 60);
+  expect(foreign).not.toBeNull();
+  // Quiescence runs before the export-checkpoint identity check, so the same
+  // options still probe the gate rather than an earlier prior-root conflict.
+  await expect(exportDatabaseContent(ctx, options)).rejects.toMatchObject({ code: 'writer_not_quiesced' });
+  await foreign!.release();
+}), 120_000);

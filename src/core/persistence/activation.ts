@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
@@ -11,6 +12,7 @@ import { assertWriterAdminUnlocked } from './admin-lock.ts';
 import { notQuiescedError } from './blocking-effects.ts';
 import { inspectLegacyWriterLocks } from './legacy-locks.ts';
 import { deleteLockRowExact } from '../db-lock.ts';
+import { MIGRATION_ORCHESTRATION_LOCK_ID } from '../migration-orchestration-lock.ts';
 
 export interface ActivationReport {
   enabled: boolean;
@@ -117,7 +119,14 @@ export async function activatePersistence(engine: BrainEngine, opts: { confirmQu
       // that a legacy process has stopped touching canonical files.
       await tx.executeRaw('LOCK TABLE gbrain_cycle_locks IN SHARE ROW EXCLUSIVE MODE');
       const legacyLocks = await inspectLegacyWriterLocks(tx);
-      if (legacyLocks.some(row => !opts.cleanupDeadLocalLocks || row.liveness !== 'dead_eligible')) throw quiescence();
+      // #5842: when this activation runs inside `apply-migrations` (the
+      // 0.53.0 export path), the runner's own orchestration lease is present
+      // in this table on Postgres and must not count as an "older writer or
+      // maintenance job". Match it on id + holder_pid + holder_host so a
+      // FOREIGN apply-migrations row under the same id still fails closed.
+      const isOwnOrchestrationLease = (row: { id: string; holder_pid: number; holder_host: string }) =>
+        row.id === MIGRATION_ORCHESTRATION_LOCK_ID && row.holder_pid === process.pid && row.holder_host === hostname();
+      if (legacyLocks.some(row => !isOwnOrchestrationLease(row) && (!opts.cleanupDeadLocalLocks || row.liveness !== 'dead_eligible'))) throw quiescence();
       if ((await tx.executeRaw(`SELECT id FROM persistence_requests WHERE state IN ('queued','running','recovering') OR recovery IS NOT NULL LIMIT 1`)).length
         || (await tx.executeRaw('SELECT id FROM persistence_effects WHERE recovery IS NOT NULL LIMIT 1')).length) throw await notQuiescedError(tx, quiescence().message, { queuedEffects: false });
       if (opts.dryRun) return { enabled: false, activated: false, filesystem_sources: bindings.length, native_lock: native, legacy_locks: legacyLocks, drift_audit: driftAudit };
