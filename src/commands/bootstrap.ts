@@ -200,6 +200,13 @@ const SUBCOMMAND_HELP: Record<string, string> = {
   uninstall:
     'gbrain bootstrap uninstall [--delete-brain] [--home <dir>] [--yes]\n' +
     '  Receipt-keyed removal. The repo stays yours.',
+  // #5488: `harness` mints a token + writes config, so it needs interception too.
+  harness:
+    'gbrain bootstrap harness [--harness claude-code|codex|opencode|all] [--url U | --port N] [--source ID]\n' +
+    '  [--token-name NAME | --token TOK] [--name MCPNAME] [--project DIR]...\n' +
+    '  [--no-hooks] [--no-capture] [--force] [--status] [--remove] [--yes] [--json]\n' +
+    '  Wire framework-spawned sessions to a running `gbrain serve --http` (scoped token, user-scope\n' +
+    '  MCP, lifecycle hooks, codex/opencode config). Idempotent; --remove tears it down. --status is read-only.',
   interview:
     'gbrain bootstrap interview --init | --set KEY "value" | --skip KEY | --status | --show | --confirm <hash>\n' +
     '  Create/record/read interview state. See `gbrain bootstrap --help` for the per-flag description.',
