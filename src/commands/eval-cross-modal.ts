@@ -303,10 +303,11 @@ function configureGatewayForCli(): boolean {
 export function substituteUnavailableDefaultSlots(
   slots: SlotConfig[],
   explicit: Record<string, string | undefined>,
+  configuredChatModel?: string,
 ): SlotConfig[] {
   let fallback: string | null = null;
   try {
-    const configured = getChatModel();
+    const configured = configuredChatModel ?? getChatModel();
     if (isAvailable('chat', configured)) fallback = configured;
   } catch {
     /* gateway unconfigured — leave the defaults in place */
@@ -330,6 +331,14 @@ export function substituteUnavailableDefaultSlots(
  */
 export interface RunCrossModalOpts {
   runEval?: typeof runEval;
+  /**
+   * #5872: the caller's engine-resolved chat model, used as the #4636
+   * substitute for unusable slot defaults. In-process callers that hold a
+   * brain engine (the nightly quality probe) pass `models.chat` /
+   * `models.tier.reasoning` resolved against it; absent, the substitute
+   * reads the file-plane `getChatModel()` exactly as before.
+   */
+  resolvedChatModel?: string;
 }
 
 export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts = {}): Promise<number> {
@@ -406,7 +415,7 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
   // (before the cost estimate so the banner prices what actually runs).
   slots = substituteUnavailableDefaultSlots(slots, {
     A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel,
-  });
+  }, opts.resolvedChatModel);
 
   // Cost estimate (T11=B).
   const cost = estimateCost(slots, cycles, maxTokens);
@@ -714,7 +723,7 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
     // #4636: swap unusable frontier defaults for the configured chat model.
     slots = substituteUnavailableDefaultSlots(slots, {
       A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel,
-    });
+    }, opts.resolvedChatModel);
   }
 
   // Pre-flight cost estimate. Refuse if over --max-usd without --yes.

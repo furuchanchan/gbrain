@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.31.9] - 2026-10-02
+
+### Fixed
+
+- The nightly quality probe now resolves its model routes against the brain it runs on: the LongMemEval reader/extractor resolve `models.eval.longmemeval` / `models.tier.utility` (and the tier/env chain) via a `modelConfigReader` seam instead of a null engine, the cross-modal judge slots accept `models.eval.cross_modal.slot_{a,b,c}` pins and the #4636 substitute reads the engine-resolved `models.chat` / `models.tier.reasoning` route, and `gbrain models` reports each slot the way the probe resolves it (pin -> usable default -> chat substitute) rather than a tier route the probe never takes. (#5872)
+
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

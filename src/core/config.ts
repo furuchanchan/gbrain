@@ -1389,6 +1389,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.chat',
   'models.brainstorm.judge',
   'models.eval.longmemeval',
+  // #5872: judge-slot pins for `gbrain eval cross-modal` probe runs — each
+  // maps to the --slot-*-model flag when the probe invokes it in-process.
+  'models.eval.cross_modal.slot_a',
+  'models.eval.cross_modal.slot_b',
+  'models.eval.cross_modal.slot_c',
   'facts.extraction_model',
   // Brain-wide kill switch for fact extraction, read by
   // src/core/facts/extract.ts:isFactsExtractionEnabled and honored by

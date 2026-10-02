@@ -42,6 +42,7 @@ import {
   type ResolveSource,
 } from '../core/model-config.ts';
 import { resolveExtractAtomsModelWithSource } from '../core/cycle/extract-atoms.ts';
+import { resolveProbeSlotModel } from '../core/cycle/nightly-probe-adapters.ts';
 import { maybeAttachVersionSuffixHint } from '../core/ai/base-url-probe.ts';
 import { newerAnthropicModel } from '../core/ai/anthropic-model-ids.ts';
 import type { AIGatewayConfig } from '../core/ai/types.ts';
@@ -97,6 +98,12 @@ const PER_TASK_KEYS: PerTaskModelRoute[] = [
   { key: 'models.subagent',                 tier: 'subagent',  description: '`gbrain agent run` subagent loop' },
   { key: 'facts.extraction_model',          tier: 'reasoning', description: 'Real-time facts extraction during sync' },
   { key: 'models.eval.longmemeval',         tier: 'reasoning', description: 'LongMemEval benchmark answer-gen' },
+  // #5872: the nightly probe's judge slots — resolved the way the probe
+  // resolves them (pin → usable default → engine chat-model substitute),
+  // not the generic tier chain.
+  { key: 'models.eval.cross_modal.slot_a',  tier: 'reasoning', description: 'Nightly probe / eval cross-modal judge slot A', narrowResolver: (engine) => resolveProbeSlotModel(engine, 'a') },
+  { key: 'models.eval.cross_modal.slot_b',  tier: 'reasoning', description: 'Nightly probe / eval cross-modal judge slot B', narrowResolver: (engine) => resolveProbeSlotModel(engine, 'b') },
+  { key: 'models.eval.cross_modal.slot_c',  tier: 'reasoning', description: 'Nightly probe / eval cross-modal judge slot C', narrowResolver: (engine) => resolveProbeSlotModel(engine, 'c') },
   { key: 'models.eval.contradictions_judge', tier: 'utility',  description: 'Contradiction probe judge (v0.34 temporal-aware)' },
   { key: 'models.expansion',                tier: 'utility',   description: 'Query expansion for hybrid search' },
   {

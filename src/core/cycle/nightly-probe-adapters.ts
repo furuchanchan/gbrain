@@ -16,12 +16,19 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import type { ConfigReader } from '../config-snapshot.ts';
 
 /** Arguments accepted by the longmemeval adapter. */
 export interface LongMemEvalProbeArgs {
   fixturePath: string;
   outputPath: string;
   searchConfigSnapshot?: Record<string, string>;
+  /**
+   * #5872: brain whose DB-plane config resolves the reader/extractor models
+   * (`models.eval.longmemeval`, `models.tier.utility`). Absent → file/env/
+   * defaults only, the pre-fix behavior.
+   */
+  modelConfigReader?: ConfigReader;
 }
 
 /** Arguments accepted by the cross-modal adapter. */
@@ -29,6 +36,12 @@ export interface CrossModalProbeArgs {
   batchPath: string;
   summaryPath: string;
   maxUsd: number;
+  /**
+   * #5872: brain whose DB-plane config resolves the judge slots
+   * (`models.eval.cross_modal.slot_{a,b,c}`) and the #4636 substitute chat
+   * model (`models.chat` / `models.tier.reasoning`).
+   */
+  modelConfigReader?: ConfigReader;
 }
 
 /** Cross-modal batch summary shape (matches `runEvalCrossModal --batch --json`'s envelope). */
@@ -55,7 +68,11 @@ export async function runLongMemEvalForProbe(args: LongMemEvalProbeArgs): Promis
   const { runEvalLongMemEval } = await import('../../commands/eval-longmemeval.ts');
   await runEvalLongMemEval(
     [args.fixturePath, '--output', args.outputPath],
-    { searchConfigSnapshot: args.searchConfigSnapshot, exitOnError: false },
+    {
+      searchConfigSnapshot: args.searchConfigSnapshot,
+      exitOnError: false,
+      modelConfigReader: args.modelConfigReader,
+    },
   );
 }
 
@@ -94,11 +111,55 @@ export const PROBE_QA_DIMENSIONS: string[] = [
   'DIRECTNESS — Does it answer THIS question without hedging or padding or answering something else?',
 ];
 
+/**
+ * #5872: the route one cross-modal judge slot actually takes on a probe
+ * run — `models.eval.cross_modal.slot_<id>` pin → the usable default → the
+ * engine-resolved chat model substitute (models.chat /
+ * models.tier.reasoning → getChatModel()). `gbrain models` resolves through
+ * this so the dashboard reports the route the probe uses, not the generic
+ * tier chain.
+ */
+export async function resolveProbeSlotModel(
+  reader: ConfigReader,
+  slotId: 'a' | 'b' | 'c',
+): Promise<{ model: string; source: 'config' | 'tier_default' }> {
+  const pinned = (await reader.getConfig(`models.eval.cross_modal.slot_${slotId}`))?.trim();
+  if (pinned) return { model: pinned, source: 'config' };
+  const { DEFAULT_SLOTS } = await import('../cross-modal-eval/runner.ts');
+  const { isAvailable } = await import('../ai/gateway.ts');
+  const defaultModel = DEFAULT_SLOTS.find((s) => s.id === slotId.toUpperCase())?.model;
+  if (defaultModel && isAvailable('chat', defaultModel)) {
+    return { model: defaultModel, source: 'tier_default' };
+  }
+  return { model: await resolveProbeChatModel(reader), source: 'tier_default' };
+}
+
+/**
+ * #5872: the chat model the probe's judge-substitute lane uses — the same
+ * models.chat / models.tier.reasoning → file-pin chain the gateway resolved
+ * at boot, read against the brain's engine.
+ */
+async function resolveProbeChatModel(reader: ConfigReader): Promise<string> {
+  const { getChatModel } = await import('../ai/gateway.ts');
+  const { resolveModel } = await import('../model-config.ts');
+  let fallbackChat = 'anthropic:claude-sonnet-4-6';
+  try {
+    fallbackChat = getChatModel();
+  } catch {
+    /* gateway unconfigured — keep the documented default */
+  }
+  return resolveModel(reader, {
+    configKey: 'models.chat',
+    tier: 'reasoning',
+    fallback: fallbackChat,
+  });
+}
+
 export async function runCrossModalBatchForProbe(
   args: CrossModalProbeArgs,
 ): Promise<{ exitCode: number; summary: CrossModalBatchSummary }> {
   const { runEvalCrossModal } = await import('../../commands/eval-cross-modal.ts');
-  const exitCode = await runEvalCrossModal([
+  const argv = [
     '--batch',
     args.batchPath,
     '--output',
@@ -109,7 +170,30 @@ export async function runCrossModalBatchForProbe(
     PROBE_QA_DIMENSIONS.join(','),
     '--yes',
     '--json',
-  ]);
+  ];
+
+  // #5872: resolve judge-slot overrides + the #4636 substitute model
+  // against the brain's DB-plane config. Slot keys
+  // `models.eval.cross_modal.slot_{a,b,c}` pin a slot explicitly (like
+  // --slot-*-model); the substitute reads the engine-resolved chat model
+  // (models.chat / models.tier.reasoning → getChatModel()) instead of the
+  // file-plane-only gateway config.
+  let resolvedChatModel: string | undefined;
+  if (args.modelConfigReader) {
+    const reader = args.modelConfigReader;
+    const slotKeys = [
+      ['--slot-a-model', 'models.eval.cross_modal.slot_a'],
+      ['--slot-b-model', 'models.eval.cross_modal.slot_b'],
+      ['--slot-c-model', 'models.eval.cross_modal.slot_c'],
+    ] as const;
+    for (const [flag, key] of slotKeys) {
+      const v = (await reader.getConfig(key))?.trim();
+      if (v) argv.push(flag, v);
+    }
+    resolvedChatModel = await resolveProbeChatModel(reader);
+  }
+
+  const exitCode = await runEvalCrossModal(argv, { resolvedChatModel });
 
   if (!existsSync(args.summaryPath)) {
     throw new Error(

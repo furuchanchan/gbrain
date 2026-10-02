@@ -47,8 +47,12 @@ export async function runNightlyQualityProbeStep(engine: BrainEngine, cfg: GBrai
         resolveMaxUsd: () => maxUsd,
         resolveRepoRoot: () => (fixtureAtPkgRoot ? pkgRoot : repoPath ?? gbrainHomePath('.')),
         resolveSearchConfigSnapshot: () => resolveNightlyProbeSearchConfigSnapshot(engine),
-        runLongMemEval: runLongMemEvalForProbe,
-        runCrossModalBatch: runCrossModalBatchForProbe,
+        // #5872: resolve the probe's reader/extractor/judge-slot models
+        // against THIS brain's DB-plane config (models.eval.longmemeval,
+        // models.tier.*, models.eval.cross_modal.slot_*) instead of the
+        // file-plane gateway config alone.
+        runLongMemEval: (a) => runLongMemEvalForProbe({ ...a, modelConfigReader: engine }),
+        runCrossModalBatch: (a) => runCrossModalBatchForProbe({ ...a, modelConfigReader: engine }),
         now: () => new Date(),
       });
     }

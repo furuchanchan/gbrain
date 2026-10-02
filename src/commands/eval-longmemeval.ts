@@ -130,6 +130,7 @@ import {
 import { buildCaptureExtras } from '../eval/longmemeval/capture.ts';
 import * as decideLane from '../eval/longmemeval/decide-lane.ts';
 import { resolveModel } from '../core/model-config.ts';
+import type { ConfigReader } from '../core/config-snapshot.ts';
 import type { ThinkLLMClient } from '../core/think/index.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
@@ -484,6 +485,15 @@ function printHelp(): void {
 
 export interface RunOpts {
   exitOnError?: boolean;
+  /**
+   * #5872: brain whose DB-plane config resolves the reader/extractor models
+   * (`models.eval.longmemeval`, `models.tier.utility`, `models.aliases.*`).
+   * In-process callers (the nightly quality probe) pass their brain engine;
+   * absent, resolution is file/env/defaults only, as before. This is NOT the
+   * benchmark brain — `engine` below owns question storage; this one only
+   * answers model config lookups.
+   */
+  modelConfigReader?: ConfigReader;
   /** Inject a chat client for tests; defaults to the gateway-routed client (#4636). */
   client?: ThinkLLMClient;
   /** Separate stub for the Haiku claim extractor (defaults to the same gateway client). */
@@ -682,7 +692,7 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
 
   // Resolved BEFORE the resume block: the reader model is half of every
   // row's judge_config_hash (D33), which the --judge backfill gate needs.
-  const model = await resolveModel(null, {
+  const model = await resolveModel(runOpts.modelConfigReader ?? null, {
     cliFlag: opts.model,
     configKey: 'models.eval.longmemeval',
     envVar: 'GBRAIN_MODEL',
@@ -1008,7 +1018,7 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
   const client: ThinkLLMClient = runOpts.client ?? gatewayClient;
   const extractorClient: ThinkLLMClient = runOpts.extractorClient ?? gatewayClient;
   const extractorModel = trajectoryEnabled
-    ? await resolveModel(null, {
+    ? await resolveModel(runOpts.modelConfigReader ?? null, {
         cliFlag: runOpts.extractorModel,
         tier: 'utility',
         fallback: 'haiku',
