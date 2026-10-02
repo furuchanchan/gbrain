@@ -1301,7 +1301,7 @@ async function runPhaseSync(
 
 async function runPhaseExtract(
   engine: BrainEngine,
-  brainDir: string,
+  brainDir: string | null,
   dryRun: boolean,
   changedSlugs?: string[],
   signal?: AbortSignal,
@@ -1333,7 +1333,8 @@ async function runPhaseExtract(
     }
     // Incremental path: if sync told us which slugs changed, only extract those.
     // On a 54K-page brain this turns a 10-minute full walk into a sub-second pass.
-    const result = await runExtractCore(engine, {
+    // brainDir === null skips the fs walk only; the DB drain below still runs (#5875).
+    const result = brainDir === null ? undefined : await runExtractCore(engine, {
       mode: 'all',
       jsonMode: false, // batch errors stay human-readable on stderr, as in a plain `gbrain extract`
       quiet: true, // the cycle owns the report — no helper summary on stdout (keeps dream --json pure)
@@ -1345,7 +1346,7 @@ async function runPhaseExtract(
     });
     const linksCreated = result?.links_created ?? 0;
     const timelineCreated = result?.timeline_entries_created ?? 0;
-    const incremental = changedSlugs !== undefined;
+    const incremental = brainDir !== null && changedSlugs !== undefined;
     // #4062: the targeted pass above only covers what sync reported (or the
     // fs walk found) — pages left stale for any OTHER reason (extractor
     // version bump, DB-only writes, a prior aborted sweep) never re-extracted
@@ -1385,14 +1386,17 @@ async function runPhaseExtract(
       phase: 'extract',
       status: 'ok',
       duration_ms: 0,
-      summary: incremental
-        ? `${linksCreated} link(s), ${timelineCreated} timeline entries (incremental: ${changedSlugs.length} slugs)`
-        : `${linksCreated} link(s), ${timelineCreated} timeline entries`,
+      summary: brainDir === null
+        ? `${staleDetails.stale_pages_drained ?? 0} stale DB page(s) drained (no brain dir; fs walk skipped)`
+        : incremental
+          ? `${linksCreated} link(s), ${timelineCreated} timeline entries (incremental: ${changedSlugs!.length} slugs)`
+          : `${linksCreated} link(s), ${timelineCreated} timeline entries`,
       details: {
         linksCreated, timelineCreated,
         pages_processed: result?.pages_processed ?? 0,
         incremental,
-        ...(incremental ? { slugs_targeted: changedSlugs.length } : {}),
+        ...(brainDir === null ? { fs_walk: 'skipped_no_brain_dir' } : {}),
+        ...(incremental ? { slugs_targeted: changedSlugs!.length } : {}),
         ...staleDetails,
         ...(staleRemaining !== undefined && staleRemaining > 0 ? { stale_backlog: true } : {}),
       },
@@ -2260,12 +2264,11 @@ export async function runCycle(
           summary: 'no database connected',
           details: { reason: 'no_database' },
         });
-      } else if (brainDir === null) {
-        phaseResults.push(skipNoBrainDir('extract'));
       } else {
         // Pass changed slugs from sync for incremental extract.
         // If sync didn't run (phases exclude it) or failed, syncPagesAffected
         // is undefined → extract falls back to full walk (safe default).
+        // brainDir === null still runs the source-scoped DB drain (#5875).
         progress.start('cycle.extract');
         const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, brainDir, dryRun, syncPagesAffected, cycleSignal, cycleSourceId), 'extract');
         result.duration_ms = duration_ms;
