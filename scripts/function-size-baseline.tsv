@@ -40,7 +40,7 @@ src/core/cycle/extract-facts.ts	runExtractFacts	505	seed: W5 baseline, refactor 
 src/core/cycle/grade-takes.ts	GradeTakesPhase.process	402	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/cycle/patterns.ts	runPhasePatterns	303	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/cycle/propose-takes.ts	ProposeTakesPhase.process	427	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
-src/core/cycle/synthesize-concepts.ts	runPhaseSynthesizeConcepts	447	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
+src/core/cycle/synthesize-concepts.ts	runPhaseSynthesizeConcepts	452	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1); +5 #5166: canonical-pricing misses tracked for details.pricing_fallback_models (pricing must stay in the run loop beside the budget cap)
 src/core/cycle/synthesize.ts	runPhaseSynthesizeInner	1043	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/facts/backstop.ts	runPipelineBodyInner	358	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)
 src/core/import-file.ts	importFromContent	857	seed: W5 baseline, refactor wave 1 (decomposition deferred to wave 2, plan D1)

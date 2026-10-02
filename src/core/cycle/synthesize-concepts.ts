@@ -241,6 +241,8 @@ export async function runPhaseSynthesizeConcepts(
   let conceptsWritten = 0;
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
+  // #5166: canonicalLookup misses (priced at the Sonnet fallback) — surfaced in details.
+  const pricingFallbackModels = new Set<string>();
   const failures: Array<{ concept: string; error: string }> = [];
   // #4589 provenance-link problems. Kept OUT of `failures`: that list means
   // "the LLM call failed → template fallback" downstream (summary wording,
@@ -356,9 +358,11 @@ export async function runPhaseSynthesizeConcepts(
           await maybeYield();
           llmHalt.reset();
           // Price from the model that actually answered, through the one
-          // canonical chat-pricing table (CLAUDE.md invariant). Canonical
-          // miss → Sonnet-tier FALLBACK_PRICING (see constant above).
-          const pricing = canonicalLookup(result.model) ?? FALLBACK_PRICING;
+          // canonical chat-pricing table (CLAUDE.md invariant); a miss falls
+          // back to Sonnet-tier and is recorded for details (#5166).
+          const directPricing = canonicalLookup(result.model);
+          if (!directPricing && result.model) pricingFallbackModels.add(result.model);
+          const pricing = directPricing ?? FALLBACK_PRICING;
           estimatedSpendUsd +=
             (result.usage.input_tokens * pricing.input +
               result.usage.output_tokens * pricing.output) /
@@ -577,6 +581,7 @@ export async function runPhaseSynthesizeConcepts(
       ...(abortedGlobalError ? { aborted_global_error: abortedGlobalError } : {}),
       estimated_spend_usd: estimatedSpendUsd,
       budget_usd: budgetCap,
+      ...(pricingFallbackModels.size > 0 ? { pricing_fallback_models: [...pricingFallbackModels].sort() } : {}),
       dry_run: opts.dryRun ?? false,
     },
   };

@@ -122,6 +122,24 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   'anthropic:claude-3-5-sonnet-20241022': anthro( 3.00, 15.00),
   'anthropic:claude-3-5-haiku-20241022':  anthro( 0.80,  4.00),
 
+  // ── claude-cli (OAuth subscription lane) ───────────────────────────────
+  // The claude-cli recipe (src/core/ai/recipes/claude-cli.ts) declares a flat
+  // nominal 3.00/15.00 across its whole chat touchpoint — a subscription lane
+  // has no per-token bill, so these figures exist for budget metering and
+  // spend comparability, not to mirror each underlying API rate. Keep in
+  // lockstep with the recipe's chat model list + its declared figures
+  // (#5166: absent entries priced at the Sonnet fallback anyway AND stamped
+  // submit_unpriced, hiding that the estimate was a guess).
+  'claude-cli:claude-fable-5':            { input:  3.00, output: 15.00 },
+  'claude-cli:claude-fable-5-1':          { input:  3.00, output: 15.00 },
+  'claude-cli:claude-opus-5-5':           { input:  3.00, output: 15.00 },
+  'claude-cli:claude-opus-5':             { input:  3.00, output: 15.00 },
+  'claude-cli:claude-opus-4-8':           { input:  3.00, output: 15.00 },
+  'claude-cli:claude-opus-4-7':           { input:  3.00, output: 15.00 },
+  'claude-cli:claude-sonnet-5':           { input:  3.00, output: 15.00 },
+  'claude-cli:claude-sonnet-4-6':         { input:  3.00, output: 15.00 },
+  'claude-cli:claude-haiku-4-5-20251001': { input:  3.00, output: 15.00 },
+
   // ── OpenAI ─────────────────────────────────────────────────────────────
   'openai:gpt-4o':                        { input:  2.50, output: 10.00 },
   'openai:gpt-4o-mini':                   { input:  0.15, output:  0.60 },
@@ -167,6 +185,10 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   // DeepSeek v4 (verified 2026-07-27 at api-docs.deepseek.com): cache-miss rates.
   'deepseek:deepseek-v4-flash':           { input:  0.14, output:  0.28 },
   'deepseek:deepseek-v4-pro':             { input:  0.435, output: 0.87 },
+  // `deepseek-flash` is the spelling some gateways report back (and the id
+  // recorded in chat_usage_log) for deepseek-v4-flash — keep it in lockstep
+  // with the row above (#5166: a miss priced every call at Sonnet fallback).
+  'deepseek:deepseek-flash':              { input:  0.14, output:  0.28 },
   // ── Z.ai / GLM (via LiteLLM proxy) ───────────────────────────────────
   // GLM-5.2 from Z.ai: $1.40/M input, $4.40/M output (verified 2026-08-16
   // against OpenRouter provider listings — z.ai's own direct rates).
