@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- Google connector: `gmail_attachment_receipts` no longer persists Gmail's ephemeral `attachmentId` (a fetch handle rotated per request). Persisting it made every receipt differ each sync, so threads with attachments took a new write and page version on every run. Receipts keep the field as `null`; `partId` + `messageId` + the sha256 receipt `id` still identify the attachment and the handle is re-fetched when download is implemented. Pages keep one final receipt rewrite, then stay stable. (#5802)
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
