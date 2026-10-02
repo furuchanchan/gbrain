@@ -510,7 +510,13 @@ async function enqueueLoopsExtraction(deps: GoogleSyncDeps): Promise<void> {
   if (deps.extractCandidates.length === 0) return;
   try {
     const { isLoopsExtractionEnabled, LOOPS_EXTRACT_JOB, LOOPS_EXTRACT_ENQUEUE_CEILING } = await import('./loops-extract.ts');
-    if (!(await isLoopsExtractionEnabled(deps.engine))) return;
+    if (!(await isLoopsExtractionEnabled(deps.engine))) {
+      deps.log(
+        `[google] loops_extract: extraction disabled (loops.extraction_enabled is false) — ` +
+          `skipped enqueue of ${deps.extractCandidates.length} eligible thread(s)`,
+      );
+      return;
+    }
     // No chat provider (keyless install, outage) → enqueue NOTHING. A job the
     // handler cannot run would fail-and-die and burn its revision-keyed
     // idempotency slot for nothing; the eligible threads stay unconsumed and
@@ -1246,7 +1252,7 @@ async function runGoogleSyncInner(engine: BrainEngine, sourceId: string, cfg: Go
     // them up on the next full run instead of overshooting the budget.
     if (!opts.signal?.aborted) {
       await runExtractAndEmbed(deps, summary);
-      if (!managed || !opts.noExtract) await enqueueLoopsExtraction(deps);
+      await enqueueLoopsExtraction(deps);
       // Auditable per-reason counts (loopExtractionEligibility) — no
       // addresses, subjects or body text ever reach the log.
       if (Object.keys(summary.extractEligibility).length > 0) {
