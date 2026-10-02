@@ -1111,8 +1111,17 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
         // claude-code-jsonl.ts's confinement).
         allowOversize: true,
       });
-      if (!conf.ok) return { outcome: 'degraded', reason: `transcript_${conf.reason}` };
-      try {
+      // #5465: `absent` — ENOENT/ENOTDIR on a leaf already proven inside the
+      // projects root — is "no prior context", not an escape: Claude Code
+      // writes the transcript asynchronously, so a fresh session's first turn
+      // can legitimately name a not-yet-created file. That turn proceeds
+      // prompt-only, exactly like a payload with no transcript_path. Every
+      // other non-ok result still aborts the event.
+      if (!conf.ok && conf.reason !== 'absent') {
+        return { outcome: 'degraded', reason: `transcript_${conf.reason}` };
+      }
+      if (conf.ok) {
+        try {
         const parsed = parseTranscript(conf.path, { maxBytes: USER_PROMPT_TRANSCRIPT_MAX_BYTES });
         turns = parsed.turns.slice(-USER_PROMPT_WINDOW_TURNS);
         // Cross-turn dedupe: feed the blocks WE previously injected this
@@ -1143,8 +1152,9 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
           }
           if (kept.length) priorContextText = kept.join('\n\n');
         }
-      } catch {
-        turns = []; // unreadable-mid-flight — the prompt alone still works
+        } catch {
+          turns = []; // unreadable-mid-flight — the prompt alone still works
+        }
       }
     }
     const prompt = typeof j.prompt === 'string' ? j.prompt : '';

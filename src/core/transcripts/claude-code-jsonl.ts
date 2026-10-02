@@ -29,6 +29,7 @@
  */
 
 import { closeSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { isPathContained } from '../path-confine.ts';
 import { detectWslMountRoot, translateWindowsPath } from '../wsl-paths.ts';
 import { stripPastedContent } from './pasted-content.ts';
@@ -69,7 +70,7 @@ export const TRANSCRIPT_HARD_CAP_BYTES = 50 * 1024 * 1024;
 
 export type ConfineTranscriptResult =
   | { ok: true; path: string; size: number }
-  | { ok: false; reason: 'missing_path' | 'not_jsonl' | 'unreadable' | 'symlink' | 'not_file' | 'too_large' | 'outside_projects_dir' };
+  | { ok: false; reason: 'missing_path' | 'not_jsonl' | 'unreadable' | 'absent' | 'symlink' | 'not_file' | 'too_large' | 'outside_projects_dir' };
 
 /**
  * Validate an untrusted `transcript_path` from hook stdin. Checks, in order:
@@ -78,6 +79,17 @@ export type ConfineTranscriptResult =
  * and realpath containment in ~/.claude/projects (`isPathContained` resolves
  * intermediate symlinked directories, so a planted dir-symlink that escapes
  * the tree also fails). Fail-closed on every error.
+ *
+ * One split inside "lstat succeeds": ENOENT/ENOTDIR on a leaf whose PARENT
+ * dir realpaths inside the projects root returns `absent`, not `unreadable`
+ * — Claude Code writes the transcript asynchronously, so a fresh session's
+ * first turn can legitimately name a not-yet-created file, and "no prior
+ * context" is the correct prior context there (the same posture the codex
+ * lane took when it routed ENOENT/ENOTDIR to `missing_path`). Callers decide
+ * what `absent` means: the user-prompt lane proceeds prompt-only, read lanes
+ * still degrade. An absent path whose parent is NOT contained (or does not
+ * exist — `isPathContained` needs a real dir) stays `outside_projects_dir`;
+ * every other lstat fault stays `unreadable`.
  *
  * Cross-OS install (#4522, Claude Code on the Windows host + gbrain in WSL):
  * the hook stdin's transcript_path arrives as a Windows drive literal
@@ -109,10 +121,34 @@ export function confineTranscriptPath(
   const mountRoot = opts.wslMountRoot !== undefined ? opts.wslMountRoot : detectWslMountRoot();
   const translated = mountRoot !== null ? translateWindowsPath(p, mountRoot) : null;
   const candidate = translated ?? p;
+  const rootRaw = opts.root ?? claudeProjectsDir();
+  const root = (mountRoot !== null ? translateWindowsPath(rootRaw, mountRoot) : null) ?? rootRaw;
+  const containedInRoot = (leaf: string): boolean => {
+    if (isPathContained(leaf, root)) return true;
+    // Cross-OS fallback (#4522): only for a path we translated ourselves and
+    // only when the caller didn't pin an explicit root.
+    const derived =
+      mountRoot !== null && translated !== null && opts.root === undefined
+        ? deriveTranslatedProjectsRoot(translated, mountRoot)
+        : null;
+    return derived !== null && isPathContained(leaf, derived);
+  };
   let st: ReturnType<typeof lstatSync>;
   try {
     st = lstatSync(candidate);
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      const parent = dirname(candidate);
+      // A path with no decomposable parent (bare name, or an untranslated
+      // foreign literal like a Windows drive path under POSIX dirname)
+      // cannot be judged — keep the old 'unreadable' verdict there.
+      if (parent === '.' || parent === candidate) return { ok: false, reason: 'unreadable' };
+      return {
+        ok: false,
+        reason: containedInRoot(parent) ? 'absent' : 'outside_projects_dir',
+      };
+    }
     return { ok: false, reason: 'unreadable' };
   }
   if (st.isSymbolicLink()) return { ok: false, reason: 'symlink' };
@@ -128,19 +164,7 @@ export function confineTranscriptPath(
   // cap lives in TRANSCRIPT_JSONL_HARD_CAP) is untouched.
   const cap = opts.maxBytes ?? TRANSCRIPT_HARD_CAP_BYTES;
   if (!opts.allowOversize && st.size > cap) return { ok: false, reason: 'too_large' };
-  const rootRaw = opts.root ?? claudeProjectsDir();
-  const root = (mountRoot !== null ? translateWindowsPath(rootRaw, mountRoot) : null) ?? rootRaw;
-  if (!isPathContained(candidate, root)) {
-    // Cross-OS fallback (#4522): only for a path we translated ourselves and
-    // only when the caller didn't pin an explicit root.
-    const derived =
-      mountRoot !== null && translated !== null && opts.root === undefined
-        ? deriveTranslatedProjectsRoot(translated, mountRoot)
-        : null;
-    if (derived === null || !isPathContained(candidate, derived)) {
-      return { ok: false, reason: 'outside_projects_dir' };
-    }
-  }
+  if (!containedInRoot(candidate)) return { ok: false, reason: 'outside_projects_dir' };
   return { ok: true, path: candidate, size: st.size };
 }
 

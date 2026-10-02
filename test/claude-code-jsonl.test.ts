@@ -269,12 +269,38 @@ describe('confineTranscriptPath [S3#8]', () => {
 
   test('rejects: missing file / non-string / byte cap', () => {
     const root = tdir();
-    expect(confineTranscriptPath(join(root, 'nope.jsonl'), { root })).toEqual({ ok: false, reason: 'unreadable' });
+    // #5465: an absent leaf inside the (existing, contained) root is 'absent'
+    // — "no prior context", not a fault; callers decide the posture.
+    expect(confineTranscriptPath(join(root, 'nope.jsonl'), { root })).toEqual({ ok: false, reason: 'absent' });
     expect(confineTranscriptPath(undefined, { root })).toEqual({ ok: false, reason: 'missing_path' });
     expect(confineTranscriptPath(42 as unknown as string, { root })).toEqual({ ok: false, reason: 'missing_path' });
     const big = join(root, 'big.jsonl');
     writeFileSync(big, 'x'.repeat(64));
     expect(confineTranscriptPath(big, { root, maxBytes: 16 })).toEqual({ ok: false, reason: 'too_large' });
+  });
+
+  // #5465: 'absent' requires the PARENT dir to realpath inside the root — an
+  // absent path outside the root (or under a parent that does not exist)
+  // stays the usual outside-root rejection, never a quiet proceed.
+  test('absent leaf is only honored inside a contained parent dir', () => {
+    const root = tdir();
+    mkdirSync(join(root, 'proj'));
+    expect(confineTranscriptPath(join(root, 'proj', 'fresh.jsonl'), { root })).toEqual({
+      ok: false,
+      reason: 'absent',
+    });
+    const outside = tdir();
+    expect(confineTranscriptPath(join(outside, 'x.jsonl'), { root })).toEqual({
+      ok: false,
+      reason: 'outside_projects_dir',
+    });
+    // Absent leaf under a symlinked dir that escapes the root → not absent.
+    const escape = tdir();
+    symlinkSync(escape, join(root, 'escape'));
+    expect(confineTranscriptPath(join(root, 'escape', 'x.jsonl'), { root })).toEqual({
+      ok: false,
+      reason: 'outside_projects_dir',
+    });
   });
 
   // #5701: a hook lane tail-reads a bounded window, so the whole-file size
