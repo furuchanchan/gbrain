@@ -210,6 +210,68 @@ describe('runDoctor — orphan_ratio check (local surface, D5)', () => {
     expect(check!.status).toBe('ok');
   });
 
+  test('#5877 — Google connector calendar/ + emails/ renders are excluded, so they do not trip orphan_ratio', async () => {
+    for (let i = 0; i < 100; i++) {
+      await engine.putPage(`people/person-${i}`, {
+        type: 'person', title: `Person ${i}`, compiled_truth: 'b', timeline: '', frontmatter: {},
+      });
+    }
+    await engine.putPage('writing/index', {
+      type: 'note', title: 'Index', compiled_truth: 'index', timeline: '', frontmatter: {},
+    });
+    const links = [];
+    for (let i = 0; i < 100; i++) {
+      links.push({
+        from_slug: 'writing/index',
+        to_slug: `people/person-${i}`,
+        link_type: 'mentions', link_source: 'markdown', context: '',
+      });
+    }
+    await engine.addLinksBatch(links);
+    // Connector render mass: 400 calendar/ + 300 emails/ machine leaves,
+    // structurally linkless (raw-address participants). Without the
+    // exclusion these swamp the ratio (~88% → FAIL) even though the
+    // knowledge graph itself is fully linked.
+    for (let i = 0; i < 400; i++) {
+      await engine.putPage(`calendar/2026-09-${i}-evt`, {
+        type: 'meeting', title: `Event ${i}`, compiled_truth: 'e', timeline: '', frontmatter: {},
+      });
+    }
+    for (let i = 0; i < 300; i++) {
+      await engine.putPage(`emails/2026-09-01-thread-${i}`, {
+        type: 'email', title: `Thread ${i}`, compiled_truth: 'e', timeline: '', frontmatter: {},
+      });
+    }
+    const report = await runDoctorJson();
+    const check = findCheck(report, 'orphan_ratio');
+    expect(check!.status).toBe('ok');
+  });
+
+  test('#5877 — warn hint prints a runnable command (--source db), islanded wording', async () => {
+    for (let i = 0; i < 100; i++) {
+      await engine.putPage(`companies/co-${i}`, {
+        type: 'company', title: `Co ${i}`, compiled_truth: 'b', timeline: '', frontmatter: {},
+      });
+    }
+    await engine.putPage('writing/index', {
+      type: 'note', title: 'Index', compiled_truth: 'index', timeline: '', frontmatter: {},
+    });
+    const links = [];
+    for (let i = 0; i < 30; i++) {
+      links.push({
+        from_slug: 'writing/index',
+        to_slug: `companies/co-${i}`,
+        link_type: 'mentions', link_source: 'markdown', context: '',
+      });
+    }
+    await engine.addLinksBatch(links);
+    const report = await runDoctorJson();
+    const check = findCheck(report, 'orphan_ratio');
+    expect(check!.status).toBe('warn');
+    expect(check!.message).toContain('gbrain extract links --by-mention --source db');
+    expect(check!.message).toContain('islanded');
+  });
+
   test('zero entity pages → vacuous status ok', async () => {
     const report = await runDoctorJson();
     const check = findCheck(report, 'orphan_ratio');

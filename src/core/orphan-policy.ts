@@ -37,6 +37,13 @@ const DENY_PREFIXES = [
   // inbound links by design. Deny-prefix (not whole `life/` first-segment) so
   // human-authored life/diary/ stays IN the orphan denominator. (#2264)
   'life/events/',
+  // Google connector renders — machine leaf pages: a calendar/ event render
+  // and an emails/ thread render store participants as raw addresses, so they
+  // structurally never link in or out (attendance-blocked calendar mass is
+  // already reported apart by links_extraction_lag). people/ stays IN —
+  // hand-authored people pages are linkable knowledge nodes. (#5877)
+  'calendar/',
+  'emails/',
 ];
 
 const FIRST_SEGMENT_EXCLUSIONS = new Set([

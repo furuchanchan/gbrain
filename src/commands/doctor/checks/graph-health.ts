@@ -133,7 +133,8 @@ async function runOrphanRatio(ctx: DoctorContext): Promise<Check[]> {
 
   // 9b. v0.41.18.0 — orphan_ratio check (migration #1 of #1409).
   //
-  // Surfaces the fraction of linkable pages with no inbound links.
+  // Surfaces the fraction of linkable pages that are islanded
+  // (no live inbound AND no live outbound link — `gbrain orphans` default).
   // Consumes the same canonical getOrphansData() pure fn as
   // `gbrain orphans --count` (D1), so the two surfaces cannot disagree.
   //
@@ -175,19 +176,19 @@ async function runOrphanRatio(ctx: DoctorContext): Promise<Check[]> {
           ? ` — low scale (${entityCount} entity pages <100), interpret with caution`
           : '';
       const hint =
-        'Run: gbrain extract links --by-mention   (auto-links entity mentions in body text). ' +
+        'Run: gbrain extract links --by-mention --source db   (auto-links entity mentions in body text). ' +
         'Run gbrain orphans for the list.';
       if (ratio > 0.8) {
         checks.push({
           name: 'orphan_ratio',
           status: 'fail',
-          message: `Orphan ratio ${pct}%${inSource} (${data.total_orphans}/${data.total_linkable} linkable pages have no inbound links)${caveat}. ${hint}`,
+          message: `Orphan ratio ${pct}%${inSource} (${data.total_orphans}/${data.total_linkable} linkable pages are islanded (no inbound or outbound links))${caveat}. ${hint}`,
         });
       } else if (ratio > 0.5) {
         checks.push({
           name: 'orphan_ratio',
           status: 'warn',
-          message: `Orphan ratio ${pct}%${inSource} (${data.total_orphans}/${data.total_linkable} linkable pages have no inbound links)${caveat}. ${hint}`,
+          message: `Orphan ratio ${pct}%${inSource} (${data.total_orphans}/${data.total_linkable} linkable pages are islanded (no inbound or outbound links))${caveat}. ${hint}`,
         });
       } else {
         checks.push({
