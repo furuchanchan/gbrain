@@ -10,6 +10,8 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+- Managed canonical worktrees: session hooks no longer spawn the legacy `gbrain sources push` on a managed root — the guard refuses it by design, so every spawn could only mint a refused-push record and a sticky "push is FAILING" notice. All three spawn sites (session-start recovery, per-turn stop, session-end backstop) now detect the managed root via `isManagedFilesystemPath` (engine-free: on-disk markers + durable managed-roots registry), skip the spawn, and record the distinct `push_managed_fenced` reason. Managed refusals are recorded `fenced: true` and — together with pre-flag `writer_coordinator_required` records — are excluded from every failure surface (`summarizePushStatuses`, the hook banner + SessionStart note + [D20] retry bypass, doctor `bootstrap_push_health`), so stale records clear instead of alarming forever. (#5799)
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

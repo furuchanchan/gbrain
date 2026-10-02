@@ -93,7 +93,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
 
   const receipt = readReceipt(home);
   // One reader for every push-status surface [D8]; per-root files [D13].
-  const { readPushStatuses, pushStatusFilesExist } = await import('../../core/workspace-push.ts');
+  const { readPushStatuses, pushStatusFilesExist, isManagedFencedPushEntry } = await import('../../core/workspace-push.ts');
   const pushStatuses = readPushStatuses();
   const statusFilesOnDisk = pushStatusFilesExist();
   const heartbeatFile = join(home, 'integrations', 'hooks', 'heartbeat.jsonl');
@@ -230,7 +230,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
   try {
     if (pushStatuses.length > 0) {
       const { PUSH_STALE_MS } = await import('../hook.ts'); // hook.ts owns the threshold (single source)
-      const failing = pushStatuses.filter((s) => s.ok === false);
+      const failing = pushStatuses.filter((s) => s.ok === false && !isManagedFencedPushEntry(s));
       if (failing.length > 0) {
         const s = failing[0]!;
         const target = s.repoRoot ?? ws ?? undefined;

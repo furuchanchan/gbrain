@@ -426,6 +426,17 @@ export interface PushStatusEntry {
   repoRoot?: string;
   /** Absolute path of the status file (per-root announce-state keying). */
   file: string;
+  /** Set when the refusal came from the managed-worktree guard: the push can
+   * never succeed by design, so the record is informational, not a failure. */
+  fenced?: boolean;
+}
+
+/** True for a push-status record that describes the managed-worktree fence,
+ * not a real push failure. New records carry `fenced: true`; legacy records
+ * (pre-flag) are recognized by the `writer_coordinator_required` code prefix —
+ * only the managed guard writes a status carrying that code. */
+export function isManagedFencedPushEntry(e: Pick<PushStatusEntry, 'fenced' | 'ok' | 'reason'>): boolean {
+  return e.fenced === true || (e.ok === false && (e.reason ?? '').startsWith('writer_coordinator_required'));
 }
 
 const PUSH_STATUS_FILE_RE = /^push-status-[0-9a-f]{12}\.json$/;
@@ -612,13 +623,15 @@ export function summarizePushStatuses(entries: PushStatusEntry[]): {
   failing: PushStatusEntry[];
   stalestTs: number | null;
 } {
-  const failing = entries.filter((e) => e.ok === false);
+  // Managed-fenced records are informational (the guard can never succeed by
+  // design), never failures — #5799.
+  const failing = entries.filter((e) => e.ok === false && !isManagedFencedPushEntry(e));
   const stamps = entries.map((e) => Date.parse(e.ts ?? '')).filter((t) => Number.isFinite(t));
   return { failing, stalestTs: stamps.length > 0 ? Math.min(...stamps) : null };
 }
 
 function writePushStatus(
-  status: { ts: string; ok: boolean; reason?: string; ahead?: number; repoRoot: string },
+  status: { ts: string; ok: boolean; reason?: string; ahead?: number; repoRoot: string; fenced?: boolean },
 ): void {
   try {
     const p = pushStatusPathForRoot(status.repoRoot);
@@ -660,7 +673,7 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
     // No lock winner can be in flight here: the same guard refuses every legacy
     // push of this root.
     if (root && e instanceof OperationError) {
-      writePushStatus({ ts: new Date().toISOString(), ok: false, reason: `${e.code}: ${e.message}`, repoRoot: root });
+      writePushStatus({ ts: new Date().toISOString(), ok: false, reason: `${e.code}: ${e.message}`, fenced: true, repoRoot: root });
     }
     throw e;
   }

@@ -88,12 +88,14 @@ import { readManifest, readReceipt, type InstallReceipt } from '../core/bootstra
 import { githubOwnerRepoString } from '../core/repo-visibility.ts';
 import { detectExecutionEnvironment } from '../core/execution-env.ts';
 import {
+  isManagedFencedPushEntry,
   readPushStatuses,
   readPushStatusForRoot,
   sanitizePushReason,
   summarizePushStatuses,
   workspaceRootHash,
 } from '../core/workspace-push.ts';
+import { isManagedFilesystemPath } from '../core/persistence/filesystem-guard.ts';
 import {
   backupCheckDisabled,
   backupNagGate,
@@ -804,6 +806,10 @@ async function dirtyTreePush(
   try {
     const root = await resolveBootstrapWorkspaceRoot(ws);
     if (!root) return null;
+    // Managed canonical worktree: the legacy workspace push is fenced by
+    // design (persistence owns durability) — never spawn a child whose only
+    // outcome is a refused-push record [#5799].
+    if (isManagedFilesystemPath(root)) return { reason: 'push_managed_fenced' };
     if (!(await treeNeedsPush(root))) return null; // clean + up to date → nothing to recover
     // There IS unpushed work. Defer until the repo phase verified privacy +
     // recorded repo_url — never recover-push to an unverified origin
@@ -904,6 +910,9 @@ async function stopPushIfDue(ws: string, io: HookIo): Promise<string> {
   if (process.env.GBRAIN_STOP_PUSH === '0') return 'push_disabled';
   const root = await resolveBootstrapWorkspaceRoot(ws);
   if (!root) return 'push_skipped_not_bootstrap';
+  // Managed canonical worktree: every spawn would be refused by design —
+  // quiet no-op instead of a failing status file every debounce window [#5799].
+  if (isManagedFilesystemPath(root)) return 'push_managed_fenced';
 
   const stateP = stopPushStatePath(root);
   let lastTs: number | null = null;
@@ -918,7 +927,8 @@ async function stopPushIfDue(ws: string, io: HookIo): Promise<string> {
   // but with a 60s floor so a persistently failing push can't re-run the
   // network verification ladder on every turn (the push lock bounds
   // concurrency, not cadence; the banner is already showing the failure).
-  const failing = readPushStatusForRoot(root)?.ok === false;
+  const failingEntry = readPushStatusForRoot(root);
+  const failing = failingEntry?.ok === false && !isManagedFencedPushEntry(failingEntry);
   const now = Date.now();
   // Healthy: the normal debounce (0 = every turn in cloud). Failing: a fixed
   // 60s retry floor — faster than a long local debounce so a transient failure
@@ -966,7 +976,7 @@ interface PushAnnounceState {
  */
 function pendingPushFailureBanner(): { text: string; record: () => void } | null {
   try {
-    const failing = readPushStatuses().filter((e) => e.ok === false);
+    const failing = readPushStatuses().filter((e) => e.ok === false && !isManagedFencedPushEntry(e));
     if (failing.length === 0) return null;
     const now = Date.now();
     const due = failing.filter((e) => {
@@ -1804,7 +1814,11 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   try {
     if (ws) {
       const root = await resolveBootstrapWorkspaceRoot(ws);
-      if (root && (await repoPhaseComplete(root))) {
+      if (root && isManagedFilesystemPath(root)) {
+        // Managed canonical worktree: the legacy push is fenced by design —
+        // persistence owns durability, a spawn can only produce a refusal [#5799].
+        if (outcome === 'ok' && !reason) reason = 'push_managed_fenced';
+      } else if (root && (await repoPhaseComplete(root))) {
         try {
           (io.spawnPush ?? spawnDetachedPush)(root);
           if (outcome === 'ok' && !reason) reason = 'push_spawned';
