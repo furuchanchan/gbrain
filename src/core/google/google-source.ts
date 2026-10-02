@@ -517,12 +517,13 @@ async function processThread(
   activePack: ActivePack,
   summary: GoogleSyncSummary,
   countedSlugs: Set<string>,
-  seen: { thread?: GmailThreadData } = {},
+  seen: { thread?: GmailThreadData; holdUntilMs?: number | null } = {},
 ): Promise<GmailThreadData | null> {
   const thread = await gmail.getThread(threadId, deps.cfg.account, {
     ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
   });
   seen.thread = thread;
+  seen.holdUntilMs = null;
   summary.threadsSeen++;
   const rendered = renderThreadPage(thread);
   // Pure noise renders no page AND skips detection — an all-noise thread
@@ -534,7 +535,7 @@ async function processThread(
     const state = message.attachmentInspection?.state ?? 'not_inspected';
     summary.attachmentInspection[state] = (summary.attachmentInspection[state] ?? 0) + 1;
   }
-  await applyLoopDetection(deps, thread, slug);
+  seen.holdUntilMs = await applyLoopDetection(deps, thread, slug);
   // LLM extraction candidates: trickle + the bounded recent window only —
   // the deep historical backfill is never extracted (spend honesty, F9).
   const newestMs = thread.messages[thread.messages.length - 1]?.internalDateMs ?? 0;
@@ -650,13 +651,14 @@ async function applyLoopDetection(
   deps: GoogleSyncDeps,
   thread: GmailThreadData,
   pageSlug: string,
-): Promise<void> {
+): Promise<number | null> {
   try {
     const { applyThreadLoopVerdict } = await import('./loop-detect.ts');
-    await applyThreadLoopVerdict(deps.engine, deps.sourceId, thread, myAddressSet(deps.entry), pageSlug);
+    return await applyThreadLoopVerdict(deps.engine, deps.sourceId, thread, myAddressSet(deps.entry), pageSlug);
   } catch (e) {
     // Detection must never fail a sync; it re-runs on the next touch.
     deps.log(`[google] loop detection failed for ${thread.threadId}: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
   }
 }
 
@@ -721,10 +723,13 @@ async function attemptThread(g: GmailSweep, tid: string, version: string | null)
     g.progressTick(`thread ${tid} held`);
     return { kind: 'skipped' };
   }
-  const seen: { thread?: GmailThreadData } = {};
+  const seen: { thread?: GmailThreadData; holdUntilMs?: number | null } = {};
   try {
     const thread = await processThread(g.deps, g.gmail, tid, g.activePack, g.summary, g.countedSlugs, seen);
     g.holds.succeed(tid);
+    const graceHolds = (g.state.gmail_loop_holds ??= {});
+    if (seen.holdUntilMs) graceHolds[tid] = seen.holdUntilMs;
+    else delete graceHolds[tid];
     const newestMs = thread?.messages[thread.messages.length - 1]?.internalDateMs ?? 0;
     if (newestMs > (g.state.gmail_newest_ms ?? 0)) g.state.gmail_newest_ms = newestMs;
     g.progressTick(`thread ${tid}`);
@@ -735,6 +740,7 @@ async function attemptThread(g: GmailSweep, tid: string, version: string | null)
       // (not failing) keeps the cursor moving; --full reconcile removes any
       // page it left behind.
       g.holds.drop(tid);
+      delete (g.state.gmail_loop_holds ?? {})[tid];
       g.deps.log(`[google] thread ${tid} vanished (404); skipping`);
       g.progressTick(`thread ${tid} gone`);
       return { kind: 'gone' };
@@ -865,6 +871,18 @@ async function sweepGmail(g: GmailSweep, onCurrent?: () => Promise<void>): Promi
   // asked for or whose transient reconsideration is due. A failure keeps the
   // hold and never blocks the cursor.
   for (const tid of g.holds.dueHeldKeys()) {
+    if (deps.opts.signal?.aborted) return false;
+    await attemptThread(g, tid, null);
+  }
+  // Grace-window holds carry no Gmail signal (history lists a quiet thread
+  // again only on a new message, deletion or label change): re-evaluate each
+  // held thread once its window lapses, oldest-due first, so the loop opens
+  // on an ordinary sweep instead of never.
+  const graceDue = Object.entries(g.state.gmail_loop_holds ?? {})
+    .filter(([, due]) => due <= Date.now())
+    .sort((a, b) => a[1] - b[1])
+    .map(([tid]) => tid);
+  for (const tid of graceDue) {
     if (deps.opts.signal?.aborted) return false;
     await attemptThread(g, tid, null);
   }

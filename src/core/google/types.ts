@@ -80,6 +80,13 @@ export interface GoogleSourceState {
   gmail_fail_counts?: Record<string, number>;
   /** Fix wave 4: connector item holds (src/core/connectors/item-holds.ts). */
   item_holds?: unknown;
+  /**
+   * Grace-hold ledger: thread id → epoch ms when its detection grace window
+   * ends. A thread held ONLY by the window is re-fetched at the end of each
+   * sweep once due — Gmail history never re-signals a quiet thread, so
+   * without this ledger a held thread's loop never opens.
+   */
+  gmail_loop_holds?: Record<string, number>;
   calendar_sync_token: string | null;
   /**
    * Calendar id `calendar_sync_token` was minted for. A token is only valid

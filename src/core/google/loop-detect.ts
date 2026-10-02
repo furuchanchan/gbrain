@@ -63,6 +63,13 @@ export interface ThreadLoopVerdict {
    * counterparty was most impatient).
    */
   close: Array<'unanswered_inbound' | 'unanswered_outbound'>;
+  /**
+   * Epoch ms when the ONLY blocker — the grace window — lapses, so the
+   * caller can re-evaluate without a new Gmail signal (Gmail history lists
+   * a quiet thread again only on a new message, deletion or label change).
+   * Set only when every other open gate already passed.
+   */
+  holdUntilMs?: number;
 }
 
 function isMine(m: GmailMessageMeta, myAddresses: Set<string>): boolean {
@@ -149,7 +156,9 @@ export function detectThreadLoop(
     if (!inTo) return { open: [], close };
     if (threadSuppressed || suppressions?.senders.has(last.fromAddress)) return { open: [], close };
     const owedSince = run.find((m) => m.to.some((a) => myAddresses.has(a))) ?? last;
-    if (ageHours(owedSince.internalDateMs, now) < INBOUND_GRACE_HOURS) return { open: [], close };
+    if (ageHours(owedSince.internalDateMs, now) < INBOUND_GRACE_HOURS) {
+      return { open: [], close, holdUntilMs: owedSince.internalDateMs + INBOUND_GRACE_HOURS * 3_600_000 };
+    }
     return {
       open: [
         {
@@ -175,7 +184,9 @@ export function detectThreadLoop(
   const counterparty = recipients[0];
   if (threadSuppressed || suppressions?.senders.has(counterparty)) return { open: [], close };
   const askedSince = run.find((m) => m.bodyText.includes('?')) ?? last;
-  if (ageHours(askedSince.internalDateMs, now) < OUTBOUND_GRACE_HOURS) return { open: [], close };
+  if (ageHours(askedSince.internalDateMs, now) < OUTBOUND_GRACE_HOURS) {
+    return { open: [], close, holdUntilMs: askedSince.internalDateMs + OUTBOUND_GRACE_HOURS * 3_600_000 };
+  }
   return {
     open: [
       {
@@ -227,6 +238,10 @@ export function __clearSuppressionCacheForTests(engine?: BrainEngine): void {
  * Apply the verdict: close thread loops that no longer hold, upsert the ones
  * that do (dedup key 'thread:<threadId>:<loop_type>' — reopen on conflict).
  * Counterparty slug resolution is alias-exact within the same source.
+ *
+ * Returns the grace-hold deadline (`verdict.holdUntilMs`) or null — the
+ * caller persists it so a thread held ONLY by the window is re-fetched once
+ * it lapses (Gmail never re-signals a quiet thread).
  */
 export async function applyThreadLoopVerdict(
   engine: BrainEngine,
@@ -235,7 +250,7 @@ export async function applyThreadLoopVerdict(
   myAddresses: Set<string>,
   pageSlug: string | null,
   now: Date = new Date(),
-): Promise<void> {
+): Promise<number | null> {
   const suppressions = await suppressionsFor(engine, sourceId);
   // One verdict, two lanes: `close` is the turn-flip set (suppression- and
   // grace-independent — only a genuine reply closes, and only the answered
@@ -274,4 +289,5 @@ export async function applyThreadLoopVerdict(
       lastActivityAt: new Date(spec.lastActivityMs).toISOString(),
     });
   }
+  return verdict.holdUntilMs ?? null;
 }
