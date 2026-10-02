@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.2] - 2026-10-02
+
+### Fixed
+
+- **persistence IPC (#5864):** `import_skill_proposal` and the skill-retention admin ops (`get_skill_retention`, `prune_skill_revisions`, `retain_skill_revision`) no longer fail with `unknown_tool` when a `serve` process owns the PGLite brain and the trusted local CLI delegates over the persistence IPC socket. The provider now marks the verified-local IPC pipe with the `stdio` transport-locality marker, so the shared dispatcher's `localOnly` backstop accepts it; the `remote` trust axis is unchanged — a `stdio`-lane caller is still refused by each op's own authority checks.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

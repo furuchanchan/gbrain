@@ -46,8 +46,15 @@ export async function createPersistenceIpcProvider(engine: BrainEngine, config: 
       allowedSources: unrestricted ? undefined : verified.grant.sourceIds };
     const params = !unrestricted && request.operation === 'get_page' && request.params.source_id === undefined
       ? { ...request.params, source_id: sourceId } : request.params;
+    // The persistence IPC socket is itself a local-only pipe gated by a
+    // verified local registration, so its transport-LOCALITY marker is
+    // 'stdio' for every principal it can serve (#5864 — without it the
+    // shared dispatcher's localOnly backstop rejects delegated localOnly
+    // ops like import_skill_proposal as unknown_tool). `remote` still
+    // carries the TRUST axis: a local_stdio caller stays remote=true and
+    // each op's own authority checks refuse it.
     const result = await dispatchToolCall(engine, request.operation, params, {
-      config, remote: verified.remote, transport: verified.remote ? 'stdio' : undefined, sourceId, auth,
+      config, remote: verified.remote, transport: 'stdio', sourceId, auth,
       ...(unrestricted ? {} : { localFederatedSourceIds: verified.grant.sourceIds }),
     });
     const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
