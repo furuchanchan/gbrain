@@ -72,7 +72,7 @@ describe('#5475 bundleFileHash mode check', () => {
         expect(code).toBe('unexpected_file_bytes');
         // The production call site honors a forced win32 platform too — the
         // same file that refuses on POSIX reads under win32 semantics.
-        const original = Object.getOwnPropertyDescriptor(process, 'platform');
+        const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
         Object.defineProperty(process, 'platform', { ...original, value: 'win32' });
         try { expect(bundleFileHash(record)).toBe(sha256(body)); }
         finally { Object.defineProperty(process, 'platform', original); }
