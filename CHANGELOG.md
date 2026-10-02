@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.8] - 2026-10-05
+
+### Fixed
+
+- `content_sanity` no longer flags pages `markup_heavy` because of gbrain's own facts/takes fences (#5822). `assessProse` measured the `<!--- gbrain:facts:* -->` / `<!--- gbrain:takes:* -->` tables' pipe rows as markup, so an entity page whose body is mostly the gbrain-written facts table (a real case: 91% of 29,811 chars) read as ~0.95 markup and got `content_flag: markup_heavy` plus a `flagged_pages` doctor warning. gbrain-managed fences are now stripped from the prose assessment up front — the same way code is excluded from the ratio — so the heuristic measures the human-authored prose, not the system-of-record tables. Ordinary table-heavy content still counts toward the ratio.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

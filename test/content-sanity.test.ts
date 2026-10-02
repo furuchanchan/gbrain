@@ -570,6 +570,47 @@ describe('assessProse', () => {
     expect(r.markup_ratio).toBe(0);
     expect(r.total_chars).toBe(0);
   });
+  test('gbrain-managed facts fence is excluded from the markup ratio (#5822)', () => {
+    // Issue #5822 repro shape: a company page whose body is ~90% the
+    // gbrain-managed facts fence read as markup_ratio ~0.95 → markup_heavy.
+    const prose = '# Example Co\n\n' + 'Example Co makes kitchen tools and sells them online through two retail partners. '.repeat(30);
+    const row = (i: number) =>
+      `| ${i} | Example Co reported quarterly figure ${i} in a public update about its product line and retail partners | fact | 0.9 | world | medium | 2026-09-01 |  | email/example-thread-${i} | status update about operations |`;
+    const fence = '<!--- gbrain:facts:begin -->\n\n'
+      + '| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n'
+      + '|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|\n'
+      + Array.from({ length: 210 }, (_, i) => row(i + 1)).join('\n') + '\n<!--- gbrain:facts:end -->';
+    const body = `${prose}\n\n## Facts\n\n${fence}\n`;
+    const r = assessProse(body);
+    expect(r.markup_ratio).toBeLessThan(DEFAULT_MAX_MARKUP_RATIO);
+    // End-to-end: the warn-window flag must not fire on a fence-heavy page.
+    // (One facts fence per page, as on a real entity page — stripFactsFence
+    // removes a single fence block.)
+    const bigProse = '# Example Co\n\n' + 'Example Co makes kitchen tools and sells them online through two retail partners. '.repeat(700);
+    const big = assessContentSanity({ compiled_truth: `${bigProse}\n\n## Facts\n\n${fence}\n`, timeline: '', title: 'Example Co' });
+    expect(big.markup_ratio).not.toBeNull();
+    expect(big.flag_reason).not.toBe('markup_heavy');
+    expect(big.reasons).not.toContain('high_markup');
+  });
+  test('gbrain-managed takes fence is excluded from the markup ratio (#5822)', () => {
+    const prose = '# Example Co\n\n' + 'Example Co makes kitchen tools and sells them online through two retail partners. '.repeat(30);
+    const row = (i: number) =>
+      `| ${i} | Example Co should review pricing quarterly with retail partners | pricing | active | world | 2026-09-01 |  | email/example-${i} | leadership review |`;
+    const fence = '<!--- gbrain:takes:begin -->\n\n'
+      + '| # | take | kind | status | visibility | valid_from | valid_until | source | context |\n'
+      + '|---|------|------|--------|------------|------------|-------------|--------|---------|\n'
+      + Array.from({ length: 210 }, (_, i) => row(i + 1)).join('\n') + '\n<!--- gbrain:takes:end -->';
+    const body = `${prose}\n\n## Takes\n\n${fence}\n`;
+    expect(assessProse(body).markup_ratio).toBeLessThan(DEFAULT_MAX_MARKUP_RATIO);
+  });
+  test('non-gbrain table markup still counts toward the ratio (control)', () => {
+    // A page of ordinary markdown tables (NOT a gbrain fence) must keep
+    // tripping the markup heuristic — the fence carve-out is marker-scoped.
+    const prose = 'Intro paragraph about the company. '.repeat(20);
+    const rows = '| a | b | c | d | e | f | g | h |\n'.repeat(400);
+    const body = `${prose}\n\n${rows}`;
+    expect(assessProse(body).markup_ratio).toBeGreaterThan(DEFAULT_MAX_MARKUP_RATIO);
+  });
 });
 
 // ─── v0.42 confidence split + warn-tier gate ──────────────────

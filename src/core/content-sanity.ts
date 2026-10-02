@@ -45,6 +45,9 @@
  * assessor stays pure so unit tests don't need env mutation.
  */
 
+import { stripFactsFence } from './facts-fence.ts';
+import { stripTakesFence } from './takes-fence.ts';
+
 /** Maximum number of body bytes scanned for pattern matches. The body
  *  is sliced to this size before regex/substring evaluation so pattern
  *  cost stays O(2KB) regardless of page size. Cloudflare/CAPTCHA junk
@@ -275,9 +278,12 @@ export interface ProseAssessment {
   markup_ratio: number;
 }
 
-// Pattern set for `assessProse`. Code (fenced + inline) is stripped FIRST
-// and excluded from the denominator entirely (Codex #2 — a code-heavy doc
-// must not read as high-markup). The remaining strips count toward markup.
+// Pattern set for `assessProse`. gbrain-managed fences (facts + takes
+// tables gbrain writes itself) and code (fenced + inline) are stripped
+// FIRST and excluded from the denominator entirely — the facts table's
+// pipe rows are the page's data, not boilerplate markup (#5822), and a
+// code-heavy doc must not read as high-markup (Codex #2). The remaining
+// strips count toward markup.
 const FENCED_CODE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 const INLINE_CODE_RE = /`[^`\n]*`/g;
 const HTML_TAG_RE = /<\/?[a-z][^>]*>/gi;
@@ -300,8 +306,11 @@ const TABLE_PIPE_RE = /\|/g;
  * than catching the obvious nav-blob shape without nuking legit prose.
  */
 export function assessProse(body: string): ProseAssessment {
-  // Code excluded from the denominator (Codex #2): a code doc isn't junk.
-  const noCode = body.replace(FENCED_CODE_RE, ' ').replace(INLINE_CODE_RE, ' ');
+  // Excluded from the denominator: gbrain-managed fences (the facts/takes
+  // tables are authored BY gbrain — their table markup is data, not junk
+  // (#5822)) and code (Codex #2: a code doc isn't junk).
+  const noFences = stripTakesFence(stripFactsFence(body));
+  const noCode = noFences.replace(FENCED_CODE_RE, ' ').replace(INLINE_CODE_RE, ' ');
   const total_chars = noCode.replace(/\s+/g, '').length;
   if (total_chars === 0) {
     return { prose_chars: 0, total_chars: 0, markup_ratio: 0 };
