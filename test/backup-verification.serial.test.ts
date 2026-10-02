@@ -10,6 +10,7 @@ import { __setBackupStatusPathForTests, loadBackupStatus, saveBackupStatus } fro
 import { checkBackupCoverage } from '../src/commands/doctor/checks/backup-coverage.ts';
 import { pushStatusPathForRoot } from '../src/core/workspace-push.ts';
 import { assessBackupRepository, BACKUP_REMOTE_PROBE_CAP, BACKUP_REMOTE_BUDGET_MS, BACKUP_REMOTE_TIMEOUT_MS } from '../src/core/backup/repository.ts';
+import { GIT_ENV } from '../src/core/git-remote.ts';
 import { makeGitFixture } from './helpers/git-fixture.ts';
 
 let tmp: string;
@@ -286,6 +287,35 @@ test('an inherited GIT_CONFIG_COUNT/KEY/VALUE cannot rewrite origin to a decoy r
   );
   expect(result.assets[0].verification?.state).toBe('verified');
   expect(result.assets[0].verification?.remote_commit).toBe(expectedHead);
+});
+
+test('custom config locations (GIT_CONFIG_GLOBAL/SYSTEM) still reach the spawned probe env (#5794)', async () => {
+  // Credential helpers and identities an operator supplies through their own
+  // config files must survive env isolation: a spawned git that loses its
+  // configured helper fails private-remote auth (rc128) where the caller's
+  // own git succeeds. Only the transient `-c` carriers (PARAMETERS, COUNT)
+  // are isolated; the config-file locations are inherited.
+  const customGlobal = join(tmp, 'custom.gitconfig');
+  writeFileSync(customGlobal, '[gbrain5794]\n\tmarker = from-custom-global\n[credential]\n\thelper = /bin/true\n');
+  const customSystem = join(tmp, 'custom-system.gitconfig');
+  writeFileSync(customSystem, '[gbrain5794]\n\tsystemmarker = from-custom-system\n');
+  await withConfigPoison(
+    { GIT_CONFIG_GLOBAL: customGlobal, GIT_CONFIG_SYSTEM: customSystem },
+    async () => {
+      // Same env construction the probe uses: { ...process.env, ...GIT_ENV }.
+      const probeEnv = { ...process.env, ...GIT_ENV };
+      const read = (key: string): string => {
+        try {
+          return execFileSync('git', ['-C', tmp, 'config', '--get', key], { env: probeEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        } catch {
+          return '';
+        }
+      };
+      expect(read('gbrain5794.marker')).toBe('from-custom-global');
+      expect(read('credential.helper')).toBe('/bin/true');
+      expect(read('gbrain5794.systemmarker')).toBe('from-custom-system');
+    },
+  );
 });
 
 test('timeouts spend a sweep-wide deadline, return no credentials, and never verify offline remotes', async () => {
