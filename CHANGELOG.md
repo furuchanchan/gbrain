@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **Remote `search` promotes an exact-title identity page like the CLI does (#5889).** Remote callers rank the title arm on `to_tsvector(title)` without length normalization, so every title containing the query word once scored identically and the arm's `max(2×limit, 50)` row cut could drop a page whose title IS the query — the `#1663` exact-lookup tier then never saw it, and remote `search` buried the page the CLI ranked first. The tier's title probe now falls back to a bounded FTS-prefiltered candidate scan (`readTitleExactCandidates`, pinned on lowercase equality and ordered length-normalized) whenever the arm produced no equality hit, still verified by the same `normalizeAlias` check — the identity page reaches the tier no matter how many titles contain the word. The fallback fires only on a miss, honoring every existing read policy (source scope, `excludePrivate`, shape filters, supersession), and fails open like the other structural probes.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

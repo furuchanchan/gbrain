@@ -10,7 +10,9 @@
  *   slug probe   — a slug-shaped query resolves via engine.getPage directly.
  *   title probe  — an exact (normalized) full-title equality match, read off
  *                  the ALREADY-FETCHED page-grain title arm (zero extra
- *                  queries on the hot path).
+ *                  queries when the arm already contains the page), with a
+ *                  bounded FTS-prefiltered fallback scan (#5889) for when
+ *                  the arm's own ranking cut drops the identity page.
  *
  * Supersession-filtered: a page that a `supersedes` link marks stale is
  * NEVER top-injected by this tier (the organic pipeline still surfaces it,
@@ -33,6 +35,7 @@
 
 import { sanitizeRemoteBody } from '../remote-body.ts';
 import { hasReadPolicy } from './read-policy-sql.ts';
+import { readTitleExactCandidates } from './read-enrichment.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { SearchResult, PageReadPolicy } from '../types.ts';
 import { normalizeAlias } from './alias-normalize.ts';
@@ -153,6 +156,38 @@ export async function structuralExactLookup(
         title_match_boost: Math.max(cand.title_match_boost ?? 1.0, EXACT_TITLE_STAMP),
         exact_lookup: cand.exact_lookup ?? 'title',
       });
+    }
+  }
+  // #5889 — fallback probe: the arm's rows are only its top max(2*limit, 50)
+  // under its own ranking, which on the remote title-only vector ties every
+  // single-occurrence title and can cut the page whose title IS the query.
+  // When the arm produced no equality hit, re-scan the FTS-matched title
+  // population directly (bounded + index-backed) and re-run the same
+  // normalized-equality check — the identity page reaches the tier however
+  // many titles contain the word. Skipped when the arm already hit: the
+  // common case costs zero extra queries.
+  if (qNorm && !hits.some(h => h.exact_lookup === 'title')) {
+    try {
+      const cands = await readTitleExactCandidates(engine.executeRaw.bind(engine), q, opts);
+      for (const cand of cands) {
+        if (!cand.title) continue;
+        if (normalizeAlias(cand.title) !== qNorm) continue;
+        push({
+          slug: cand.slug,
+          title: cand.title,
+          type: cand.type,
+          source_id: cand.source_id,
+          page_id: cand.page_id,
+          chunk_text: sanitizeRemoteBody(cand.compiled_truth ?? '').slice(0, 200),
+          chunk_index: 0,
+          chunk_id: 0,
+          score: 0, // caller assigns the injection score
+          title_match_boost: EXACT_TITLE_STAMP,
+          exact_lookup: 'title',
+        } as SearchResult);
+      }
+    } catch {
+      // fail-open: probe error → arm-only behavior (D9 parity)
     }
   }
 

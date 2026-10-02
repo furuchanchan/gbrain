@@ -2,6 +2,8 @@ import type { PageReadScope, PageReadPolicy, AdjacencyRow, RelationalFanoutOpts,
 import { unverifiedExtractionFragment } from '../extraction-review.ts';
 import { currentTextProjectionFilter, requiresSafeChunks, safeChunksFilter } from './safe-chunks.ts';
 import { hasReadPolicy, pageReadFilter } from './read-policy-sql.ts';
+import { getFtsLanguage } from '../fts-language.ts';
+import { boundWebsearchQuery } from './sql-ranking.ts';
 
 /** Narrow query dependency shared by both engines. */
 export type ReadQuery = <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -163,6 +165,63 @@ export async function readSalienceScores(query: ReadQuery, refs: PageRef[], scop
     LEFT JOIN takes t ON t.page_id = p.id AND t.active = TRUE ${holder}
     WHERE ${filter} GROUP BY p.id`, params);
   return new Map(rows.map(row => [`${row.source_id}::${row.slug}`, Number(row.score)]));
+}
+
+/** Candidate row for the #5889 title-equality fallback probe. */
+export interface TitleExactCandidate {
+  slug: string;
+  source_id: string;
+  page_id: number;
+  title: string | null;
+  type: string | null;
+  compiled_truth: string | null;
+}
+
+/**
+ * Candidate bound for the title-equality fallback probe below. The FTS
+ * prefilter keeps the scan to lexical matches; the caller verifies
+ * normalizeAlias() equality, so the bound only needs to cover plausible
+ * candidate populations — far above the arm's own max(2*limit, 50) cut.
+ */
+const TITLE_EXACT_PROBE_LIMIT = 200;
+
+/**
+ * #5889 — bounded title-equality candidate probe for the #1663 exact-lookup
+ * tier. Remote callers rank the title arm on `to_tsvector(title)` with no
+ * length normalization, so every title containing the query word once ties
+ * (~0.1); thousands of such titles make the arm's `max(2*limit, 50)` cut
+ * arbitrary, and a page whose title IS the query can miss the candidate set
+ * the tier reads. This probe re-scans the FTS-matched title population
+ * itself — index-backed where the v188 title GIN exists — pinned first on
+ * raw lowercase equality and then ranked length-normalized
+ * (`ts_rank_cd(..., 2)`, the ordering the reporter verified places both
+ * identity pages first), so the identity page reaches the tier regardless
+ * of how many titles contain the word. Superset-of-equality is the only
+ * contract: the caller still verifies `normalizeAlias(title) === query`,
+ * so ordering/row-shape shortcuts cannot create a false identity hit.
+ * Fail-open by contract: probe errors are caught by the caller (D9 parity
+ * with the slug/alias probes).
+ */
+export async function readTitleExactCandidates(
+  query: ReadQuery,
+  rawQuery: string,
+  scope?: PageReadScope,
+): Promise<TitleExactCandidate[]> {
+  const ftsLang = getFtsLanguage();
+  const bound = boundWebsearchQuery(rawQuery);
+  const params: unknown[] = [bound, rawQuery];
+  const filter = pageReadFilter('p', scope, params, true);
+  return query<TitleExactCandidate>(`
+    SELECT p.slug, p.id AS page_id, p.title, p.type, p.source_id, p.compiled_truth
+    FROM pages p
+    WHERE to_tsvector('${ftsLang}', COALESCE(p.title, ''))
+          @@ websearch_to_tsquery('${ftsLang}', $1)
+      AND ${filter}
+    ORDER BY (lower(COALESCE(p.title, '')) = lower($2)) DESC,
+             ts_rank_cd(to_tsvector('${ftsLang}', COALESCE(p.title, '')),
+                        websearch_to_tsquery('${ftsLang}', $1), 2) DESC,
+             p.id ASC
+    LIMIT ${TITLE_EXACT_PROBE_LIMIT}`, params);
 }
 
 /** Resolve alias contributors before callers rank or cap canonical pages. */
