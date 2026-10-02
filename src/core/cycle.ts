@@ -1605,6 +1605,12 @@ async function runPhaseEmbed(engine: BrainEngine, dryRun: boolean, signal?: Abor
         // In dry-run, this counts pages with stale chunks that would
         // have been processed (same semantic as a real run).
         pages_embedded_count: dryRun ? result.pages_processed : embeddedCount > 0 ? result.pages_processed : 0,
+        // #5885: the stale drain also sweeps NULL-embedding takes; surface
+        // the pass so cycle reports stop implying chunks are the only
+        // embedding backlog.
+        ...(result.takes
+          ? { takes_embedded: result.takes.embedded, takes_would_embed: result.takes.would_embed, takes_failed: result.takes.failures }
+          : {}),
       },
     };
   } catch (e) {

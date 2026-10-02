@@ -7,7 +7,9 @@
  */
 
 import type { BrainEngine, StaleTakeRow, TakeEmbeddingInput } from './engine.ts';
+import type { EmbedOpts, EmbedResult } from '../commands/embed.ts';
 import { embedBatchWithBackoff } from '../commands/embed.ts';
+import { serr, slog } from './console-prefix.ts';
 
 const DEFAULT_BATCH_SIZE = 100;
 
@@ -76,5 +78,39 @@ export async function embedStaleTakes(
     opts.onProgress?.(Math.min(start + batch.length, stale.length), stale.length, result.embedded);
   }
 
+  return result;
+}
+
+/**
+ * #5885: run at the successful end of `runEmbedCore`'s `--stale` drain so
+ * take vectors ride the same pass as stale chunks — previously only the
+ * manual `gbrain takes embed` wrote them, so every take written after the
+ * last manual pass stayed keyword-only while `think` and
+ * `takes search --semantic` read vectors. Runs inside the single-flight
+ * window the caller already holds, and only on `stale` — `--all` keeps its
+ * documented page/chunk-only meaning. A structural failure (e.g. an older
+ * schema without takes.embedding) degrades to a logged empty result rather
+ * than failing the chunk drain that already banked its work.
+ */
+export async function finishStaleEmbedPass(engine: BrainEngine, opts: EmbedOpts, result: EmbedResult): Promise<EmbedResult> {
+  if (opts.stale) {
+    try {
+      result.takes = await embedStaleTakes(engine, {
+        dryRun: opts.dryRun,
+        signal: opts.signal,
+        batchSize: opts.batchSize,
+      });
+      if (!opts.quiet) {
+        if (result.takes.dryRun && result.takes.would_embed > 0) {
+          slog(`[dry-run] Would embed ${result.takes.would_embed} stale take(s)`);
+        } else if (!result.takes.dryRun && (result.takes.embedded > 0 || result.takes.failures > 0)) {
+          slog(`Embedded ${result.takes.embedded} stale take(s)${result.takes.failures > 0 ? ` (${result.takes.failures} failed)` : ''}`);
+        }
+      }
+    } catch (e) {
+      serr(`  [embed] take-vector pass failed (page/chunk result unaffected): ${e instanceof Error ? e.message : e}`);
+      result.takes = { total_stale: 0, embedded: 0, would_embed: 0, failures: 0, failure_samples: [], dryRun: !!opts.dryRun };
+    }
+  }
   return result;
 }

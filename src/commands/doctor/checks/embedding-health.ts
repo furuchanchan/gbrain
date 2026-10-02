@@ -382,7 +382,19 @@ async function runEmbeddingColumnRegistry(ctx: DoctorContext): Promise<Check[]> 
         }
       }
 
-      if (issues.length === 0 && !coverageWarn) {
+      // #5885: take vectors live in their own stale pool (takes.embedding,
+      // not content_chunks) — a brain at 100% chunk coverage could still
+      // have every take keyword-only while doctor reported embeddings
+      // healthy. Best-effort: older schemas without the column just skip.
+      let staleTakes = 0;
+      try { staleTakes = await engine.countStaleTakes(); } catch { /* older schema — no takes.embedding */ }
+      const takesWarn = staleTakes > 0
+        ? `${staleTakes} active take(s) lack embeddings — semantic take search ` +
+          `(think, takes search --semantic) silently degrades to keyword. ` +
+          `Fix: gbrain embed --stale`
+        : null;
+
+      if (issues.length === 0 && !coverageWarn && !takesWarn) {
         const indexNote = engine.kind === 'postgres' ? ' (all indexed)' : '';
         checks.push({
           name: 'embedding_column_registry',
@@ -393,6 +405,7 @@ async function runEmbeddingColumnRegistry(ctx: DoctorContext): Promise<Check[]> 
         const allMessages = [
           ...issues,
           ...(coverageWarn ? [coverageWarn] : []),
+          ...(takesWarn ? [takesWarn] : []),
         ];
         checks.push({
           name: 'embedding_column_registry',

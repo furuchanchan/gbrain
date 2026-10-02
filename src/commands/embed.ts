@@ -1,6 +1,7 @@
 import { sanitizeRemoteBody } from '../core/remote-body.ts';
 import { prepareEmbeddingProjections, countArchivedEmbeddingWork } from '../core/embedding-readiness.ts';
 import { embedStaleFacts, type EmbedFactsResult } from '../core/embed-facts.ts';
+import { finishStaleEmbedPass, type EmbedTakesResult } from '../core/embed-takes.ts';
 import { parseFactEmbedArgs } from './embed-facts-delegate.ts';
 import { readProjectionSnapshot, installPageProjection, installPageEmbeddings } from '../core/page-state/projections.ts';
 import { PageRevisionConflictError } from '../core/page-state/types.ts';
@@ -306,6 +307,15 @@ export interface EmbedResult {
    * misreporting embed failures.
    */
   lock_skipped?: boolean;
+  /**
+   * #5885: `stale` runs also drain NULL-embedding takes through
+   * embedStaleTakes — previously only a manual `gbrain takes embed` wrote
+   * take vectors, so every new take stayed keyword-only while `think` and
+   * `takes search --semantic` read vectors. Additive field; absent on
+   * non-stale runs and on runs that exit before the stale drain finishes
+   * (lock_skipped, stall_timeout).
+   */
+  takes?: EmbedTakesResult;
   /**
    * Set when the single-flight lock heartbeat discovered the lock was stolen
    * (refresh matched 0 rows) or kept erroring: mutual exclusion is gone, so
@@ -721,7 +731,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
     if (!watchdog) {
       await drain;
       if (drainError) throw drainError.err;
-      return result;
+      return finishStaleEmbedPass(engine, opts, result);
     }
     let outcome: 'drained' | 'stalled';
     let stallInfo: EmbedStallInfo | undefined;
@@ -738,7 +748,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
     }
     if (outcome === 'drained') {
       if (drainError) throw drainError.err;
-      return result;
+      return finishStaleEmbedPass(engine, opts, result);
     }
 
     // Stall fired. The drain may be dead — perform the watchdog's OWN bounded

@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.6] - 2026-10-02
+
+### Fixed
+- `gbrain embed --stale` now drains stale take vectors too: NULL-embedding takes previously required a manual `gbrain takes embed`, so every take written after the last manual pass stayed keyword-only while `think` and `takes search --semantic` read vectors. The take sweep runs at the end of a successfully drained `--stale` pass (inside the single-flight window, so the cycle embed phase and embed minion handlers cover it automatically) and reports on the additive `EmbedResult.takes` field; dry-run reports `would_embed` without writing, and `--all` stays page/chunk-only. Doctor's `embedding_column_registry` check now counts `engine.countStaleTakes()` next to chunk coverage, so a brain with full chunk coverage but vectorless takes no longer reports embeddings healthy (#5885).
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**
