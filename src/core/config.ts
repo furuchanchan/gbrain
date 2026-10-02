@@ -7,6 +7,7 @@ import { loadConfigSnapshot } from './config-snapshot.ts';
 import { loadGbrainEnvFile } from './gbrain-env-file.ts';
 import { dotenvValuesForKey } from './env-trust.ts';
 import { REMOTE_PRIVATE_PAGES_KEY } from './search/private-visibility.ts';
+import { REMOTE_PRIVATE_FACTS_KEY } from './facts/visibility.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -1302,7 +1303,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.image_query.daily_budget_usd_per_client',
   'search.image_query.remote_max_bytes',
   'search.mcp_keyword_only',
-  REMOTE_PRIVATE_PAGES_KEY,
+  REMOTE_PRIVATE_PAGES_KEY, REMOTE_PRIVATE_FACTS_KEY, // #5857: facts counterpart of the pages opt-out
   'search.track_retrieval',
   // #4415: per-brain query-intent pattern extensions (JSON bank→regex[]),
   // merged over the shipped banks in src/core/search/query-intent.ts.

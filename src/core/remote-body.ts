@@ -12,9 +12,12 @@ const protectedMarkerPattern = new RegExp(
 /**
  * Strict protected-body boundary shared by remote reads and chunk creation.
  * #5567 materialized-timeline marker lines are dropped unless the caller
- * round-trips the body (`keepMaterializedMarkers`).
+ * round-trips the body (`keepMaterializedMarkers`). #5857: `keepPrivateFacts`
+ * retains non-world Facts rows — only for remote-read call sites behind
+ * `resolveExposePrivateFacts`, never for chunk/embedding production (those
+ * artifacts are read back without re-filtering).
  */
-export function sanitizeRemoteBody(body: string, opts: { includeWithdrawn?: boolean; keepMaterializedMarkers?: boolean } = {}): string {
+export function sanitizeRemoteBody(body: string, opts: { includeWithdrawn?: boolean; keepMaterializedMarkers?: boolean; keepPrivateFacts?: boolean } = {}): string {
   if (typeof body !== 'string') return '';
   // Parse the same free-text bytes storage accepts. Removing NUL after fence
   // detection could turn an unrecognized marker into a protected stored fence.
@@ -40,7 +43,7 @@ export function sanitizeRemoteBody(body: string, opts: { includeWithdrawn?: bool
     if (open.facts) {
       try {
         const parsed = parseFactsFence(body.slice(open.start, cursor));
-        if (parsed.warnings.length === 0) output.push(renderFactsTable(parsed.facts.filter(row => row.visibility === 'world' && (opts.includeWithdrawn || !row.forgotten))));
+        if (parsed.warnings.length === 0) output.push(renderFactsTable(parsed.facts.filter(row => (row.visibility === 'world' || opts.keepPrivateFacts === true) && (opts.includeWithdrawn || !row.forgotten))));
       } catch {
         // A protected block that cannot be parsed is omitted, never echoed.
       }

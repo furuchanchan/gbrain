@@ -519,9 +519,9 @@ function fallbackBlock(hit: SearchResult, hits: SearchResult[], reason: string):
  * compiled truth and timeline each sanitized whole and joined the way
  * serializeMarkdown joins them. Frontmatter is not part of it.
  */
-export function pageEvidenceText(page: { compiled_truth: string; timeline: string }, includeTimeline: boolean): { text: string; timelineAt: number } {
-  const truth = sanitizeRemoteBody(page.compiled_truth ?? '');
-  const timeline = includeTimeline ? sanitizeRemoteBody(page.timeline ?? '') : '';
+export function pageEvidenceText(page: { compiled_truth: string; timeline: string }, includeTimeline: boolean, keepPrivateFacts = false): { text: string; timelineAt: number } {
+  const truth = sanitizeRemoteBody(page.compiled_truth ?? '', { keepPrivateFacts });
+  const timeline = includeTimeline ? sanitizeRemoteBody(page.timeline ?? '', { keepPrivateFacts }) : '';
   if (!timeline.trim()) return { text: truth, timelineAt: -1 };
   return { text: truth + TIMELINE_SEPARATOR + timeline, timelineAt: truth.length + TIMELINE_SEPARATOR.length };
 }
@@ -589,11 +589,11 @@ function sectionCandidates(doc: Doc, anchors: Anchor[], conversation: boolean): 
   return set.size === 0 ? null : [...set].sort((x, y) => x - y);
 }
 
-function planBlock(page: ChunkWindowPage, hits: SearchResult[], plan: EvidencePlan, includeTimeline: boolean): PlannedBlock {
+function planBlock(page: ChunkWindowPage, hits: SearchResult[], plan: EvidencePlan, includeTimeline: boolean, keepPrivateFacts = false): PlannedBlock {
   const best = hits[0];
   if (!page.sealed) return fallbackBlock(best, hits, 'unsealed_page');
   if (page.chunks.length === 0 && page.row_limited) return fallbackBlock(best, hits, 'row_limit');
-  const { text, timelineAt } = pageEvidenceText(page, includeTimeline);
+  const { text, timelineAt } = pageEvidenceText(page, includeTimeline, keepPrivateFacts);
   const truthChunks = page.chunks.filter(c => c.chunk_source === 'compiled_truth');
   const timelineChunks = page.chunks.filter(c => c.chunk_source === 'timeline');
   const spans = [
@@ -881,7 +881,7 @@ export async function deliverEvidence(
     } else {
       const page = pages?.get(g.pageId);
       if (!page) { dropped.not_readable = (dropped.not_readable ?? 0) + 1; continue; }
-      b = planBlock(page, g.hits, plan, scope.detail !== 'low');
+      b = planBlock(page, g.hits, plan, scope.detail !== 'low', scope.exposePrivateFacts === true);
     }
     if (b.fallbackReason) fallbacks.add(b.fallbackReason);
     const title = b.hit.title ?? '';
@@ -1047,7 +1047,7 @@ export interface AssembleEvidenceInput {
   return_window?: number;
   budget_tokens?: number;
   detail?: 'low' | 'medium' | 'high';
-  caller?: { remote?: boolean; sourceId?: string; sourceIds?: string[]; excludePrivate?: boolean };
+  caller?: { remote?: boolean; sourceId?: string; sourceIds?: string[]; excludePrivate?: boolean; exposePrivateFacts?: boolean };
 }
 
 export interface AssembleEvidenceOutput {
@@ -1125,10 +1125,14 @@ export async function assembleEvidenceForHits(engine: BrainEngine, input: Assemb
   }
   const remote = input.caller?.remote === true;
   const excludePrivate = input.caller?.excludePrivate ?? await resolveExcludePrivatePages(engine, remote ? true : false);
+  const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
   const scope: DeliveryScope = {
     ...(input.caller?.sourceIds && input.caller.sourceIds.length > 0 ? { sourceIds: input.caller.sourceIds } : input.caller?.sourceId ? { sourceId: input.caller.sourceId } : {}),
     excludePrivate,
     requireSafeChunks: remote,
+    // #5857: the operator opt-in widens fact visibility here too; a caller
+    // may pass its own resolved flag.
+    exposePrivateFacts: input.caller?.exposePrivateFacts ?? await resolveExposePrivateFacts(engine, remote ? true : false),
     ...(input.detail ? { detail: input.detail } : {}),
   };
   const plan = await resolveEvidencePlan(engine, {

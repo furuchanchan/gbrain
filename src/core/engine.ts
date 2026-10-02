@@ -662,7 +662,9 @@ export interface FactsHealth {
  * `remote` (D-CDX-1) gates the visibility filter: when true the engine
  * adds `AND visibility = 'world'`, mirroring `recall`'s posture for
  * untrusted callers. Local CLI keeps `remote: false` and sees both
- * private + world facts.
+ * private + world facts. `includePrivateFacts` (#5857) overrides the
+ * remote filter — callers resolve it via `resolveExposePrivateFacts`
+ * (the `search.remote_private_facts` operator opt-in).
  */
 export interface TrajectoryOpts {
   entitySlug: string;
@@ -676,6 +678,11 @@ export interface TrajectoryOpts {
    * `remote: false` explicitly.
    */
   remote?: boolean;
+  /** #5857: lift the remote world-only filter (operator opted in via
+   * `search.remote_private_facts` / `GBRAIN_REMOTE_PRIVATE_FACTS`). Callers
+   * resolve this through `resolveExposePrivateFacts`, never by trusting a
+   * client-supplied flag. */
+  includePrivateFacts?: boolean;
   /** Metric filter. When set, only facts with this canonical metric label participate. */
   metric?: string;
   /**

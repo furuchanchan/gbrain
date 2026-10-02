@@ -167,6 +167,26 @@ the remaining tail. Restricted salience counts only permitted active takes and
 ignores stored emotional weight; its recent window uses `updated_at` rather
 than take-driven salience touches.
 
+The facts layer has its own opt-in, independent of the pages gate. Legacy
+brains carry `visibility: private` rows inside `## Facts` fences (and in the
+facts table) that predate the boundary, and there is no bulk re-tag path; a
+single-user brain that wants remote agents to read them sets:
+
+```bash
+gbrain config set search.remote_private_facts visible   # also accepts true / 1
+```
+
+That key widens **facts only**, everywhere remote readers see them: the facts
+table arms of `recall` / `context_pack` / `delta`, the entity card's facts
+columns, `find_trajectory`, and the `## Facts` fences inside page bodies and
+evidence blocks (`get_page`, `get_versions`, `search` / `query` / `recall`
+results, `assemble_evidence`, `think`, remote advisories). It does NOT widen
+`visibility: private` pages (that stays under `search.remote_private_pages`),
+never marks a fact visible at write time, and never affects stored chunk text —
+the same 30s resolver cache and fail-closed config-read semantics apply
+(`src/core/facts/visibility.ts`; `GBRAIN_REMOTE_PRIVATE_FACTS=1` is the
+incident escape hatch).
+
 Semantic result caching is temporarily disabled even when configuration enables
 it. Searches run fresh, so repeated requests may cost more and take longer.
 Stored rows and cache maintenance remain available. Stored contradiction reports
@@ -181,6 +201,9 @@ other callers receive an empty list and an availability note.
   it to restore the fail-closed default. Use it when the gate itself
   misbehaves (e.g. a probe error blanking legitimate remote reads) while
   you diagnose.
+- **`GBRAIN_REMOTE_PRIVATE_FACTS=1`** — same posture for the private-facts
+  gate (#5857): remote callers read `visibility: private` facts (table rows
+  and `## Facts` fence rows) regardless of `search.remote_private_facts`.
 - **`GBRAIN_MCP_FORCE_SURFACE=verbs|starter|full`** — narrow-only clamp
   (FOV-6a): it `min()`s into every resolved surface and can NEVER widen
   past the configured ceiling; widening requires an explicit `--surface`

@@ -240,7 +240,11 @@ async function assembleCard(
   excludePrivate: boolean,
 ): Promise<EntityCard> {
   const pageSlug = row.slug;
-  const visibility = remote ? (['world'] as ('private' | 'world')[]) : undefined;
+  // #5857: `remote` callers keep the world-only tier unless the operator
+  // opted the brain into remote private-fact reads — one resolver, cached.
+  const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
+  const worldOnly = remote && !(await resolveExposePrivateFacts(engine, remote));
+  const visibility = worldOnly ? (['world'] as ('private' | 'world')[]) : undefined;
   const { privatePagesFilterFragment, privateLinkOriginFilterFragment } = await import('../search/private-visibility.ts');
   const inboundPrivacy = excludePrivate
     ? ` AND ${privatePagesFilterFragment('f')} AND ${privateLinkOriginFilterFragment('l')}`
@@ -310,7 +314,7 @@ async function assembleCard(
         `SELECT COUNT(*) AS n
            FROM facts
           WHERE source_id = $1 AND entity_slug = $2
-            AND expired_at IS NULL${remote ? ` AND visibility = 'world'` : ''}`,
+            AND expired_at IS NULL${worldOnly ? ` AND visibility = 'world'` : ''}`,
         [sourceId, pageSlug],
       )
       .then(rs => Number(rs[0]?.n ?? 0))
@@ -402,7 +406,7 @@ async function assembleCard(
     aka,
     // v0.45.7: summary widens in lockstep with the card's fact visibility —
     // remote (world-only) keeps ['world']; a local include_private card widens.
-    summary: safeSynopsis(row, { keepVisibility: remote ? ['world'] : ['private', 'world'] }),
+    summary: safeSynopsis(row, { keepVisibility: worldOnly ? ['world'] : ['private', 'world'] }),
     last_touched: {
       updated_at: toIso(row.updated_at),
       last_retrieved_at: toIso(row.last_retrieved_at),

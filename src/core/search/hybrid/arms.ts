@@ -180,6 +180,7 @@ export async function buildRelationalList(req: HybridRequest): Promise<SearchRes
       // remote relational query bypasses the keyword/vector visibility clause.
       excludePrivate: opts?.excludePrivate,
       requireSafeChunks: opts?.requireSafeChunks,
+      exposePrivateFacts: opts?.exposePrivateFacts,
       takesHoldersAllowList: opts?.takesHoldersAllowList,
       onMeta: opts?.onRelationalMeta,
     });

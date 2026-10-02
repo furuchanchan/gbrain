@@ -386,6 +386,14 @@ export interface PageReadScope {
   excludePrivate?: boolean;
   /** Untrusted chunk reads require a verified protected-body index, even with visibility opt-outs. */
   requireSafeChunks?: boolean;
+  /**
+   * #5857 — remote reads keep `visibility: private` Facts rows (page fences
+   * and fact previews) when the operator opted in via
+   * `search.remote_private_facts`. Resolved by the op layer through
+   * `resolveExposePrivateFacts`, never from MCP parameters. Never set on
+   * chunk-producing reads — stored chunks must stay strict.
+   */
+  exposePrivateFacts?: boolean;
 }
 
 export interface PageReadPolicy extends PageReadScope {
@@ -1317,6 +1325,14 @@ export interface SearchOpts extends PageReadPolicy {
    * false = pre-fix behavior (trusted local reads see everything).
    */
   excludePrivate?: boolean;
+  /**
+   * #5857 — facts counterpart of `excludePrivate`'s opt-out: result-row
+   * preview text (exact-lookup slug probe, alias-hop, relational arm) keeps
+   * `visibility: private` Facts rows when the operator opted in via
+   * `search.remote_private_facts`. Resolved by the op layer through
+   * `resolveExposePrivateFacts`, never from MCP parameters.
+   */
+  exposePrivateFacts?: boolean;
   /**
    * v0.32.x (search-lite): enable/disable the semantic query cache for this
    * call. When undefined, the cache decision falls back to global config

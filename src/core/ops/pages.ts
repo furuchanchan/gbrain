@@ -67,8 +67,10 @@ async function dropPrivateSlugs(
  * caller. Same stripping rule as compiled_truth: takes fence dropped
  * entirely, facts fence keeps only `world`-visibility rows.
  */
-function stripPrivacyFencesForRemoteReader(page: Page): Page {
-  const opts = { includeWithdrawn: true, keepMaterializedMarkers: true }; // #5567: markers round-trip remote edits
+function stripPrivacyFencesForRemoteReader(page: Page, keepPrivateFacts = false): Page {
+  // #5857: keepPrivateFacts only when the operator opted the brain into
+  // remote private-fact reads (resolved by the caller once per op).
+  const opts = { includeWithdrawn: true, keepMaterializedMarkers: true, keepPrivateFacts }; // #5567: markers round-trip remote edits
   return { ...page, compiled_truth: sanitizeRemoteBody(page.compiled_truth, opts), timeline: sanitizeRemoteBody(page.timeline ?? '', opts) };
 }
 
@@ -174,8 +176,10 @@ const get_page: Operation = {
     // Only explicitly trusted local reads retain protected body sections.
     // Holder grants and page-visibility opt-outs do not bypass this boundary.
     const isUntrustedReader = ctx.remote !== false;
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
+    const keepPrivateFacts = isUntrustedReader && (await resolveExposePrivateFacts(ctx.engine, ctx.remote));
     const visibleBody = isUntrustedReader
-      ? stripPrivacyFencesForRemoteReader(page)
+      ? stripPrivacyFencesForRemoteReader(page, keepPrivateFacts)
       : page;
     // v0.42 (#1699) agent-warning channel: surface the page's content_flag
     // marker as a top-level field (parallel to SearchResult.content_flag) so
@@ -253,10 +257,12 @@ const fetch_page: Operation = {
     bumpLastRetrievedAt(ctx.engine, [page.id]);
     const tags = snapshot!.tags;
     // Same privacy boundary as get_page: untrusted readers (ctx.remote ===
-    // true — every MCP transport) never see takes or private facts fences.
+    // true — every MCP transport) never see takes or private facts fences,
+    // unless the operator opted into remote private-fact reads (#5857).
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
     const visibleBody = ctx.remote === false
       ? page
-      : stripPrivacyFencesForRemoteReader(page);
+      : stripPrivacyFencesForRemoteReader(page, await resolveExposePrivateFacts(ctx.engine, ctx.remote));
     return {
       id: identity ? id : page.slug,
       title: page.title,

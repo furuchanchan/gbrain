@@ -259,9 +259,11 @@ const recall: Operation = {
 
     // Visibility filter: remote callers see world-only unless their token
     // grants elevated visibility (future-proofing; v0.31 ships world-only
-    // for remote, all for local CLI).
+    // for remote, all for local CLI). #5857: the operator opt-in
+    // (search.remote_private_facts / GBRAIN_REMOTE_PRIVATE_FACTS) also widens.
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
     const visibility =
-      ctx.remote === false
+      (await resolveExposePrivateFacts(ctx.engine, ctx.remote))
         ? undefined
         : ['world'] as ('private' | 'world')[];
 
@@ -434,8 +436,9 @@ const recall: Operation = {
       // untrusted callers (matches the facts arms' world-only filter above).
       const { resolveExcludePrivatePages } = await import('../search/private-visibility.ts');
       const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
+      const exposePrivateFacts = await resolveExposePrivateFacts(ctx.engine, ctx.remote); // #5857
       if (!isAvailable('embedding')) {
-        const raw = await ctx.engine.searchKeyword(queryText, { limit, excludePrivate, requireSafeChunks: ctx.remote !== false, ...searchScope });
+        const raw = await ctx.engine.searchKeyword(queryText, { limit, excludePrivate, exposePrivateFacts, requireSafeChunks: ctx.remote !== false, ...searchScope });
         searchResults = dedupResults(raw);
         // #3783 — direct FTS path: every row is a keyword hit by construction.
         markKeywordHits(searchResults);
@@ -447,6 +450,7 @@ const recall: Operation = {
           limit,
           expansion: false,
           excludePrivate,
+          exposePrivateFacts,
           requireSafeChunks: ctx.remote !== false,
           takesHoldersAllowList: readHolders(ctx),
           ...searchScope,
@@ -454,7 +458,7 @@ const recall: Operation = {
       }
       bumpLastRetrievedAt(ctx.engine, searchResults.map(r => r.page_id));
       const applied = effectivePlan(evidencePlan, searchResults);
-      if (applied) ({ results: searchResults, delivery } = await deliverEvidence(ctx.engine, searchResults, applied, { ...searchScope, excludePrivate, requireSafeChunks: ctx.remote !== false }));
+      if (applied) ({ results: searchResults, delivery } = await deliverEvidence(ctx.engine, searchResults, applied, { ...searchScope, excludePrivate, exposePrivateFacts, requireSafeChunks: ctx.remote !== false }));
     }
 
     let packedFacts = rows;
@@ -629,8 +633,12 @@ const context_pack: Operation = {
     // bundled that produced no cards.
     const entities = parseEntityList(p.entities).slice(0, PACK_DEFAULT_MAX_ENTITIES);
     // Fail-closed: private only when EXPLICITLY requested AND the caller is
-    // trusted-local (ctx.remote === false). A remote caller never widens.
-    const includePrivate = p.include_private === true && ctx.remote === false;
+    // trusted-local (ctx.remote === false) — or the operator opted the brain
+    // into remote private-fact reads (#5857). A remote caller never widens
+    // otherwise.
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
+    const includePrivate = p.include_private === true &&
+      (await resolveExposePrivateFacts(ctx.engine, ctx.remote));
     const budgetTokens =
       typeof p.budget_tokens === 'number' && Number.isFinite(p.budget_tokens) && p.budget_tokens > 0
         ? Math.floor(p.budget_tokens)
@@ -767,7 +775,11 @@ const delta: Operation = {
     // use their auth client id; an auth-LESS or blank-id remote (stdio MCP)
     // gets the shared 'remote' sentinel — never collapsed into 'local'.
     const clientId = ctx.remote === false ? null : ctx.auth?.clientId?.trim() || 'remote';
-    const includePrivate = p.include_private === true && ctx.remote === false;
+    // #5857: same include_private contract as context_pack — the operator
+    // opt-in lets a remote caller widen; without it remote stays world-only.
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
+    const includePrivate = p.include_private === true &&
+      (await resolveExposePrivateFacts(ctx.engine, ctx.remote));
     const budgetTokens =
       typeof p.budget_tokens === 'number' && Number.isFinite(p.budget_tokens) && p.budget_tokens > 0
         ? Math.floor(p.budget_tokens)

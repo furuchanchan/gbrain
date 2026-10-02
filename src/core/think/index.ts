@@ -33,6 +33,7 @@ import { normalizeModelId } from '../model-id.ts';
 import { hasAnthropicKey } from '../ai/anthropic-key.ts';
 import { parseTemporalWindow } from './temporal-window.ts';
 import { resolveExcludePrivatePages } from '../search/private-visibility.ts';
+import { resolveExposePrivateFacts } from '../facts/visibility.ts';
 import { deliverEvidence, effectivePlan, resolveEvidencePlan, EVIDENCE_BLOCK_CHAR_CAP, THINK_RETURN_UNIT_CONFIG_KEY, type DeliveryMeta } from '../search/evidence-delivery.ts';
 import { startThinkDecide, thinkAbstainResult, type ThinkAbstention } from './decide.ts';
 import { classifyIntent } from './intent.ts';
@@ -497,6 +498,8 @@ async function renderThinkPages(engine: BrainEngine, opts: RunThinkOpts, pages: 
     ...(opts.allowedSources !== undefined && opts.allowedSources.length > 0 ? { sourceIds: opts.allowedSources } : opts.sourceId !== undefined ? { sourceId: opts.sourceId } : {}),
     excludePrivate: opts.excludePrivate ?? await resolveExcludePrivatePages(engine, opts.remote),
     requireSafeChunks: opts.remote !== false,
+    // #5857 — operator opt-in widens fact visibility in think's evidence blocks.
+    exposePrivateFacts: await resolveExposePrivateFacts(engine, opts.remote),
   });
   const pagesBlock = applied.unit === 'auto'
     ? renderPagesBlock(delivered.results, pagesBlockExcerptLen(pages.length), opts.question,
@@ -644,6 +647,7 @@ export async function runThink(
           // bounds latency, not just failure propagation).
           const allBlocks: string[] = [];
           const seenSlugs = new Set<string>();
+          const includePrivateFacts = await resolveExposePrivateFacts(engine, opts.remote); // #5857: opt-in widens remote trajectory facts
           let totalPoints = 0;
           const candidateQueue = [...candidates];
           while (candidateQueue.length > 0) {
@@ -663,7 +667,7 @@ export async function runThink(
                     ...(opts.sourceId !== undefined ? { sourceId: opts.sourceId } : {}),
                     ...(opts.allowedSources !== undefined ? { sourceIds: opts.allowedSources } : {}),
                     ...(opts.remote !== undefined ? { remote: opts.remote } : {}),
-                    kind: 'all',
+                    includePrivateFacts, kind: 'all',
                     limit: 100,
                   }),
                   5000,

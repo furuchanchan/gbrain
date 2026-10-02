@@ -1,6 +1,7 @@
 import type { BrainEngine } from '../engine.ts';
 import type { ParsedPage } from '../import-file.ts';
 import { sanitizeRemoteBody } from '../remote-body.ts';
+import { resolveExposePrivateFacts } from '../facts/visibility.ts';
 import { writerLintForPutPage } from '../output/post-write.ts';
 import type { WriteRequest } from './model.ts';
 import { prepareFactsBackstop } from './effect-facts.ts';
@@ -17,8 +18,11 @@ export function pageNoopAdvisories(row: WriteRequest): Record<string, unknown> {
 }
 /** Optional lint reads are outside publication locks; its bounded result is retained in the receipt. */
 export async function preparePageAdvisories(engine: BrainEngine, row: WriteRequest, page: ParsedPage) {
-  const visible = row.authority.remote ? { ...page, compiled_truth: sanitizeRemoteBody(page.compiled_truth),
-    timeline: sanitizeRemoteBody(page.timeline ?? '') } : page;
+  // #5857: on an opted-in brain the lint view of a remote write keeps its
+  // private Facts rows, matching what remote readers will actually see.
+  const keepPrivateFacts = row.authority.remote && await resolveExposePrivateFacts(engine, true);
+  const visible = row.authority.remote ? { ...page, compiled_truth: sanitizeRemoteBody(page.compiled_truth, { keepPrivateFacts }),
+    timeline: sanitizeRemoteBody(page.timeline ?? '', { keepPrivateFacts }) } : page;
   const lint = await writerLintForPutPage(engine, row.slug, { sourceId: row.source_id, noLog: true, page: visible });
   const sanitized = lint && 'top_findings' in lint ? { ...lint,
     top_findings: lint.top_findings.map(finding => ({ ...finding, message: LINT_MESSAGES[finding.validator] ?? `${finding.validator} validation finding.` })) } : lint;

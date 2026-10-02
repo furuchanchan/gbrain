@@ -196,6 +196,7 @@ export const CWD_DOTENV_PROTECTED_KEYS: readonly string[] = [
   'GBRAIN_ALLOW_DEFAULT_WRITE',      // permits writes into the 'default' source
   'GBRAIN_NO_SANITY',                // disables content sanity checks
   'GBRAIN_REMOTE_PRIVATE_PAGES',     // exposes private pages to remote callers
+  'GBRAIN_REMOTE_PRIVATE_FACTS',     // #5857 — exposes private facts to remote callers
 ];
 
 /**

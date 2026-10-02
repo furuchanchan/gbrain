@@ -18,6 +18,7 @@
 import type { BrainEngine, TakeHit, Take } from '../engine.ts';
 import { hybridSearch } from '../search/hybrid.ts';
 import { sanitizeRemoteBody } from '../remote-body.ts';
+import { resolveExposePrivateFacts } from '../facts/visibility.ts';
 import type { Page, SearchResult } from '../types.ts';
 import { filterPagesToWindow, type TemporalWindow } from './temporal-window.ts';
 import { sanitizeQueryForPrompt } from '../search/expansion.ts';
@@ -127,10 +128,13 @@ export async function runGather(
     : opts.sourceId
       ? { sourceId: opts.sourceId }
       : {};
-  const pageScope = { ...sourceScope, excludePrivate: opts.excludePrivate, requireSafeChunks: opts.remote !== false, takesHoldersAllowList: opts.takesHoldersAllowList };
+  // #5857: the operator opt-in keeps private Facts rows in remote gather
+  // previews (never into chunks — those readers stay strict).
+  const keepPrivateFacts = await resolveExposePrivateFacts(engine, opts.remote);
+  const pageScope = { ...sourceScope, excludePrivate: opts.excludePrivate, requireSafeChunks: opts.remote !== false, exposePrivateFacts: keepPrivateFacts, takesHoldersAllowList: opts.takesHoldersAllowList };
   // System One: gather searches run S3/S5 under call site `think` (remote spend counted as remote).
   const decide = { remote: opts.remote !== false, callSite: 'think', ...(opts.decideIntent ? { intent: opts.decideIntent } : {}) };
-  const visibleBody = (body: string) => opts.remote === false ? body : sanitizeRemoteBody(body);
+  const visibleBody = (body: string) => opts.remote === false ? body : sanitizeRemoteBody(body, { keepPrivateFacts });
 
   // Sanitize the question for any path that includes it in an LLM prompt.
   // (Direct DB search is fine — those are parameterized queries.)

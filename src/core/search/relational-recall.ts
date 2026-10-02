@@ -157,7 +157,7 @@ async function hydrate(
       page_id: pr.page_id,
       title: pr.title,
       type: pr.type as PageType,
-      chunk_text: sanitizeRemoteBody(pr.synopsis ?? r.slug).slice(0, 240),
+      chunk_text: sanitizeRemoteBody(pr.synopsis ?? r.slug, { keepPrivateFacts: policy.exposePrivateFacts === true }).slice(0, 240),
       chunk_source: 'compiled_truth',
       // E1: reinforce the page's REAL canonical chunk; F3: chunkless entity
       // pages key page-level (chunk_id 0 → rrfKey `source:slug:0`, stable and

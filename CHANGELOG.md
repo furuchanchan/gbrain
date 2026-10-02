@@ -10,6 +10,28 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.8] - 2026-09-21
+
+### Fixed
+
+- **Remote private-facts opt-in (#5857).** Legacy brains hold `visibility:
+  private` facts — rows in the facts table and `## Facts` fence rows — that
+  predate the remote boundary; remote/MCP agents could never read them and
+  no bulk re-tag path exists. A new operator opt-in,
+  `gbrain config set search.remote_private_facts visible` (also `true`/`1`;
+  `GBRAIN_REMOTE_PRIVATE_FACTS=1` as the incident escape hatch), widens
+  private-fact reads for remote callers everywhere they occur: the facts
+  arms of `recall` / `context_pack` / `delta` (the per-call `include_private`
+  flag still required), the entity card's facts columns, `find_trajectory`
+  and `think`'s trajectory evidence, and the `## Facts` fences inside remote
+  page/evidence reads (`get_page`, `fetch`, `get_versions`, `search` /
+  `query` / `recall` previews and delivered evidence, `assemble_evidence`,
+  `think` gather, remote page advisories). `visibility: private` pages stay
+  under the separate `search.remote_private_pages` gate; stored chunk text
+  is never widened (chunks are produced once and read back unfiltered);
+  writes are untouched — nothing is re-tagged. Fail-closed: unset,
+  malformed, or unreadable config means enforce; the resolver caches 30s
+  per engine, same posture as the pages gate.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

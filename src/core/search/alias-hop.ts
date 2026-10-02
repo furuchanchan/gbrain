@@ -50,6 +50,8 @@ export interface IdentityTierOpts {
   sourceIds?: string[];
   excludePrivate?: boolean;
   requireSafeChunks?: boolean;
+  /** #5857 — operator opted the brain into remote private-fact reads. */
+  exposePrivateFacts?: boolean;
   excludeSlugs?: string[];
   excludeSlugPrefixes?: string[];
 }
@@ -113,7 +115,7 @@ export async function applyAliasHop(
     const page = await fetchAliasCanonical(engine, ref, opts);
     if (!page) continue;
     injectScore += 1e-6;
-    out.unshift(aliasInjectedRow(page, ref, injectScore));
+    out.unshift(aliasInjectedRow(page, ref, injectScore, opts));
   }
   return out;
 }
@@ -157,7 +159,7 @@ async function applyAliasTokenHop(
     }
     const page = await fetchAliasCanonical(engine, ref, opts);
     if (!page || !isIdentityEntity(page.slug, page.type)) continue;
-    out.unshift(aliasInjectedRow(page, ref, injectScore));
+    out.unshift(aliasInjectedRow(page, ref, injectScore, opts));
     hopped.add(key);
   }
   return out;
@@ -188,7 +190,7 @@ async function fetchAliasCanonical(
   return page;
 }
 
-function aliasInjectedRow(page: import('../types.ts').Page, ref: { source_id: string }, score: number): SearchResult {
+function aliasInjectedRow(page: import('../types.ts').Page, ref: { source_id: string }, score: number, opts: Pick<IdentityTierOpts, 'exposePrivateFacts'>): SearchResult {
   return {
     // #2339-sibling: include page_id. The `as SearchResult` cast hid its
     // absence, so any consumer reading page_id off an alias-injected result got
@@ -199,7 +201,7 @@ function aliasInjectedRow(page: import('../types.ts').Page, ref: { source_id: st
     title: page.title,
     type: page.type,
     source_id: page.source_id ?? ref.source_id,
-    chunk_text: sanitizeRemoteBody(page.compiled_truth ?? '').slice(0, 200),
+    chunk_text: sanitizeRemoteBody(page.compiled_truth ?? '', { keepPrivateFacts: opts.exposePrivateFacts === true }).slice(0, 200),
     chunk_index: 0,
     chunk_id: 0,
     score,

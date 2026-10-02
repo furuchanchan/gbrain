@@ -250,6 +250,7 @@ export async function resolveHybridRequest(
     sourceIds: opts?.sourceIds,
     excludePrivate: opts?.excludePrivate,
     requireSafeChunks: opts?.requireSafeChunks,
+    exposePrivateFacts: opts?.exposePrivateFacts,
     excludeSlugs: opts?.exclude_slugs,
     excludeSlugPrefixes: resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes),
   };

@@ -27,6 +27,7 @@ import { applySnippetCap, DEFAULT_AGENT_SNIPPET_CHARS } from '../search/snippet-
 import { redactRetrievalOutput } from '../search/output-redaction.ts';
 import { assembleEvidenceForHits, capDeliveredSnippets, deliverEvidence, effectivePlan, resolveEvidencePlan, unsupportedDelivery, type DeliveryMeta, type DeliveryScope, type EvidencePlan, type FrozenHit, type ReturnUnit } from '../search/evidence-delivery.ts';
 import { resolveExcludePrivatePages } from '../search/private-visibility.ts';
+import { resolveExposePrivateFacts } from '../facts/visibility.ts';
 import { SAFE_FENCE_CHUNKER_VERSION } from '../search/safe-chunks.ts';
 import { expandEngineTypeFilters } from '../schema-pack/query-types.ts';
 import { probeProjectionReadiness } from '../search/projection-readiness.ts';
@@ -128,7 +129,9 @@ async function withEvidence(ctx: OperationContext, p: Record<string, unknown>, r
   scope: DeliveryScope, meta: HybridSearchMeta | null): Promise<{ rows: SearchResult[]; evidence?: { delivery: DeliveryMeta; explicitSnippet: boolean } }> {
   const applied = effectivePlan(plan, results);
   if (!applied) return { rows: results };
-  const d = await deliverEvidence(ctx.engine, results, applied, { ...scope, requireSafeChunks: ctx.remote !== false }, { liveHits: meta?.cache?.status !== 'hit' });
+  const d = await deliverEvidence(ctx.engine, results, applied, { ...scope, requireSafeChunks: ctx.remote !== false,
+    // #5857: opted-in brains keep private Facts rows in delivered evidence.
+    exposePrivateFacts: await resolveExposePrivateFacts(ctx.engine, ctx.remote) }, { liveHits: meta?.cache?.status !== 'hit' });
   return { rows: d.results, evidence: { delivery: d.delivery, explicitSnippet: typeof p.snippet_chars === 'number' && Number.isFinite(p.snippet_chars) } };
 }
 
@@ -369,6 +372,8 @@ const search: Operation = {
     // #4352 — untrusted callers never see `visibility: private` pages
     // (config-gated; trusted local CLI unchanged).
     const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
+    // #5857 — operator opt-in widens fact visibility in result previews too.
+    const exposePrivateFacts = await resolveExposePrivateFacts(ctx.engine, ctx.remote);
 
     // T4/D5 — per-call mode honored ONLY for trusted/local callers so a remote
     // OAuth client can't escalate to the costly tokenmax bundle. Local + unknown
@@ -386,7 +391,7 @@ const search: Operation = {
         if (types?.length === 0) return [];
       }
       const sourceBoosts = resolveBoostMap(undefined, await ctx.engine.getConfig(SOURCE_BOOSTS_KEY));
-      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, excludePrivate, requireSafeChunks: ctx.remote !== false, source_boosts: sourceBoosts, ...(types ? { types } : {}), ...scope });
+      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, excludePrivate, exposePrivateFacts, requireSafeChunks: ctx.remote !== false, source_boosts: sourceBoosts, ...(types ? { types } : {}), ...scope });
       const results = dedupResults(raw).map(r => ({ ...r }));
       // #3783 — every row here IS a keyword hit (direct FTS path); mark
       // before stamping so evidence still reads keyword_exact.
@@ -416,6 +421,7 @@ const search: Operation = {
       offset,
       expansion: false,
       excludePrivate,
+      exposePrivateFacts,
       requireSafeChunks: ctx.remote !== false,
       takesHoldersAllowList: readHolders(ctx),
       ...(types ? { types } : {}),
@@ -593,7 +599,7 @@ const query: Operation = {
     // #4352 — same enforcement for the full-control query op (both the image
     // searchVector branch and the text hybrid path below).
     const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
-
+    const exposePrivateFacts = await resolveExposePrivateFacts(ctx.engine, ctx.remote); // #5857 — operator opt-in widens fact visibility
     // v0.27.1: image-similarity branch. Bypasses hybridSearch (which is
     // text-only); embeds the image via embedMultimodal and runs a direct
     // vector search against the embedding_image column.
@@ -680,6 +686,7 @@ const query: Operation = {
       limit: (p.limit as number) || undefined,
       offset: (p.offset as number) || 0,
       excludePrivate,
+      exposePrivateFacts,
       requireSafeChunks: ctx.remote !== false, decide: { remote: ctx.remote !== false, answerability: true },
       takesHoldersAllowList: readHolders(ctx),
       expansion: expand,
@@ -764,6 +771,7 @@ const query: Operation = {
           let escalatedMeta: HybridSearchMeta | null = null;
           const escalated = await hybridSearchCached(ctx.engine, queryText, {
             excludePrivate,
+            exposePrivateFacts,
             requireSafeChunks: ctx.remote !== false,
             takesHoldersAllowList: readHolders(ctx),
             limit: Math.max(effectiveLimit, 50),

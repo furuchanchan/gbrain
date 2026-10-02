@@ -168,8 +168,11 @@ const get_versions: Operation = {
   handler: async (ctx, p) => {
     const versions = await ctx.engine.getVersions(p.slug as string, await readPolicyOpts(ctx));
     if (ctx.remote === false) return versions;
-    return versions.map(v => ({ ...v, compiled_truth: sanitizeRemoteBody(v.compiled_truth),
-      ...(typeof v.timeline === 'string' ? { timeline: sanitizeRemoteBody(v.timeline) } : {}) }));
+    // #5857: the operator opt-in keeps private Facts rows in remote reads.
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
+    const keepPrivateFacts = await resolveExposePrivateFacts(ctx.engine, ctx.remote);
+    return versions.map(v => ({ ...v, compiled_truth: sanitizeRemoteBody(v.compiled_truth, { keepPrivateFacts }),
+      ...(typeof v.timeline === 'string' ? { timeline: sanitizeRemoteBody(v.timeline, { keepPrivateFacts }) } : {}) }));
   },
   scope: 'read',
   cliHints: { name: 'history', positional: ['slug'] },

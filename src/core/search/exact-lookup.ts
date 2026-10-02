@@ -129,7 +129,7 @@ export async function structuralExactLookup(
           title: page.title,
           type: page.type,
           source_id: page.source_id ?? scope ?? 'default',
-          chunk_text: sanitizeRemoteBody(page.compiled_truth ?? '').slice(0, 200),
+          chunk_text: sanitizeRemoteBody(page.compiled_truth ?? '', { keepPrivateFacts: opts.exposePrivateFacts === true }).slice(0, 200),
           chunk_index: 0,
           chunk_id: 0,
           score: 0, // caller assigns the injection score

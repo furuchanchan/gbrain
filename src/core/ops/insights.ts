@@ -296,10 +296,13 @@ const find_trajectory: Operation = {
 
     // D-CDX-1: thread ctx.remote into the engine so visibility filtering
     // happens at SQL level. Mirrors recall's posture for untrusted callers.
+    // #5857: the operator opt-in lifts the world-only filter.
+    const { resolveExposePrivateFacts } = await import('../facts/visibility.ts');
     const points = await ctx.engine.findTrajectory({
       entitySlug: p.entity_slug,
       ...scope,
       remote: ctx.remote !== false, // fail-closed: anything not strictly false is untrusted (CLAUDE.md invariant)
+      includePrivateFacts: await resolveExposePrivateFacts(ctx.engine, ctx.remote),
       metric,
       kind,
       since,
