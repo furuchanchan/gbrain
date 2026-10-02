@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+Fixed: Windows skill-bundle publication failed twice after the path-segment fix — directory fsync returned EPERM and synthesized st_mode broke strict POSIX mode equality.
+
+- flushBundleDirectory tolerates the win32 dir-fsync set (EISDIR/EPERM/EINVAL/ENOTSUP), matching coordinator.ts and identity.ts.
+- Mode comparisons (bundleFileHash, publishStagedBundleFile read-back) compare writable-vs-read-only only on win32 via bundleModesMatch.
+- New CI coverage: the security-regressions matrix runs the new test file natively on windows-latest.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

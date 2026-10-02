@@ -121,17 +121,42 @@ export function assertBundleRecoveryBinding(record: BundleRecoveryRecord, bindin
   }
 }
 
+/**
+ * #5475: Windows `st_mode` synthesizes POSIX bits — it only reflects the
+ * read-only flag (writable files read ~0o666, read-only ~0o444). A staged
+ * file chmod'ed to a canonical mode (e.g. 0o644) reads back 0o666, so full
+ * POSIX equality fails every staged file there. On win32 the only real
+ * distinction is writable vs read-only; everywhere else modes are compared
+ * exactly. `platform` is explicit so the win32 branch is testable off Windows.
+ */
+export function bundleModesMatch(expected: number, actual: number, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'win32') return expected === actual;
+  return ((expected & 0o222) !== 0) === ((actual & 0o222) !== 0);
+}
+
 export function bundleFileHash(record: FileRecoveryRecord): string | null {
   const current = readBundleFile(record.path, record.root);
   const hash = current ? sha256(current.bytes) : null;
   const expectedMode = hash === record.beforeHash ? record.mode : record.afterMode ?? record.mode;
-  if (current && expectedMode !== null && current.mode !== expectedMode) throw new OperationError('unexpected_file_bytes', 'A canonical skill file mode changed outside publication.');
+  if (current && expectedMode !== null && !bundleModesMatch(expectedMode, current.mode)) throw new OperationError('unexpected_file_bytes', 'A canonical skill file mode changed outside publication.');
   return hash;
+}
+
+/**
+ * #5475: a directory cannot be fsync'ed on Windows (`EPERM`) — the rename
+ * into the directory is the durability boundary there, same tolerance
+ * `coordinator.ts` and `identity.ts` already apply to dir fsync.
+ */
+export function bundleDirectoryFlushErrorIsBenign(code: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' && ['EISDIR', 'EPERM', 'EINVAL', 'ENOTSUP'].includes(code);
 }
 
 function flushBundleDirectory(directory: string): void {
   const fd = openSync(directory, 'r');
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  try { fsyncSync(fd); }
+  catch (error) {
+    if (!bundleDirectoryFlushErrorIsBenign((error as NodeJS.ErrnoException).code ?? '')) throw error;
+  } finally { closeSync(fd); }
 }
 
 export function stageBundleFile(file: MutationFile, record: FileRecoveryRecord): void {
@@ -174,8 +199,9 @@ export function publishStagedBundleFile(record: FileRecoveryRecord, boundary?: (
     const stage = record.staging?.publication;
     if (!stage) throw unsafe();
     const staged = readBundleFile(stage.path, record.root);
+    const wanted = record.afterMode ?? record.mode;
     if (!staged || staged.bytes.byteLength !== stage.bytes || sha256(staged.bytes) !== stage.hash
-      || stage.hash !== record.afterHash || staged.mode !== (record.afterMode ?? record.mode)) throw unsafe();
+      || stage.hash !== record.afterHash || wanted === null || !bundleModesMatch(wanted, staged.mode)) throw unsafe();
     renameSync(stage.path, record.path);
   }
   boundary?.('file_replaced');
