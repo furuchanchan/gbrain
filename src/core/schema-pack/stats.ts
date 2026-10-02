@@ -18,6 +18,8 @@
 import type { BrainEngine } from '../engine.ts';
 import { loadActivePackBestEffort } from './best-effort.ts';
 import type { OperationContext } from '../operations.ts';
+import { classifyStoredType } from './type-usage.ts';
+import type { TypeUsagePack } from './type-usage.ts';
 import { isUndefinedTableError } from '../utils.ts';
 
 export interface StatsOpts {
@@ -73,7 +75,10 @@ function computeCoverage(typed: number, total: number): number {
   return Math.round((typed / total) * 10000) / 10000;
 }
 
-function aggregateRows(rows: RawCountRow[]): PerSourceStats[] {
+// `pack` (the active manifest, when it resolved) decides typed vs untyped:
+// an undeclared stored type is no pack match, same as an empty one —
+// `pages.type` is NOT NULL, so non-empty ≠ covered. Aliases count as typed.
+function aggregateRows(rows: RawCountRow[], pack: TypeUsagePack | null): PerSourceStats[] {
   const bySource = new Map<string, { typed: number; untyped: number; total: number; byType: Map<string, number> }>();
   for (const r of rows) {
     const sid = r.source_id ?? 'default';
@@ -82,7 +87,10 @@ function aggregateRows(rows: RawCountRow[]): PerSourceStats[] {
       bySource.set(sid, { typed: 0, untyped: 0, total: 0, byType: new Map() });
     }
     const bucket = bySource.get(sid)!;
-    if (r.type === null || r.type === '') {
+    if (
+      r.type === null || r.type === '' ||
+      (pack !== null && classifyStoredType(r.type, pack).kind === 'undeclared')
+    ) {
       bucket.untyped += cnt;
     } else {
       bucket.typed += cnt;
@@ -234,13 +242,13 @@ export async function runStatsCore(
   opts: StatsOpts = {},
 ): Promise<StatsResult> {
   const rows = await fetchCountRows(ctx.engine, opts);
-  const per_source = aggregateRows(rows);
+  const pack = await loadActivePackBestEffort(ctx);
+  const per_source = aggregateRows(rows, pack?.manifest ?? null);
   const aggregate = mergeAggregate(per_source);
 
   // Pack identity + dead-prefix scan — best-effort.
   let pack_identity: string | null = null;
   let dead_prefixes: DeadPrefixHint[] = [];
-  const pack = await loadActivePackBestEffort(ctx);
   if (pack) {
     pack_identity = pack.identity;
     dead_prefixes = await detectDeadPrefixes(ctx.engine, pack, opts);

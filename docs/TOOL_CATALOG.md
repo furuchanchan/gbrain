@@ -185,7 +185,7 @@ Every non-localOnly operation on the MCP surface: 134 tools across 23 areas. **S
 | `schema_explain_type` | v0.40.6.0: resolved settings for a single page_type in the active pack. | read |  |  |
 | `schema_graph` | v0.40.6.0: schema pack graph as JSON edges. | read |  |  |
 | `schema_lint` | v0.40.6.0: lint the active (or named) schema pack. | read |  |  |
-| `schema_review_orphans` | v0.40.6.0: list pages with no active-pack type match. | read |  |  |
+| `schema_review_orphans` | v0.40.6.0: list pages with no active-pack type match — untyped OR storing a type the pack neither declares nor aliases. | read |  |  |
 | `schema_stats` | v0.40.6.0: per-type page counts + typed-coverage from the DB. | read |  |  |
 
 ## search

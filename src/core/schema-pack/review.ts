@@ -13,6 +13,7 @@
 import type { BrainEngine } from '../engine.ts';
 import { runDetect } from './detect.ts';
 import { loadActivePack } from './load-active.ts';
+import { classifyStoredType } from './type-usage.ts';
 import { loadConfig, gbrainPath, configPath } from '../config.ts';
 import { existsSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -115,14 +116,34 @@ export async function runReviewOrphans(
   opts: ReviewOrphansOpts = {},
 ): Promise<ReviewOrphansResult> {
   const sourceId = opts.sourceId ?? 'default';
+  // Orphans = pages with no active-pack type match: empty/null type OR a
+  // stored type the pack neither declares nor aliases (`pages.type` is
+  // NOT NULL, so non-empty values like 'idea' can still be unmatched).
+  // Falls back to the empty-type predicate when the pack cannot resolve.
+  let undeclared: string[] = [];
+  try {
+    const pack = await loadActivePack({ cfg: loadConfig(), remote: false, sourceId });
+    const distinct = await engine.executeRaw<{ type: string }>(
+      `SELECT DISTINCT type FROM pages
+       WHERE source_id = $1
+         AND deleted_at IS NULL
+         AND type IS NOT NULL AND type <> ''`,
+      [sourceId],
+    );
+    undeclared = distinct
+      .filter((r) => classifyStoredType(r.type, pack.manifest).kind === 'undeclared')
+      .map((r) => r.type);
+  } catch {
+    // Pack or distinct-type read unavailable: keep the empty-type predicate.
+  }
   const rows = await engine.executeRaw<{ slug: string; source_id: string }>(
     `SELECT slug, source_id FROM pages
      WHERE source_id = $1
        AND deleted_at IS NULL
-       AND (type IS NULL OR type = '')
+       AND (type IS NULL OR type = '' OR type = ANY($2::text[]))
      ORDER BY slug
      LIMIT 1000`,
-    [sourceId],
+    [sourceId, undeclared],
   );
   return {
     orphans: rows.map((r) => ({ slug: r.slug, source_id: r.source_id })),

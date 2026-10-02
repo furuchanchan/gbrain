@@ -214,7 +214,7 @@ const schema_explain_type: Operation = {
 const schema_review_orphans: Operation = {
   name: 'schema_review_orphans',
   outputRedaction: 'no_stored_text',
-  description: 'v0.40.6.0: list pages with no active-pack type match. Returns {orphan_count, orphans: [{slug, source_id}]}.',
+  description: 'v0.40.6.0: list pages with no active-pack type match — untyped OR storing a type the pack neither declares nor aliases. Returns {orphan_count, orphans: [{slug, source_id}]} or {error}.',
   params: {
     limit: { type: 'number', description: 'Max orphans to return (default 100)' },
   },
@@ -222,13 +222,46 @@ const schema_review_orphans: Operation = {
   handler: async (ctx, p) => {
     const limit = Math.max(1, Math.min(10000, (p.limit as number) ?? 100));
     const scope = sourceScopeOpts(ctx);
-    let where = `WHERE deleted_at IS NULL AND (type IS NULL OR type = '')`;
-    const params: unknown[] = [];
+    // Orphan = no active-pack type match. `pages.type` is NOT NULL, so a
+    // non-empty stored type can still be undeclared (neither a page_type
+    // nor an alias) — classify each distinct stored type against the SAME
+    // pack resolution schema_type_show uses (file-plane + tier-4 DB config).
+    // Pack-resolution failure keeps the empty-type predicate.
+    let undeclared: string[] = [];
+    try {
+      const { loadActivePack } = await import('../schema-pack/load-active.ts');
+      const { loadConfig } = await import('../config.ts');
+      const { readDbSchemaPack } = await import('../schema-pack/best-effort.ts');
+      const { classifyStoredType } = await import('../schema-pack/type-usage.ts');
+      const cfg = loadConfig();
+      const dbConfig = await readDbSchemaPack(ctx.engine);
+      const pack = await loadActivePack({ cfg, remote: ctx.remote ?? true, sourceId: ctx.sourceId, dbConfig });
+      let typeWhere = `WHERE deleted_at IS NULL AND type IS NOT NULL AND type <> ''`;
+      const typeParams: unknown[] = [];
+      if (scope.sourceIds && scope.sourceIds.length > 0) {
+        typeWhere += ` AND source_id = ANY($1::text[])`;
+        typeParams.push(scope.sourceIds);
+      } else if (scope.sourceId) {
+        typeWhere += ` AND source_id = $1`;
+        typeParams.push(scope.sourceId);
+      }
+      const distinct = await ctx.engine.executeRaw<{ type: string }>(
+        `SELECT DISTINCT type FROM pages ${typeWhere}`,
+        typeParams,
+      );
+      undeclared = distinct
+        .filter((r) => classifyStoredType(r.type, pack.manifest).kind === 'undeclared')
+        .map((r) => r.type);
+    } catch {
+      // Pack resolution failed: fall back to the empty-type predicate.
+    }
+    let where = `WHERE deleted_at IS NULL AND (type IS NULL OR type = '' OR type = ANY($1::text[]))`;
+    const params: unknown[] = [undeclared];
     if (scope.sourceIds && scope.sourceIds.length > 0) {
-      where += ` AND source_id = ANY($1::text[])`;
+      where += ` AND source_id = ANY($2::text[])`;
       params.push(scope.sourceIds);
     } else if (scope.sourceId) {
-      where += ` AND source_id = $1`;
+      where += ` AND source_id = $2`;
       params.push(scope.sourceId);
     }
     try {
@@ -241,8 +274,9 @@ const schema_review_orphans: Operation = {
         orphan_count: rows.length,
         orphans: rows.map((r) => ({ slug: r.slug, source_id: r.source_id })),
       };
-    } catch {
-      return { schema_version: 1, orphan_count: 0, orphans: [] };
+    } catch (e) {
+      // A failed read must not masquerade as a clean brain.
+      return { schema_version: 1, error: 'orphans_query_failed', detail: (e as Error).message };
     }
   },
 };

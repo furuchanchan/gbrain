@@ -123,15 +123,20 @@ type is needed and let the schema-pack cathedral handle the proposal flow.
 ## Periodic Drift Detection
 
 ```bash
-# What pages have no type matching the active pack?
+# What pages have no type matching the active pack (untyped OR undeclared)?
 gbrain schema review-orphans --json
 
-# What's the overall health?
-gbrain doctor --json | jq '.checks[] | select(.name == "schema_pack_consistency")'
+# Which stored types does the pack not declare at all?
+gbrain schema lint --with-db --json | jq '.issues[] | select(.rule == "stored_type_undeclared")'
+
+# Coverage figure (counts undeclared types as untyped)?
+gbrain schema stats --json | jq '.aggregate.coverage'
 ```
 
-When `schema_pack_consistency` warns at >10% untyped, run the EIIRP
-Phase 3 SCHEMA CHECK flow to surface candidate types via `schema detect`.
+`schema_pack_consistency` is a remote-report check, not a local
+`gbrain doctor` one — the three commands above are the local surfaces.
+When drift shows up, run the EIIRP Phase 3 SCHEMA CHECK flow to surface
+candidate types via `schema detect`.
 
 ## Output Format
 

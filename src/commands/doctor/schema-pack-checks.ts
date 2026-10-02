@@ -46,33 +46,59 @@ export async function checkSchemaPackActive(engine: BrainEngine): Promise<Check>
 
 export async function checkSchemaPackConsistency(engine: BrainEngine): Promise<Check> {
   try {
-    const rows = await engine.executeRaw<{ src: string; total: string | number; untyped: string | number }>(
-      `SELECT
-         source_id AS src,
-         COUNT(*)::text AS total,
-         COUNT(*) FILTER (WHERE type IS NULL OR type = '')::text AS untyped
+    // "Matches the active pack" means the stored type resolves to a declared
+    // page_type or alias — a non-empty type the pack does not declare is still
+    // unmatched (`pages.type` is NOT NULL). Resolve the pack the same way
+    // checkSchemaPackActive does (file-plane + tier-4 DB schema_pack).
+    const { loadActivePack } = await import('../../core/schema-pack/load-active.ts');
+    const { loadConfigFileOnly } = await import('../../core/config.ts');
+    const { classifyStoredType } = await import('../../core/schema-pack/type-usage.ts');
+    let pack: Awaited<ReturnType<typeof loadActivePack>>;
+    try {
+      let dbConfig: string | undefined;
+      try {
+        dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
+      } catch { /* engine.config may not exist on very old brains */ }
+      pack = await loadActivePack({ cfg: loadConfigFileOnly(), remote: false, dbConfig });
+    } catch (e) {
+      return {
+        name: 'schema_pack_consistency',
+        status: 'ok',
+        message: `Skipped: active pack did not resolve (${(e as Error).message}) — see schema_pack_active.`,
+      };
+    }
+    const rows = await engine.executeRaw<{ src: string; type: string | null; cnt: string | number }>(
+      `SELECT source_id AS src, NULLIF(type, '') AS type, COUNT(*)::text AS cnt
        FROM pages
        WHERE deleted_at IS NULL
-       GROUP BY source_id
+       GROUP BY source_id, NULLIF(type, '')
        ORDER BY source_id`,
     );
     if (rows.length === 0) {
       return { name: 'schema_pack_consistency', status: 'ok', message: 'No pages in any source — schema consistency N/A.' };
     }
+    const perSource = new Map<string, { total: number; untyped: number }>();
+    for (const r of rows) {
+      const cnt = Number(r.cnt);
+      const bucket = perSource.get(r.src) ?? { total: 0, untyped: 0 };
+      bucket.total += cnt;
+      if (r.type === null || classifyStoredType(r.type, pack.manifest).kind === 'undeclared') {
+        bucket.untyped += cnt;
+      }
+      perSource.set(r.src, bucket);
+    }
     let worstPct = 0;
     let worstSrc = '';
     let worstUntyped = 0;
     let worstTotal = 0;
-    for (const r of rows) {
-      const total = Number(r.total);
-      const untyped = Number(r.untyped);
-      if (total === 0) continue;
-      const pct = untyped / total;
+    for (const [src, b] of perSource) {
+      if (b.total === 0) continue;
+      const pct = b.untyped / b.total;
       if (pct > worstPct) {
         worstPct = pct;
-        worstSrc = r.src;
-        worstUntyped = untyped;
-        worstTotal = total;
+        worstSrc = src;
+        worstUntyped = b.untyped;
+        worstTotal = b.total;
       }
     }
     if (worstPct === 0) {
