@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.5] - 2026-10-02
+
+### Fixed
+
+- **`doctor` `multi_source_drift` (#5862):** a source pinned to `slug_root_mode='git-root'` whose `local_path` IS its repo toplevel is now checked instead of skipped — an empty git-root prefix makes the local_path-relative slug derivation exact. The skip message no longer cites the closed #4712; it states plainly that subdirectory-prefixed git-root slugs are not implemented.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

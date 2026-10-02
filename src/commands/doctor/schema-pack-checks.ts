@@ -158,17 +158,20 @@ export function multiSourceDriftAdvice(count: number, sampleStr: string): string
 }
 
 /**
- * #4712 — note appended when one or more sources were excluded from the
- * multi_source_drift walk because they're pinned to slug_root_mode='git-root'
- * (#4342). The check only derives local_path-relative ('source-root')
- * slugs; comparing a git-root-pinned source against that shape produced
- * false-positive drift (and dangerous delete advice naming an unrelated
- * default page). Skipped, not mismatched — this is disclosure of reduced
- * coverage, not a problem to fix.
+ * #4712/#5862 — note appended when one or more sources were excluded from
+ * the multi_source_drift walk because they're pinned to slug_root_mode='git-root'
+ * (#4342) AND live in a real subdirectory of their repo. The check only
+ * derives local_path-relative ('source-root') slugs; comparing a
+ * subdirectory-prefixed slug shape produced false-positive drift (and
+ * dangerous delete advice naming an unrelated default page). Skipped,
+ * not mismatched — this is disclosure of reduced coverage, not a
+ * problem to fix. A git-root source AT its repo toplevel has an empty
+ * prefix and is checked normally (#5862).
  */
 export function multiSourceDriftGitRootSkipNote(skippedIds: string[]): string {
   return (
-    ` ${skippedIds.length} source(s) not checked (git-root-pinned, prefix-aware ` +
-    `matching not yet implemented — #4712): ${skippedIds.join(', ')}.`
+    ` ${skippedIds.length} source(s) not checked (git-root-pinned with a ` +
+    `non-empty subdirectory prefix; the check does not implement that slug ` +
+    `shape): ${skippedIds.join(', ')}.`
   );
 }

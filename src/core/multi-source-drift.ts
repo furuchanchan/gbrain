@@ -39,13 +39,19 @@
  *    page), a git-root-pinned source is skipped entirely and reported via
  *    `git_root_skipped`. True prefix-aware matching is tracked as a
  *    follow-up, not attempted here.
+ *  - #5862: a 'git-root' pin only changes the slug shape when local_path
+ *    is a real SUBDIRECTORY of its repo — the git-root prefix is the
+ *    repo-relative scope. When local_path IS the repo toplevel the prefix
+ *    is empty, the local_path-relative derivation below is exact, and the
+ *    source is checked normally instead of skipped.
  */
 
-import { readdirSync, lstatSync, statSync } from 'fs';
+import { readdirSync, lstatSync, statSync, realpathSync } from 'fs';
 import { join, relative } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { pathToSlug } from './sync.ts';
 import { readSlugRootMode } from './sync-anchor.ts';
+import { git } from './sync-git.ts';
 
 export interface SourceWithPath {
   id: string;
@@ -223,8 +229,10 @@ export async function findMisroutedPages(
     // pinned sources. A 'git-root' pin means sync produces subdir-prefixed
     // slugs this module doesn't know how to reconstruct — skip rather than
     // compare against a slug shape that will never match.
+    // #5862: unless the source's local_path IS the repo toplevel — an empty
+    // git-root prefix makes the slug shapes identical.
     const rootMode = await readSlugRootMode(engine, src.id);
-    if (rootMode === 'git-root') {
+    if (rootMode === 'git-root' && !gitRootPrefixIsEmpty(src.local_path)) {
       gitRootSkipped.push(src.id);
       continue;
     }
@@ -252,4 +260,19 @@ export async function findMisroutedPages(
   }
 
   return { walk_truncated: walkTruncated, count: totalCount, sample, git_root_skipped: gitRootSkipped };
+}
+
+/**
+ * #5862 — true when a 'git-root'-pinned source's local_path is the repo
+ * toplevel itself, i.e. the subdir prefix git-root slugs carry is EMPTY
+ * and `local_path`-relative derivation is exact. Any git failure (not a
+ * repo, git missing, timeout) returns false — the conservative skip.
+ */
+function gitRootPrefixIsEmpty(localPath: string): boolean {
+  try {
+    const top = git(localPath, ['rev-parse', '--show-toplevel'], [], 10_000, { silenceStderr: true });
+    return relative(realpathSync.native(top), realpathSync.native(localPath)) === '';
+  } catch {
+    return false;
+  }
 }

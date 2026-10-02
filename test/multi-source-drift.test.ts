@@ -17,6 +17,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -219,5 +220,46 @@ describe('findMisroutedPages — heuristic correctness', () => {
     expect(result.count).toBe(1);
     expect(result.sample[0]).toMatchObject({ slug: 'people/eve', intended_source: 'src-case9-sr' });
     expect(result.git_root_skipped).toEqual(['src-case9-gr']);
+  });
+
+  test('case 10 (#5862): a git-root-pinned source AT the repo toplevel is checked, not skipped', async () => {
+    const repoRoot = makeTmpRoot('case10-repo');
+    execFileSync('git', ['init'], { cwd: repoRoot });
+    seedFile(repoRoot, 'page.md');
+
+    await runSources(engine, ['add', 'src-case10', '--no-federated']);
+    await engine.executeRaw(
+      `UPDATE sources SET local_path = $1 WHERE id = $2`,
+      [repoRoot, 'src-case10'],
+    );
+    await writeSlugRootMode(engine, 'src-case10', 'git-root');
+    // Toplevel git-root ⇒ empty subdir prefix ⇒ slugs are local_path-relative.
+    // The misroute shape: slug at default, missing from the intended source.
+    await engine.putPage('page', { type: 'concept', title: 'unrelated', compiled_truth: '.' });
+
+    const result = await findMisroutedPages(engine, [{ id: 'src-case10', local_path: repoRoot }]);
+    expect(result.git_root_skipped).toEqual([]);
+    expect(result.count).toBe(1);
+    expect(result.sample[0]).toMatchObject({ slug: 'page', intended_source: 'src-case10' });
+  });
+
+  test('case 11 (#5862): a git-root-pinned source in a SUBDIRECTORY of the repo is still skipped', async () => {
+    const repoRoot = makeTmpRoot('case11-repo');
+    execFileSync('git', ['init'], { cwd: repoRoot });
+    const subdir = join(repoRoot, 'docs');
+    mkdirSync(subdir, { recursive: true });
+    seedFile(subdir, 'page.md');
+
+    await runSources(engine, ['add', 'src-case11', '--no-federated']);
+    await engine.executeRaw(
+      `UPDATE sources SET local_path = $1 WHERE id = $2`,
+      [subdir, 'src-case11'],
+    );
+    await writeSlugRootMode(engine, 'src-case11', 'git-root');
+    await engine.putPage('page', { type: 'concept', title: 'unrelated', compiled_truth: '.' });
+
+    const result = await findMisroutedPages(engine, [{ id: 'src-case11', local_path: subdir }]);
+    expect(result.git_root_skipped).toEqual(['src-case11']);
+    expect(result.count).toBe(0);
   });
 });
