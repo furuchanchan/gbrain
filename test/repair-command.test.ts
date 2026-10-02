@@ -57,6 +57,7 @@ async function brain(run: (engine: BrainEngine, sources: string[]) => Promise<vo
       await withEnv({ GBRAIN_HOME: join(dir, 'home') }, async () => {
         await engine.executeRaw("DELETE FROM op_checkpoints WHERE op='repair'");
         await engine.executeRaw("DELETE FROM config WHERE key LIKE 'persistence.limits.%'");
+        await engine.executeRaw("DELETE FROM config WHERE key LIKE 'doctor.timeline_history.%'");
         await engine.executeRaw('UPDATE sources SET archived=true WHERE archived IS NOT TRUE');
         for (const id of sources) {
           const root = join(dir, id); mkdirSync(root);
@@ -205,6 +206,53 @@ describe('timeline_history doctor check', () => {
       const after = await timelineHistoryCheck(engine, source);
       expect(after.status).toBe('ok');
       expect(after.details).toMatchObject({ materializable_rows: 0, kept_unrenderable_rows: 1, count: 'exact' });
+    });
+  }, 120_000);
+
+  test('a clean brain with more pages than the cap resumes via the persisted cursor until a full sweep reports ok (#5821)', async () => {
+    await brain(async (engine, [source]) => {
+      // Timeline-bearing pages that classify clean: put_page derives a
+      // timeline_entries row per canonical bullet and that row matches the
+      // bullet it came from ('in_body'), so nothing is materializable while
+      // the scan still has pages to walk.
+      for (const slug of ['notes/a', 'notes/b', 'notes/c']) {
+        await submitPageMutation(ctxFor(engine, source), { operation: 'put_page', params: {
+          slug, content: page(`Body of ${slug}.
+<!-- timeline -->
+- **2026-07-01** | legacy — History of ${slug}`), request_id: randomUUID() } });
+      }
+      const key = `doctor.timeline_history.last_id.${source}`;
+      const pass1 = await timelineHistoryCheck(engine, source, { pageCap: 1 });
+      expect(pass1.status).toBe('warn');
+      expect(pass1.details).toMatchObject({ materializable_rows: 0, truncated: true, resumed_from: undefined });
+      expect(await engine.getConfig(key)).toBeTruthy();
+      const pass2 = await timelineHistoryCheck(engine, source, { pageCap: 1 });
+      expect(pass2.status).toBe('warn');
+      expect(pass2.details).toMatchObject({ materializable_rows: 0, truncated: true, resumed_from: expect.any(Number) });
+      // The completing pass covers the remainder and reports ok — a clean
+      // brain can now reach `ok` where every run used to warn forever.
+      const pass3 = await timelineHistoryCheck(engine, source, { pageCap: 1 });
+      expect(pass3.status).toBe('ok');
+      expect(pass3.details).toMatchObject({ materializable_rows: 0, truncated: false, count: 'exact' });
+      expect(await engine.getConfig(key)).toBeNull();
+      // Cursor cleared → the next run starts a fresh sweep from id 0.
+      const pass4 = await timelineHistoryCheck(engine, source, { pageCap: 1 });
+      expect(pass4.details).toMatchObject({ truncated: true, resumed_from: undefined });
+      // Findings restart the sweep (fail-closed): a db-only row on any page
+      // keeps the warning alive instead of letting a later clean window
+      // report ok over unrepaired rows.
+      const pageIds = await engine.executeRaw<{ id: number }>("SELECT id FROM pages WHERE source_id=$1 ORDER BY id DESC LIMIT 1", [source]);
+      await engine.transaction(tx => withCoordinatedWrite(tx, [source], () => tx.executeRaw(
+        `INSERT INTO timeline_entries(page_id,date,source,summary,detail) VALUES($1,'2026-07-02','legacy','Unrecorded history','')`, [pageIds[0].id])));
+      // A pass that actually reaches a finding reports it and clears the
+      // cursor — the sweep restarts at id 0 rather than letting a later
+      // clean window report ok over unrepaired rows.
+      const dirty = await timelineHistoryCheck(engine, source);
+      expect(dirty.status).toBe('warn');
+      expect(dirty.details).toMatchObject({ materializable_rows: 1, truncated: false });
+      expect(await engine.getConfig(key)).toBeNull();
+      const restarted = await timelineHistoryCheck(engine, source, { pageCap: 1 });
+      expect(restarted.details).toMatchObject({ truncated: true, resumed_from: undefined });
     });
   }, 120_000);
 });

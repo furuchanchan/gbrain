@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.27.9] - 2026-10-05
+
+### Fixed
+
+- doctor `timeline_history` can now reach `ok` on brains with more timeline-bearing pages than one bounded pass covers (#5821). Every run used to restart the scan at page id 0 under the same 2,000-page / 10-second budget, so a large brain warned "scan incomplete" forever even with nothing to repair. The check now persists a resumable keyset cursor in the `config` table (`doctor.timeline_history.last_id.<scope>`) and continues where the previous run stopped; a clean sweep that reaches the end reports `ok` and resets. Findings restart the sweep instead of letting a later clean window report `ok` over unrepaired rows — the fail-closed direction. The `gbrain repair timeline` command it points to was already unbounded.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**

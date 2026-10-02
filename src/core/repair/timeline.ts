@@ -41,14 +41,14 @@ export async function scanTimelineHistory(engine: BrainEngine, sourceIds: string
     for (const page of batch) {
       if ((budget.pages !== undefined && inspected >= budget.pages) || (budget.deadline !== undefined && Date.now() > budget.deadline)) {
         truncated = true;
-        return { pages, inspected, truncated };
+        return { pages, inspected, truncated, lastId: cursor };
       }
       inspected++;
       cursor = page.id;
       const counts = await pendingTimelineRows(engine, { ...page, timeline: page.timeline ?? '' }, await removedRowIds(engine, page));
       if (counts.materializable || counts.unrenderable) pages.push({ ...page, ...counts });
     }
-    if (batch.length < BATCH) return { pages, inspected, truncated };
+    if (batch.length < BATCH) return { pages, inspected, truncated, lastId: cursor };
   }
 }
 
