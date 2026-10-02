@@ -11,7 +11,7 @@ identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
 ### Fixed
-- `CANONICAL_PRICING` gains `deepseek:deepseek-flash` (gateway-reported alias of `deepseek-v4-flash`, ~37x Sonnet-fallback overstatement in `synthesize_concepts` spend + budget-cap misfires) and `claude-cli:*` entries at the recipe's declared flat nominal rate (#5166). `synthesize_concepts` also stamps `details.pricing_fallback_models` with every model id that still misses canonical, so receipts and budget decisions built on the Sonnet-tier fallback are visible.
+- `CANONICAL_PRICING` gains `claude-cli:*` entries at the recipe's declared flat nominal rate, and `synthesize_concepts` stamps `details.pricing_fallback_models` with every model id that still misses canonical — a priced run built on the silent Sonnet-tier fallback now names its models (#5166).
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

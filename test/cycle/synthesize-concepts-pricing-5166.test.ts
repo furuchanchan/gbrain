@@ -55,13 +55,6 @@ function fixedModelChat(model: string, usage = { input_tokens: 1_000_000, output
 }
 
 describe('#5166 — canonical pricing coverage', () => {
-  test('deepseek:deepseek-flash resolves to the v4-flash rates', () => {
-    expect(canonicalLookup('deepseek:deepseek-flash')).toEqual({ input: 0.14, output: 0.28 });
-    expect(canonicalLookup('deepseek:deepseek-flash')).toEqual(
-      canonicalLookup('deepseek:deepseek-v4-flash'),
-    );
-  });
-
   test('claude-cli recipe chat models resolve at the recipe nominal rate', () => {
     for (const id of [
       'claude-cli:claude-fable-5',
@@ -81,14 +74,25 @@ describe('#5166 — canonical pricing coverage', () => {
 
 describe('#5166 — synthesize_concepts spend accounting', () => {
   test('a canonical-priced model accumulates real rates and stamps no fallback', async () => {
-    // 1M input + 100k output at deepseek-v4-flash rates: 0.14 + 0.028 = $0.168
+    // 1M input + 100k output at gemini-2.5-flash rates: 0.30 + 0.25 = $0.55
     const res = await runPhaseSynthesizeConcepts(engine, {
       _atoms: t2Atoms(),
-      _chat: fixedModelChat('deepseek:deepseek-flash'),
+      _chat: fixedModelChat('google:gemini-2.5-flash'),
     });
     const details = res.details as Record<string, unknown>;
-    expect(details.estimated_spend_usd).toBeCloseTo(0.168, 6);
+    expect(details.estimated_spend_usd).toBeCloseTo(0.55, 6);
     expect(details.pricing_fallback_models).toBeUndefined();
+  });
+
+  test('a claude-cli recipe id prices at the declared rate, not the fallback', async () => {
+    const res = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: t2Atoms(),
+      _chat: fixedModelChat('claude-cli:claude-opus-5-5'),
+    });
+    const details = res.details as Record<string, unknown>;
+    expect(details.pricing_fallback_models).toBeUndefined();
+    // 1M input + 100k output at the recipe nominal 3.0/15.0: $4.5
+    expect(details.estimated_spend_usd).toBeCloseTo(4.5, 6);
   });
 
   test('an unknown model id is stamped in pricing_fallback_models', async () => {

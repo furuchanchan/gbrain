@@ -185,10 +185,6 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   // DeepSeek v4 (verified 2026-07-27 at api-docs.deepseek.com): cache-miss rates.
   'deepseek:deepseek-v4-flash':           { input:  0.14, output:  0.28 },
   'deepseek:deepseek-v4-pro':             { input:  0.435, output: 0.87 },
-  // `deepseek-flash` is the spelling some gateways report back (and the id
-  // recorded in chat_usage_log) for deepseek-v4-flash — keep it in lockstep
-  // with the row above (#5166: a miss priced every call at Sonnet fallback).
-  'deepseek:deepseek-flash':              { input:  0.14, output:  0.28 },
   // ── Z.ai / GLM (via LiteLLM proxy) ───────────────────────────────────
   // GLM-5.2 from Z.ai: $1.40/M input, $4.40/M output (verified 2026-08-16
   // against OpenRouter provider listings — z.ai's own direct rates).
