@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **`sources writer activate` now names the already-enabled no-op instead of reporting a bare `activated:false`** — after an upgrade, re-running activation on an enabled brain returned `{enabled: true, activated: false}` with no explanation, which read as a silent activation failure and sent operators chasing the wrong layer (the reporter's real gap was a stopped ingress consumer). Both idempotent returns — the early no-`--expected-state` path and the reviewed in-transaction path — now carry `reason: 'already_enabled'` plus a `next_action` pointing at `gbrain sources writer status --json` for ingress/consumer and worktree heartbeat state. Activation failures still refuse loudly; `activated:false` can only mean "no transition needed". ([#5514](https://github.com/garrytan/gbrain/issues/5514))
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**
