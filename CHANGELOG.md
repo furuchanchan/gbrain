@@ -124,6 +124,7 @@ The release also absorbs 62 open community pull requests, each re-checked agains
 - **#5341** `check-backlinks fix` managed-worktree refusal.
 - **#5330** shared conversation-facts eligibility (`isConversationFactsEligiblePage` and its SQL twin in `src/core/facts/conversation-types.ts`).
 - **#5329** `chronicle_backfill` idempotency keys and paging, no schema change. The issue's other parts (a cadence gate, extraction idempotency for direct `chronicle_extract` runs, the no-sub-events page, the judge output cap) remain open.
+- **#5571** `recall` facts arm gains `kind` (one fact kind, `invalid_params` on unknown) and `exclude_source` (exact match on a row's write attribution, e.g. `hook:writeback`), applied in SQL before limit and budget on every fan-out including supersessions; CLI `--kind`/`--exclude-source`.
 
 #### Memory capture (#5888, #5887)
 

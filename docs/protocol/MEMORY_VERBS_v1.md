@@ -119,6 +119,15 @@ Retrieve saved facts and (with `query`) budget-packed page snippets.
   composes with `entity` and `session_id` in the same query, before the
   per-arm limit. An unparseable value is rejected with `invalid_params`.
 - `limit` is a PER-ARM cap (facts and search results each).
+- `kind`: optional single fact kind (`event` | `preference` | `commitment` |
+  `belief` | `fact` | `idea`). Filters the FACTS arm only — applied in SQL
+  before the limit and the budget, so a preference read is not crowded out by
+  unrelated kinds. An unknown kind is rejected with `invalid_params`.
+- `exclude_source`: optional exact-match exclusion on each fact row's stored
+  `source` write-provenance (e.g. `hook:writeback`) — this is the per-row
+  attribution string, NOT `source_id` (which brain source to read); the two
+  compose. Applied in SQL before the limit and the budget, on every facts-arm
+  fan-out (entity / since / session / supersessions).
 - `budget_tokens`: SERVER-side packing — by default facts pack first and search
   results take the remainder. A positive finite numeric budget is floored;
   other values leave the arrays unbudgeted. Costs are `ceil(fact.length/4)` or

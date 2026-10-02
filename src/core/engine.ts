@@ -622,6 +622,14 @@ export interface FactListOpts {
    */
   eventTime?: boolean;
   /**
+   * #5571: exclude facts whose stored `source` provenance string equals
+   * any entry (e.g. `'hook:writeback'`), applied IN SQL before limit —
+   * same posture as `kinds`/`grep`. This filters the per-row write
+   * attribution; it is unrelated to `source_id` (which brain source the
+   * fact lives in) and composes with it.
+   */
+  excludeFactSources?: string[];
+  /**
    * When true, exclude the durable audit checkpoint rows that
    * extract-conversation-facts writes into the facts table
    * (`EXTRACTION_COMPLETE` / `EXTRACTION_NOT_APPLICABLE`). These are
@@ -2214,7 +2222,7 @@ export interface BrainEngine {
    */
   listSupersessions(
     source_id: string,
-    opts?: { since?: Date; limit?: number; visibility?: FactVisibility[] },
+    opts?: { since?: Date; limit?: number; visibility?: FactVisibility[]; kinds?: FactKind[]; excludeFactSources?: string[] },
   ): Promise<FactRow[]>;
 
   /**

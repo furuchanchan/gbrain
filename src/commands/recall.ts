@@ -9,6 +9,8 @@
  *   gbrain recall --session <id>            # listFactsBySession
  *   gbrain recall --today                   # markdown render with kind icons
  *   gbrain recall --grep <text>             # text filter (case-insensitive)
+ *   gbrain recall --kind preference         # facts arm restricted to one kind (#5571)
+ *   gbrain recall --exclude-source hook:writeback  # drop a provenance source (#5571)
  *   gbrain recall --supersessions [--since DUR]   # audit log
  *   gbrain recall --include-expired
  *   gbrain recall --as-context              # prompt-injection-ready markdown
@@ -60,6 +62,10 @@ interface ParsedFlags {
   since: Date | null;
   sessionId: string | null;
   grep: string | null;
+  // #5571: fact-kind filter + per-row provenance-source exclusion,
+  // routed to the recall op's `kind` / `exclude_source` params.
+  kind: string | null;
+  excludeSource: string | null;
   today: boolean;
   supersessions: boolean;
   includeExpired: boolean;
@@ -94,6 +100,8 @@ function parseFlags(args: string[]): ParsedFlags {
     since: null,
     sessionId: null,
     grep: null,
+    kind: null,
+    excludeSource: null,
     today: false,
     supersessions: false,
     includeExpired: false,
@@ -117,6 +125,8 @@ function parseFlags(args: string[]): ParsedFlags {
     if (a === '--since') { out.since = parseSinceParam(args[++i] ?? ''); continue; }
     if (a === '--session' || a === '--session-id') { out.sessionId = args[++i] ?? null; continue; }
     if (a === '--grep') { out.grep = (args[++i] ?? '').toLowerCase(); continue; }
+    if (a === '--kind') { out.kind = args[++i] ?? null; continue; }
+    if (a === '--exclude-source') { out.excludeSource = args[++i] ?? null; continue; }
     if (a === '--today') { out.today = true; continue; }
     if (a === '--supersessions') { out.supersessions = true; continue; }
     if (a === '--include-expired') { out.includeExpired = true; continue; }
@@ -341,6 +351,8 @@ async function runRecallVerb(engine: BrainEngine, flags: ParsedFlags, sourceId?:
     ...(flags.budgetTokens ? { budget_tokens: flags.budgetTokens } : {}),
     ...(flags.since ? { since: flags.since.toISOString() } : {}),
     ...(flags.grep ? { grep: flags.grep } : {}),
+    ...(flags.kind ? { kind: flags.kind } : {}),
+    ...(flags.excludeSource ? { exclude_source: flags.excludeSource } : {}),
     include_expired: flags.includeExpired,
     limit: flags.limit,
     ...(flags.budgetPolicy !== null ? {
@@ -443,6 +455,8 @@ async function runRecallOnce(
     if (flags.sessionId) params.session_id = flags.sessionId;
     if (resolvedSince) params.since = resolvedSince.toISOString();
     if (flags.grep) params.grep = flags.grep;
+    if (flags.kind) params.kind = flags.kind;
+    if (flags.excludeSource) params.exclude_source = flags.excludeSource;
     if (flags.pending) params.include_pending = true;
     // #5535: send source_id whenever the selector was explicit — including
     // an explicit 'default'. Omitting it let the remote server apply ITS

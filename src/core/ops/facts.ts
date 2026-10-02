@@ -32,7 +32,8 @@ import { ENTITY_HINTS_CAP } from '../facts/extract.ts';
 import { parseTtlShorthand } from '../facts/ttl-parse.ts';
 import { MEMORY_VERBS_VERSION } from '../verbs.ts';
 import type { SearchResult } from '../types.ts';
-import type { BrainEngine, FactRow } from '../engine.ts';
+import type { BrainEngine, FactKind, FactRow } from '../engine.ts';
+import { ALL_FACT_KINDS } from '../engine.ts';
 import { AUDIT_ROW_SOURCES } from '../facts/audit-sources.ts';
 
 // ============================================================
@@ -199,6 +200,22 @@ function recallEvidencePlan(ctx: OperationContext, p: Record<string, unknown>): 
   });
 }
 
+// #5571: `kind` must name a real FactKind — an unknown value is rejected
+// rather than silently returning zero rows (a caller that asked for "the
+// preferences on this entity" must not get an empty read because they
+// typo'd the kind).
+function recallKindParam(raw: unknown): FactKind | null {
+  const kind = typeof raw === 'string' && raw.length > 0 ? raw : null;
+  if (kind !== null && !(ALL_FACT_KINDS as readonly string[]).includes(kind)) {
+    throw verbError(
+      'invalid_params',
+      `kind is not a valid fact kind: "${kind.slice(0, 40)}"`,
+      `Pass one of: ${ALL_FACT_KINDS.join(', ')}.`,
+    );
+  }
+  return kind as FactKind | null;
+}
+
 const recall: Operation = {
   name: 'recall',
   outputRedaction: { retrieval: { localVerbatim: ['facts'] } },
@@ -212,6 +229,8 @@ const recall: Operation = {
     source_id: { type: 'string', description: 'Optional concrete source id for both facts and page results. Narrows the caller’s authorized scope, including an explicit default; a denied, missing, or archived source fails rather than widening. Omit to preserve the existing context/grant scope.' },
     since: { type: 'string', description: 'ISO 8601 datetime or duration shorthand (e.g. "8 hours ago"). Filters the FACTS arm only, on event time (valid_from, falling back to created_at); composes with `entity` and `session_id`. An unparseable value is rejected (invalid_params).' },
     session_id: { type: 'string', description: 'Source session id (e.g. topic-A). Returns facts captured in that session.' },
+    kind: { type: 'string', enum: ['event', 'preference', 'commitment', 'belief', 'fact', 'idea'], description: '#5571: restrict the facts arm to one fact kind — applied in SQL before limit and budget, the way `grep` already is. Unknown kinds are rejected (invalid_params), never silently widened.' },
+    exclude_source: { type: 'string', description: "#5571: exclude facts whose stored `source` provenance equals this value (e.g. 'hook:writeback') — applied in SQL before limit and budget. This is the per-row write attribution, NOT `source_id` (which brain source to read); the two compose." },
     include_expired: { type: 'boolean', description: 'When true, include expired_at IS NOT NULL rows. Default false.' },
     supersessions: { type: 'boolean', description: 'When true, return only the supersession audit log (facts with superseded_by set), newest first by COALESCE(expired_at, valid_until).' },
     limit: { type: 'number', description: 'Per-arm cap: max fact rows AND max search results. Default 50, cap 100.' },
@@ -313,6 +332,7 @@ const recall: Operation = {
     }
     const entityParam = typeof p.entity === 'string' && p.entity.length > 0 ? (p.entity as string) : null;
     const sessionParam = typeof p.session_id === 'string' && p.session_id.length > 0 ? (p.session_id as string) : null;
+    const kindParam = recallKindParam(p.kind);
     // Shared per-source opts for the fact-list arms (visibility, grep and the
     // audit exclusion all filter at the ENGINE level, before each source's
     // LIMIT, so a hidden newest row never consumes a slot).
@@ -321,6 +341,8 @@ const recall: Operation = {
       limit,
       visibility,
       grep: grep ?? undefined,
+      kinds: kindParam !== null ? [kindParam] : undefined,
+      excludeFactSources: typeof p.exclude_source === 'string' && p.exclude_source.length > 0 ? [p.exclude_source] : undefined,
       excludeAuditRows: true,
     };
 
@@ -330,7 +352,7 @@ const recall: Operation = {
       // private newest row consume a limit slot and hide an older world row.
       rows = mergeNewest(
         await Promise.all(factSources.map(src =>
-          ctx.engine.listSupersessions(src, { since: since ?? undefined, limit, visibility }),
+          ctx.engine.listSupersessions(src, { since: since ?? undefined, limit, visibility, kinds: listOpts.kinds, excludeFactSources: listOpts.excludeFactSources }),
         )),
         // v0.46 (#3014): matches the engine's ORDER BY COALESCE(expired_at,
         // valid_until) — ontology supersessions carry valid_until only.

@@ -344,6 +344,8 @@ export async function listFactsByEntity(
     const kinds = (opts?.kinds && opts.kinds.length > 0) ? opts.kinds : null;
     const visibility = (opts?.visibility && opts.visibility.length > 0) ? opts.visibility : null;
     const excludeAuditRows = opts?.excludeAuditRows === true;
+    const excludeFactSources = (opts?.excludeFactSources && opts.excludeFactSources.length > 0)
+      ? opts.excludeFactSources : null;
     const grepPat = grepPattern(opts);
     // WP5 TTL honesty: activeOnly reads exclude validity-lapsed rows
     // (valid_until <= now()) at read time — exact-time, zero-maintenance.
@@ -358,6 +360,7 @@ export async function listFactsByEntity(
         ${kinds ? sqlFragment`AND kind = ANY(${kinds}::text[])` : sqlFragment``}
         ${visibility ? sqlFragment`AND visibility = ANY(${visibility}::text[])` : sqlFragment``}
         ${excludeAuditRows ? sqlFragment`AND source != ALL(${AUDIT_ROW_SOURCES}::text[])` : sqlFragment``}
+        ${excludeFactSources ? sqlFragment`AND source != ALL(${excludeFactSources}::text[])` : sqlFragment``}
         ${grepPat ? sqlFragment`AND fact ILIKE ${grepPat} ESCAPE '\\'` : sqlFragment``}
       ORDER BY valid_from DESC, id DESC
       LIMIT ${limit} OFFSET ${offset}
@@ -381,6 +384,8 @@ export async function listFactsSince(
     const sessionId = opts?.sessionId ?? null;
     const eventTime = opts?.eventTime === true;
     const excludeAuditRows = opts?.excludeAuditRows === true;
+    const excludeFactSources = (opts?.excludeFactSources && opts.excludeFactSources.length > 0)
+      ? opts.excludeFactSources : null;
     const grepPat = grepPattern(opts);
     const rows = (await exec.run<FactRowSqlShape>(sqlFragment`
       SELECT *${opts?.fingerprint ? sqlFragment`, gbrain_fact_fingerprint(fact) AS fact_fingerprint` : sqlFragment``} FROM facts
@@ -393,6 +398,7 @@ export async function listFactsSince(
         ${kinds ? sqlFragment`AND kind = ANY(${kinds}::text[])` : sqlFragment``}
         ${visibility ? sqlFragment`AND visibility = ANY(${visibility}::text[])` : sqlFragment``}
         ${excludeAuditRows ? sqlFragment`AND source != ALL(${AUDIT_ROW_SOURCES}::text[])` : sqlFragment``}
+        ${excludeFactSources ? sqlFragment`AND source != ALL(${excludeFactSources}::text[])` : sqlFragment``}
         ${grepPat ? sqlFragment`AND fact ILIKE ${grepPat} ESCAPE '\\'` : sqlFragment``}
       ORDER BY ${eventTime ? sqlFragment`COALESCE(valid_from, created_at)` : sqlFragment`created_at`} DESC, id DESC
       LIMIT ${limit} OFFSET ${offset}
@@ -413,6 +419,8 @@ export async function listFactsBySession(
     const kinds = (opts?.kinds && opts.kinds.length > 0) ? opts.kinds : null;
     const visibility = (opts?.visibility && opts.visibility.length > 0) ? opts.visibility : null;
     const excludeAuditRows = opts?.excludeAuditRows === true;
+    const excludeFactSources = (opts?.excludeFactSources && opts.excludeFactSources.length > 0)
+      ? opts.excludeFactSources : null;
     const grepPat = grepPattern(opts);
     const rows = (await exec.run<FactRowSqlShape>(sqlFragment`
       SELECT *${opts?.fingerprint ? sqlFragment`, gbrain_fact_fingerprint(fact) AS fact_fingerprint` : sqlFragment``} FROM facts
@@ -423,6 +431,7 @@ export async function listFactsBySession(
         ${kinds ? sqlFragment`AND kind = ANY(${kinds}::text[])` : sqlFragment``}
         ${visibility ? sqlFragment`AND visibility = ANY(${visibility}::text[])` : sqlFragment``}
         ${excludeAuditRows ? sqlFragment`AND source != ALL(${AUDIT_ROW_SOURCES}::text[])` : sqlFragment``}
+        ${excludeFactSources ? sqlFragment`AND source != ALL(${excludeFactSources}::text[])` : sqlFragment``}
         ${grepPat ? sqlFragment`AND fact ILIKE ${grepPat} ESCAPE '\\'` : sqlFragment``}
       ORDER BY created_at DESC, id DESC
       LIMIT ${limit} OFFSET ${offset}
@@ -433,11 +442,14 @@ export async function listFactsBySession(
 export async function listSupersessions(
   exec: LegacyUnscopedRead,
     source_id: string,
-    opts?: { since?: Date; limit?: number; visibility?: ('private' | 'world')[] },
+    opts?: { since?: Date; limit?: number; visibility?: ('private' | 'world')[]; kinds?: import('../engine.ts').FactKind[]; excludeFactSources?: string[] },
   ): Promise<FactRow[]> {
     const limit = clampSearchLimit(opts?.limit, 50, MAX_SEARCH_LIMIT);
     const since = opts?.since ?? null;
     const visibility = (opts?.visibility && opts.visibility.length > 0) ? opts.visibility : null;
+    const kinds = (opts?.kinds && opts.kinds.length > 0) ? opts.kinds : null;
+    const excludeFactSources = (opts?.excludeFactSources && opts.excludeFactSources.length > 0)
+      ? opts.excludeFactSources : null;
     // v0.46 (#3014) — filter on `superseded_by` alone; the ontology
     // writer closes a superseded row via `valid_until` (not `expired_at`,
     // which would break its `--asof` time-travel), so requiring both
@@ -450,6 +462,8 @@ export async function listSupersessions(
         AND superseded_by IS NOT NULL
         ${since ? sqlFragment`AND COALESCE(expired_at, valid_until) >= ${since}` : sqlFragment``}
         ${visibility ? sqlFragment`AND visibility = ANY(${visibility}::text[])` : sqlFragment``}
+        ${kinds ? sqlFragment`AND kind = ANY(${kinds}::text[])` : sqlFragment``}
+        ${excludeFactSources ? sqlFragment`AND source != ALL(${excludeFactSources}::text[])` : sqlFragment``}
       ORDER BY COALESCE(expired_at, valid_until) DESC, id DESC
       LIMIT ${limit}
     `)).rows;
