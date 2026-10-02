@@ -46,7 +46,9 @@ import type { BrainEngine } from '../engine.ts';
 import {
   BudgetTracker,
   BudgetExhausted,
+  isModelPriceable,
   loadPricingOverrides,
+  type PricingOverrides,
 } from '../budget/budget-tracker.ts';
 import { withBudgetTracker } from '../ai/gateway.ts';
 import { listSources } from '../sources-ops.ts';
@@ -59,6 +61,7 @@ import {
 // binding extract-conversation-facts.ts re-exports) so this phase is part of
 // the drift-guarded set in test/conversation-facts-type-allowlist-drift.test.ts.
 import { ALLOWED_TYPES, type AllowedType } from '../facts/conversation-types.ts';
+import { getFactsExtractionModel } from '../facts/extract.ts';
 
 /** Per-phase wrapper opts. */
 export interface ConversationFactsBackfillPhaseOpts {
@@ -89,6 +92,10 @@ interface ResolvedConfig {
   enabled: boolean;
   maxCostUsd: number;          // per source per cycle
   maxTotalCostUsd: number;     // brain-wide per cycle
+  /** Operator SET max_cost_usd — a defaulted cap is droppable for unpriced models (#5823). */
+  maxCostExplicit: boolean;
+  /** Operator SET max_total_cost_usd — same provenance split. */
+  maxTotalCostExplicit: boolean;
   maxWalltimeMin: number;      // per source per cycle
   maxTotalWalltimeMin: number; // brain-wide per cycle
   types: AllowedType[];
@@ -156,11 +163,49 @@ async function loadCfg(engine: BrainEngine): Promise<ResolvedConfig> {
     enabled: enabledFlag,
     maxCostUsd: parseFloatOrDefault(maxCost, 1.0),
     maxTotalCostUsd: parseFloatOrDefault(maxTotalCost, 5.0),
+    maxCostExplicit: maxCost != null,
+    maxTotalCostExplicit: maxTotalCost != null,
     maxWalltimeMin: parseFloatOrDefault(maxWall, 20),
     maxTotalWalltimeMin: parseFloatOrDefault(maxTotalWall, 30),
     types,
     workers: parsedWorkers,
   };
+}
+
+/**
+ * #5823: resolve the phase's effective cost caps under the defaulted-cap
+ * rule for unpriced models. A USD cap can only bound priced calls — TX2
+ * hard-fails the first unpriced call at $0 with no_pricing, so the
+ * DEFAULTED caps on an unpriced extraction model (e.g. a claude-cli
+ * subscription recipe) never protect anything and only abort work that
+ * would be free. Defaulted caps drop; caps the operator explicitly SET
+ * stay enforced (the first reserve then fails loudly, which is what an
+ * explicit ceiling asked for).
+ */
+async function resolveEffectiveCostCaps(
+  engine: BrainEngine,
+  cfg: ResolvedConfig,
+  pricingOverrides: PricingOverrides | undefined,
+): Promise<{ maxCostUsd?: number; maxTotalCostUsd?: number }> {
+  const extractionModel = await getFactsExtractionModel(engine);
+  const unpricedExtraction = !isModelPriceable(extractionModel, 'chat', pricingOverrides);
+  const maxCostUsd = unpricedExtraction && !cfg.maxCostExplicit ? undefined : cfg.maxCostUsd;
+  const maxTotalCostUsd =
+    unpricedExtraction && !cfg.maxTotalCostExplicit ? undefined : cfg.maxTotalCostUsd;
+  if (unpricedExtraction) {
+    process.stderr.write(
+      maxCostUsd === undefined && maxTotalCostUsd === undefined
+        ? `[conversation-facts-backfill] extraction model "${extractionModel}" has no pricing ` +
+          `entry; running this cycle without the default cost caps. Declare a rate via ` +
+          `\`gbrain config set pricing.overrides '{"${extractionModel}": <usd-per-1M-tokens>}'\` ` +
+          `or set ${CFG_PREFIX}.max_cost_usd to fail closed.\n`
+        : `[conversation-facts-backfill] extraction model "${extractionModel}" has no pricing ` +
+          `entry — the explicitly configured cost cap will hard-fail every source with ` +
+          `no_pricing before its first call (nothing is spent). Declare a rate via ` +
+          `pricing.overrides or unset the cap keys to run uncapped.\n`,
+    );
+  }
+  return { maxCostUsd, maxTotalCostUsd };
 }
 
 export async function runPhaseConversationFactsBackfill(
@@ -193,6 +238,12 @@ export async function runPhaseConversationFactsBackfill(
   const startedAt = Date.now();
   const maxTotalWalltimeMs = cfg.maxTotalWalltimeMin * 60_000;
   const maxWalltimeMs = cfg.maxWalltimeMin * 60_000;
+
+  const { maxCostUsd, maxTotalCostUsd } = await resolveEffectiveCostCaps(
+    engine,
+    cfg,
+    pricingOverrides,
+  );
 
   const sources = await listSources(engine);
   if (sources.length === 0) {
@@ -265,16 +316,16 @@ export async function runPhaseConversationFactsBackfill(
       }
 
       // Brain-wide cost check (sum of per-source tracker spends).
-      const remainingCostUsd = cfg.maxTotalCostUsd - totalSpent;
+      const remainingCostUsd = (maxTotalCostUsd ?? Number.POSITIVE_INFINITY) - totalSpent;
       if (remainingCostUsd <= 0) {
         skippedByBrainWideCap = sources.length - i;
         break;
       }
 
       const perSourceWallMs = Math.min(maxWalltimeMs, remainingWallMs);
-      const perSourceCapUsd = Math.min(cfg.maxCostUsd, remainingCostUsd);
+      const perSourceCapUsd = Math.min(maxCostUsd ?? Number.POSITIVE_INFINITY, remainingCostUsd);
       const tracker = new BudgetTracker({
-        maxCostUsd: perSourceCapUsd,
+        maxCostUsd: Number.isFinite(perSourceCapUsd) ? perSourceCapUsd : undefined,
         maxRuntimeMs: perSourceWallMs,
         label: `conversation_facts_backfill:${src.id}`,
         pricingOverrides,

@@ -16,8 +16,8 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import { isFactsExtractionEnabled } from '../facts/extract.ts';
-import { BudgetTracker, loadPricingOverrides } from '../budget/budget-tracker.ts';
+import { getFactsExtractionModel, isFactsExtractionEnabled } from '../facts/extract.ts';
+import { BudgetTracker, isModelPriceable, loadPricingOverrides } from '../budget/budget-tracker.ts';
 import { withBudgetTracker } from '../ai/gateway.ts';
 import {
   DEFAULT_MAX_COST_USD,
@@ -44,10 +44,26 @@ export async function runIngestFacts(
     return { pages: 0, skippedDisabled: true };
   }
 
+  // #5823: same defaulted-cap pattern as the CLI core and the cycle phase —
+  // a USD cap can't bound an unpriced model (TX2 hard-fails the first call
+  // at $0 with no_pricing), so the DEFAULTED cap drops while an explicit
+  // maxCostUsd stays enforced.
+  const pricingOverrides = await loadPricingOverrides(engine);
+  const extractionModel = await getFactsExtractionModel(engine);
+  const dropDefaultCap =
+    opts.maxCostUsd === undefined && !isModelPriceable(extractionModel, 'chat', pricingOverrides);
+  if (dropDefaultCap) {
+    console.error(
+      `[transcripts-ingest-facts] model "${extractionModel}" is not in the pricing maps; ` +
+        `running without the default $${DEFAULT_MAX_COST_USD} cost gate. Add ` +
+        `pricing.overrides or pass an explicit --max-cost-usd to fail closed.`,
+    );
+  }
+
   const tracker = new BudgetTracker({
-    maxCostUsd: opts.maxCostUsd ?? DEFAULT_MAX_COST_USD,
+    maxCostUsd: dropDefaultCap ? undefined : (opts.maxCostUsd ?? DEFAULT_MAX_COST_USD),
     label: 'transcripts-ingest-facts',
-    pricingOverrides: await loadPricingOverrides(engine),
+    pricingOverrides,
   });
   await withBudgetTracker(tracker, () =>
     runExtractConversationFactsCore(engine, {

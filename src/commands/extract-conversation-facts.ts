@@ -68,6 +68,7 @@ import type { BrainEngine, NewFact } from '../core/engine.ts';
 import type { Page } from '../core/types.ts';
 import {
   extractFactsFromTurnWithOutcome,
+  getFactsExtractionModel,
   isFactsExtractionEnabled,
   type ExtractInput,
   type ExtractedFact,
@@ -75,7 +76,7 @@ import {
 import { configureGatewayIfUninitialized, isAvailable, withBudgetTracker } from '../core/ai/gateway.ts';
 import { managedDerivedFactsPreflight, replaceDerivedFactsForPage, writeDerivedFacts } from '../core/persistence/derived-facts.ts';
 import { managedPersistenceEnabled } from '../core/persistence/ownership.ts';
-import { BudgetTracker, BudgetExhausted, loadPricingOverrides } from '../core/budget/budget-tracker.ts';
+import { BudgetTracker, BudgetExhausted, isModelPriceable, loadPricingOverrides, type BudgetReason } from '../core/budget/budget-tracker.ts';
 import { listSources } from '../core/sources-ops.ts';
 import {
   loadOpCheckpoint,
@@ -383,6 +384,8 @@ export interface ExtractConversationFactsResult {
   /** Entity values kept raw after a best-effort resolution failure. */
   resolution_errors: number;
   budget_exhausted?: boolean;
+  /** Why the run stopped when budget_exhausted — 'cost' | 'runtime' | 'no_pricing'. */
+  budget_exhausted_reason?: BudgetReason;
   spent_usd?: number;
 }
 
@@ -1294,6 +1297,53 @@ function nonExtractableAuditFact(
 }
 
 /**
+ * #5823: build the run's own BudgetTracker under the defaulted-cap rule for
+ * unpriced models. A USD cap can only bound priced calls — TX2 hard-fails
+ * the first unpriced call at $0 with no_pricing, so the DEFAULTED $5 gate
+ * on an unpriced model (e.g. a claude-cli subscription recipe) never
+ * protects anything and only aborts work that would be free. Same
+ * defaulted-cap pattern as embed-backfill / extract-atoms: the default
+ * drops (with a loud stderr notice), while an explicit --max-cost-usd
+ * stays enforced — and since an explicit cap can never be enforced
+ * meaningfully on an unpriced model, it fails fast here naming
+ * no_pricing + pricing.overrides instead of surfacing mid-run as a
+ * misleading budget_exhausted receipt.
+ */
+async function trackerForFactsRun(
+  engine: BrainEngine,
+  sourceId: string,
+  opts: ExtractConversationFactsCoreOpts,
+  llmFallbackModel: string | null,
+): Promise<BudgetTracker> {
+  const pricingOverrides = await loadPricingOverrides(engine);
+  const unpriced = [
+    opts.extractor ? null : await getFactsExtractionModel(engine),
+    llmFallbackModel,
+  ].filter((m): m is string => m !== null && !isModelPriceable(m, 'chat', pricingOverrides));
+  if (opts.maxCostUsd !== undefined && unpriced.length > 0) {
+    throw new Error(
+      `extract-conversation-facts: model "${unpriced[0]}" has no pricing entry ` +
+        `(no_pricing) — an explicit --max-cost-usd cap cannot be enforced. ` +
+        `Declare a rate via \`gbrain config set pricing.overrides ` +
+        `'{"${unpriced[0]}": <usd-per-1M-tokens>}'\` or drop --max-cost-usd.`,
+    );
+  }
+  const dropDefaultCap = opts.maxCostUsd === undefined && unpriced.length > 0;
+  if (dropDefaultCap) {
+    console.error(
+      `[extract-conversation-facts] model "${unpriced[0]}" is not in the pricing maps; ` +
+        `running without the default $${DEFAULT_MAX_COST_USD} cost gate. Add ` +
+        `pricing.overrides or pass an explicit --max-cost-usd to fail closed.`,
+    );
+  }
+  return new BudgetTracker({
+    maxCostUsd: dropDefaultCap ? undefined : (opts.maxCostUsd ?? DEFAULT_MAX_COST_USD),
+    label: `extract-conversation-facts:${sourceId}`,
+    pricingOverrides,
+  });
+}
+
+/**
  * Core entry point — one source per call. Caller (CLI / Minion / cycle
  * phase) handles multi-source iteration externally.
  *
@@ -1615,11 +1665,7 @@ export async function runExtractConversationFactsCore(
       // tracker per gateway.ts AsyncLocalStorage semantics).
       await body();
     } else {
-      const tracker = new BudgetTracker({
-        maxCostUsd: opts.maxCostUsd ?? DEFAULT_MAX_COST_USD,
-        label: `extract-conversation-facts:${sourceId}`,
-        pricingOverrides: await loadPricingOverrides(engine),
-      });
+      const tracker = await trackerForFactsRun(engine, sourceId, opts, llmFallbackModel);
       ownedTracker = tracker;
       try {
         await withBudgetTracker(tracker, body);
@@ -1630,6 +1676,7 @@ export async function runExtractConversationFactsCore(
   } catch (err) {
     if (err instanceof BudgetExhausted) {
       result.budget_exhausted = true;
+      result.budget_exhausted_reason = err.reason;
       if (opts.budgetTracker) {
         result.spent_usd = opts.budgetTracker.totalSpent;
       }
@@ -1655,6 +1702,7 @@ export async function runExtractConversationFactsCore(
     effectiveTracker.totalSpent > effectiveTracker.cap
   ) {
     result.budget_exhausted = true;
+    result.budget_exhausted_reason = 'cost';
     result.spent_usd = effectiveTracker.totalSpent;
   }
 
@@ -1714,7 +1762,10 @@ async function writeRunReceiptAndRollup(
           `${result.pages_processed}/${result.pages_considered} eligible pages` +
           (result.pages_failed > 0
             ? `; ${result.pages_failed} page(s) failed and remain unfinished.`
-            : '.'),
+            : '.') +
+          (result.budget_exhausted_reason === 'no_pricing'
+            ? ' Stopped on no_pricing — the extraction model has no pricing row.'
+            : ''),
       });
     } catch (err) {
       // Best-effort: receipt write failure shouldn't kill the run.
@@ -1734,13 +1785,18 @@ async function writeRunReceiptAndRollup(
   // future runs) — record it as expected_limit_delta, not halt_delta, so
   // doctor's extract_health failure rate stops warning on normal
   // bigger-backlog-than-budget operation. Per-page failures stay error halts.
+  //
+  // #5823: a no_pricing stop is a config gap, not a drained-capacity signal —
+  // classifying it as expected_limit_delta would hide it from doctor's
+  // failure rate. Record it as an error halt instead.
+  const stoppedOnUnpricedModel = result.budget_exhausted_reason === 'no_pricing';
   await upsertExtractRollup(engine, {
     kind: 'facts.conversation',
     source_id: sourceId,
     cost_delta: result.spent_usd ?? 0,
     ...classifyRunStop({
-      budget_exhausted: halted,
-      error: result.pages_failed > 0,
+      budget_exhausted: halted && !stoppedOnUnpricedModel,
+      error: result.pages_failed > 0 || stoppedOnUnpricedModel,
     }),
   });
 }
@@ -1995,6 +2051,8 @@ export async function runExtractConversationFacts(
   };
   let totalSpent = 0;
   let anyBudgetExhausted = false;
+  let budgetExhaustedStops = 0;
+  let unpricedModelStops = 0;
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
 
@@ -2044,7 +2102,11 @@ export async function runExtractConversationFacts(
       aggregate.facts_inserted += perSource.facts_inserted;
       aggregate.fallback_slugify_count += perSource.fallback_slugify_count;
       aggregate.resolution_errors += perSource.resolution_errors;
-      if (perSource.budget_exhausted) anyBudgetExhausted = true;
+      if (perSource.budget_exhausted) {
+        anyBudgetExhausted = true;
+        budgetExhaustedStops++;
+        if (perSource.budget_exhausted_reason === 'no_pricing') unpricedModelStops++;
+      }
       if (perSource.spent_usd) totalSpent += perSource.spent_usd;
 
       progress.tick(1, `${sourceId}: ${perSource.facts_inserted} facts inserted`);
@@ -2102,7 +2164,19 @@ export async function runExtractConversationFacts(
   if (aggregate.resolution_errors > 0) {
     console.log(`  Preserved ${aggregate.resolution_errors} fact(s) without an entity target after best-effort resolution errors.`);
   }
-  if (anyBudgetExhausted) {
+  // #5823: a no_pricing stop is NOT a spent cap — telling the operator to
+  // raise --max-cost-usd can never help when the first reserve fails because
+  // the model has no price row. Name the reason and the real remedies.
+  if (unpricedModelStops > 0) {
+    console.log(
+      `  ${unpricedModelStops} source(s) stopped on no_pricing — the extraction ` +
+        `model has no pricing entry, so the cap hard-failed at $0 (nothing was ` +
+        `spent). Declare a rate via \`gbrain config set pricing.overrides ` +
+        `'{"<provider:model>": <usd-per-1M-tokens>}'\`, or drop --max-cost-usd ` +
+        `if the model is subscription-priced (e.g. claude-cli).`,
+    );
+  }
+  if (unpricedModelStops < budgetExhaustedStops) {
     console.log(`  Budget cap reached. Re-run with a higher --max-cost-usd to continue.`);
   }
 

@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.28.1] - 2026-10-01
+
+### Fixed
+
+- **extract-conversation-facts (#5823):** unpriced extraction models no longer trip the *defaulted* $5 cost cap. A USD cap can only bound priced calls — `BudgetTracker.reserve` hard-fails the first unpriced call at $0 with `no_pricing`, so the implicit default on a claude-cli/subscription recipe aborted work that would have been free. Following the embed-backfill / extract-atoms defaulted-cap precedent, the default now drops with a loud stderr notice while an explicit `--max-cost-usd` fails fast naming `no_pricing` + `pricing.overrides`. The same rule is applied at the cycle phase (`cycle.conversation_facts_backfill.*` caps) and `transcripts ingest --facts`; `budget_exhausted_reason` is plumbed through the result so a no_pricing stop reports as a config gap instead of a misleading "budget exhausted" receipt.
 ## [0.60.27.0] - 2026-10-01
 
 **GBrain now needs Bun 1.4 or newer, because a bug in older Bun releases could make GBrain wait forever on a helper process that had already finished.**
