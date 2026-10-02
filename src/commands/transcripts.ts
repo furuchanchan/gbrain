@@ -23,6 +23,7 @@ import { runTranscriptsIngest, type TranscriptsIngestResult } from '../core/tran
 import { isOpenclawCheckpointFile } from '../core/transcripts/openclaw.ts';
 import { isGrokSessionSidecarStrict } from '../core/transcripts/grok.ts';
 import {
+  isClaudeCodeRemoteControlStateFile,
   isClaudeCodeSubagentFile,
   isClaudeCodeWorkflowArtifactFile,
 } from '../core/transcripts/claude-code.ts';
@@ -298,7 +299,8 @@ export async function expandPaths(specs: string[]): Promise<string[]> {
       !isOpenclawCheckpointFile(p) &&
       !isGrokSessionSidecarStrict(p) &&
       !isClaudeCodeSubagentFile(p) &&
-      !isClaudeCodeWorkflowArtifactFile(p),
+      !isClaudeCodeWorkflowArtifactFile(p) &&
+      !isClaudeCodeRemoteControlStateFile(p),
   );
 }
 

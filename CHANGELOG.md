@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+### Fixed
+
+- **`gbrain transcripts ingest` no longer chokes on Claude Code Remote Control state files (#5597).** Directory expansion tried to parse every `<session-uuid>.ccr-tip.json` and `bridge-pointer.json` next to the session `.jsonl` files and reported `unknown format` for each — on a nightly `--since last` cron these lines dominated the output and buried real per-file errors. A new `isClaudeCodeRemoteControlStateFile` sibling predicate drops them at expansion: the RC-specific `.ccr-tip.json` suffix matches in any tree, while the generic `bridge-pointer.json` basename is excluded only inside a `.claude` tree so a same-named file elsewhere still ingests.
 ## [0.60.31.0] - 2026-10-02
 
 **Your brain stops handing stored passwords and keys back to your agents, catches credential shapes it used to miss, and keeps your Gmail pages private on disk.**

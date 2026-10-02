@@ -81,6 +81,26 @@ export function isClaudeCodeWorkflowArtifactFile(path: string): boolean {
   return i !== -1 && segs[i + 1] === 'workflows' && segs.length > i + 2;
 }
 
+/**
+ * True for a Claude Code Remote Control STATE file sitting next to the
+ * session `.jsonl` files: `<session-uuid>.ccr-tip.json` (one per RC session)
+ * and `bridge-pointer.json` (one per project dir). Neither is a transcript in
+ * any adapter's format, so a directory ingest reported `unknown format` for
+ * every one — on a nightly `--since last` cron these lines are the bulk of
+ * the output and bury real per-file errors (#5597).
+ *
+ * The `.ccr-tip.json` suffix is Remote-Control-specific, so it matches in any
+ * tree (a custom `CLAUDE_CONFIG_DIR` still produces the same name).
+ * `bridge-pointer.json` is a generic basename, so it only excludes inside a
+ * `.claude` tree — a same-named file elsewhere may be real content.
+ */
+export function isClaudeCodeRemoteControlStateFile(path: string): boolean {
+  const segs = path.split(/[/\\]/);
+  const base = segs[segs.length - 1] ?? '';
+  if (/\.ccr-tip\.json$/.test(base)) return true;
+  return base === 'bridge-pointer.json' && segs.includes('.claude');
+}
+
 /** Keys that mark a Claude Code project transcript. */
 function looksLikeClaudeLine(obj: Record<string, unknown>): boolean {
   if (
