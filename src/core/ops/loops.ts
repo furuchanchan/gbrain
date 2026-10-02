@@ -22,6 +22,8 @@
 import { OperationError, type Operation, type OperationContext } from './contract.ts';
 import { resolveRequestedScope, sourceScopeOpts } from './context.ts';
 import { validateSourceId } from '../utils.ts';
+import type { BrainEngine } from '../engine.ts';
+import { withCoordinatedWrite } from '../persistence/context.ts';
 import {
   addSuppression,
   closeOpenLoop,
@@ -33,6 +35,32 @@ import {
 } from '../loops/loops-store.ts';
 
 const STALE_AFTER_MS = 24 * 3_600_000;
+
+/**
+ * A closed commitment expires its projected fact so entity cards stop
+ * carrying it. On a managed brain the raw UPDATE trips
+ * `managed_writer_guard` — the statement must run inside the coordinator's
+ * `gbrain.write_sources` capability on the fact's own source, the same
+ * mechanism `forget_fact`'s withdrawal path uses (#5869). Returns whether a
+ * row actually expired; throws on failure so the caller reports honestly.
+ */
+async function expireCommitmentFact(engine: BrainEngine, factId: number): Promise<boolean> {
+  const [fact] = await engine.executeRaw<{ source_id: string }>(
+    `SELECT source_id FROM facts WHERE id = $1`, [factId]);
+  if (!fact) return false;
+  const update = (tx: BrainEngine) =>
+    tx.executeRaw<{ id: number }>(
+      `UPDATE facts SET expired_at = now() WHERE id = $1 AND expired_at IS NULL RETURNING id`,
+      [factId],
+    ).then(rows => rows.length > 0);
+  const [brain] = await engine.executeRaw<{ enabled: boolean }>(
+    `SELECT enabled FROM persistence_brain WHERE singleton = 1`);
+  if (brain?.enabled) {
+    return engine.transaction(async tx =>
+      withCoordinatedWrite(tx, [fact.source_id], () => update(tx)));
+  }
+  return update(engine);
+}
 
 interface GoogleSourceFreshness {
   id: string;
@@ -487,17 +515,19 @@ const loops_close: Operation = {
       (p.note as string | undefined)?.slice(0, 200) || 'manual',
     );
     if (!row) return { closed: false, reason: 'not_found_or_already_closed' };
-    // A closed commitment loop expires its projected fact so entity cards
-    // stop carrying it (fence round-trip happens on the next facts sweep).
+    let factExpired = false;
+    let factExpireError: string | undefined;
     if (row.fact_id !== null) {
       try {
-        await ctx.engine.executeRaw(
-          `UPDATE facts SET expired_at = now() WHERE id = $1 AND expired_at IS NULL`,
-          [row.fact_id],
-        );
-      } catch { /* best-effort */ }
+        factExpired = await expireCommitmentFact(ctx.engine, row.fact_id);
+      } catch (error) {
+        factExpireError = error instanceof Error ? error.message : String(error);
+      }
     }
-    return { closed: true, id: row.id, status: row.status, fact_expired: row.fact_id !== null };
+    return {
+      closed: true, id: row.id, status: row.status, fact_expired: factExpired,
+      ...(factExpireError ? { fact_expire_error: factExpireError } : {}),
+    };
   },
 };
 

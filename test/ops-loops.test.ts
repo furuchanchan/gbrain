@@ -645,6 +645,47 @@ describe('loops_close', () => {
     expect(expired[0].expired_at).not.toBeNull();
   });
 
+  test('closing an already-expired fact reports fact_expired: false honestly', async () => {
+    const factRows = await engine.executeRaw<{ id: number }>(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, source, expired_at)
+       VALUES ('g1', 'people/bob-example', 'Send the deck to bob', 'commitment', 'loops-test', now())
+       RETURNING id`,
+    );
+    const factId = Number(factRows[0].id);
+    const { id } = await upsertOpenLoop(engine, loop({ dedupKey: 'commit:eeee1111', loopType: 'commitment_owed_by_me', detector: 'llm_extract', factId }));
+    const res = (await loopsCloseOp.handler(ctx(), { id, status: 'done' })) as { closed: boolean; fact_expired: boolean };
+    expect(res.closed).toBe(true);
+    expect(res.fact_expired).toBe(false);
+  });
+
+  test('#5869 managed brain: the fact expire goes through the coordinator, not a raw UPDATE', async () => {
+    // Seed while unmanaged so the fixture INSERT does not trip the guard.
+    const factRows = await engine.executeRaw<{ id: number }>(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, source)
+       VALUES ('g1', 'people/bob-example', 'Send the deck to bob', 'commitment', 'loops-test')
+       RETURNING id`,
+    );
+    const factId = Number(factRows[0].id);
+    const { id } = await upsertOpenLoop(engine, loop({ dedupKey: 'commit:ffff2222', loopType: 'commitment_owed_by_me', detector: 'llm_extract', factId }));
+    await engine.executeRaw(`UPDATE persistence_brain SET enabled = true WHERE singleton = 1`);
+    try {
+      // Sanity: the guard actually refuses the pre-fix raw statement.
+      await expect(
+        engine.executeRaw(`UPDATE facts SET expired_at = now() WHERE id = $1 AND expired_at IS NULL`, [factId]),
+      ).rejects.toThrow(/writer_coordinator_required/);
+      const res = (await loopsCloseOp.handler(ctx(), { id, status: 'done' })) as {
+        closed: boolean; fact_expired: boolean; fact_expire_error?: string;
+      };
+      expect(res.closed).toBe(true);
+      expect(res.fact_expire_error).toBeUndefined();
+      expect(res.fact_expired).toBe(true);
+      const expired = await engine.executeRaw<{ expired_at: unknown }>(`SELECT expired_at FROM facts WHERE id = $1`, [factId]);
+      expect(expired[0].expired_at).not.toBeNull();
+    } finally {
+      await engine.executeRaw(`UPDATE persistence_brain SET enabled = false WHERE singleton = 1`);
+    }
+  });
+
   test('remote ctx without a single-source scope → throws permission_denied, loop untouched', async () => {
     const { id } = await upsertOpenLoop(engine, loop());
     // Denials are thrown OperationErrors (enumerated error envelope via

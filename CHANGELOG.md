@@ -10,6 +10,11 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.30.9] - 2026-10-02
+
+### Fixed
+- Closing a commitment loop on a managed brain actually expires its fact: `loops_close` ran the `UPDATE facts` outside the persistence coordinator, so `managed_writer_guard` refused it, the error was swallowed as best-effort, and the op still reported `fact_expired: true`. The expire now runs inside a transaction-scoped `withCoordinatedWrite` on the fact's own source, and `fact_expired` reports what really happened — a failed expire surfaces as `fact_expire_error` instead of a false success (#5869).
+
 ## [0.60.30.0] - 2026-10-01
 
 **Fix wave 6: two privacy leaks closed, "who invested" and "who attended" answer the right way round, facts saved without a person get one, contradiction checks get much more accurate, and hybrid search on big Postgres brains stops falling back to keyword-only.**
