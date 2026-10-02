@@ -135,7 +135,12 @@ export async function runManagedSourceLifecycle(engine:BrainEngine,input:SourceL
       throw new OperationError('source_changed','The requested claim path differs from the configured source root.');
     const expired=input.expiredOnly?await tx.executeRaw('SELECT id FROM sources WHERE id=$1 AND archived=true AND archive_expires_at<=now()',[input.sourceId]):null;
     const noop=expired?.length===0 || input.operation==='archive'&&source?.archived || input.operation==='restore'&&!source?.archived
-      || input.operation==='claim'&&!!currentBinding || input.operation==='rebind'&&sameBinding;
+      // #5569: a rebind whose binding already matches is only a noop when the
+      // denormalized sources.local_path also agrees — otherwise the noop
+      // short-circuit would skip the one write that repairs the stale column
+      // (the binding can't fix it; a raw UPDATE is topology-guarded).
+      || input.operation==='claim'&&!!currentBinding
+      || input.operation==='rebind'&&sameBinding&&source?.local_path===root!.source;
     if(noop){
       await lockTopologyPrincipal(tx,principal);
       return topologyReceipt(await recordTopologyChange(tx,{principal,requestId,intent,operation:input.operation,sourceId:input.sourceId,incarnation:source!.incarnation,worktrees},
