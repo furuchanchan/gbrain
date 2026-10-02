@@ -190,6 +190,7 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'memorable_relay_health',
   'backup_coverage',
   'bootstrap_push_health',
+  'git_convergence',
   'bootstrap_durability_job',
   'bootstrap_runbook_skew',
   'bootstrap_serve_lock',
