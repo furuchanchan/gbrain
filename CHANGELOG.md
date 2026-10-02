@@ -123,6 +123,7 @@ The release also absorbs 62 open community pull requests, each re-checked agains
 
 - **#5341** `check-backlinks fix` managed-worktree refusal.
 - **#5330** shared conversation-facts eligibility (`isConversationFactsEligiblePage` and its SQL twin in `src/core/facts/conversation-types.ts`).
+- **#5918** a conversation page's own `conversation_segment_gap_minutes` frontmatter overrides the global 30-minute segmentation gap (positive bounded integer, ≤ one week; invalid values warn and fall back to the default). Part (b) of #5330.
 - **#5329** `chronicle_backfill` idempotency keys and paging, no schema change. The issue's other parts (a cadence gate, extraction idempotency for direct `chronicle_extract` runs, the no-sub-events page, the judge output cap) remain open.
 
 #### Memory capture (#5888, #5887)
