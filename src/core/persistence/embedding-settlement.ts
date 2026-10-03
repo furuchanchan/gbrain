@@ -9,8 +9,10 @@
  *   verifier (sealed revision, selected column, model and hashes), so the
  *   effect commits with no provider work.
  * - `superseded`: the page was deleted, or a newer revision of the same page
- *   (same page id) owns its own embedding effect; the effect commits with
- *   `{ embedding: 'superseded' }`, as the owner's own run would.
+ *   (same page id) owns its own embedding effect — or has no obligation but
+ *   its vectors are independently verified complete (#5935); the effect
+ *   commits with `{ embedding: 'superseded' }`, as the owner's own run
+ *   would.
  * - `retry_queued`: the owner embeds it. A stale queued effect is re-queued;
  *   a failed one gets the `retry-effects` allowance, or, when that allowance
  *   is consumed (`embedding_retry_exhausted`), one new bounded retry cycle
@@ -19,7 +21,8 @@
  *   effect pending until it settles.
  * - `blocked`: nothing changed; `reason` says why (`owner_unavailable`,
  *   `embedding_disabled`, `embedding_unconfigured`, `projection_pending`,
- *   `no_replacement_obligation`).
+ *   `no_replacement_obligation` — superseded revision whose current vectors
+ *   are not verified complete).
  *
  * Every state change is a compare-and-set on state, attempts, execution token
  * and recovery. A candidate that changed since planning is `changed_since_preview`.
@@ -121,7 +124,26 @@ export async function settleEmbeddingEffect(engine: BrainEngine, candidate: Pick
         const [replacement] = deleted ? [] : await tx.executeRaw<{ id: string }>(`SELECT id::text FROM persistence_effects
           WHERE kind='embedding' AND source_id=$1 AND source_incarnation=$2::uuid AND revision=$3::uuid AND (data->>'page_id')::int=$4 AND id<>$5 LIMIT 1`,
         [effect.source_id, effect.source_incarnation, snapshot!.revision, snapshot!.page.id, effect.id]);
-        if (!deleted && !replacement) return { outcome: 'blocked', reason: 'no_replacement_obligation' };
+        if (!deleted && !replacement) {
+          // #5935: a superseded obligation with no replacement still settles
+          // when the current snapshot's own vectors are independently verified
+          // complete; missing/stale vectors and an unreadable projection keep
+          // the no_replacement_obligation refusal.
+          const signature = configuredSignature(opts.config);
+          if (signature) {
+            let pending: unknown[];
+            try { pending = (await readEmbeddingEffectProjection(tx, effect, snapshot!, opts.hostId, signature)).pending; }
+            catch (error) {
+              if (!(error instanceof OperationError && error.code === 'projection_pending')) throw error;
+              pending = [1];
+            }
+            if (pending.length === 0) {
+              const settled = await commit({ embedding: 'superseded', reason: 'revision_changed', verified: 'current_vectors_complete' });
+              return settled ? { outcome: 'superseded', reason: 'revision_changed' } : { outcome: 'changed_since_preview' };
+            }
+          }
+          return { outcome: 'blocked', reason: 'no_replacement_obligation' };
+        }
         const settled = await commit(deleted ? { embedding: 'superseded', reason: 'page_deleted' }
           : { embedding: 'superseded', reason: 'revision_changed', replaced_by: replacement.id });
         return settled ? { outcome: 'superseded', reason: deleted ? 'page_deleted' : 'revision_changed' } : { outcome: 'changed_since_preview' };

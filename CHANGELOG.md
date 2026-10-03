@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.32.9] - 2026-10-03
+
+**`gbrain repair embedding-effects` settles a superseded obligation when the newer revision's vectors are already complete.**
+
+A committed write's embedding effect used to refuse with `blocked_no_replacement_obligation` whenever its page moved to a newer revision that did not queue its own embedding effect — even when that newer revision was already fully embedded and nothing remained to do. The refusal was permanent: the obligation kept receipt compaction blocked with no supported way to clear it short of editing the database by hand. The repair now runs the same verifier it uses for reconciliation against the current snapshot; when every current chunk is verified complete it commits the effect `superseded` (`verified: current_vectors_complete`). Missing or stale vectors and an unreadable projection still refuse, and no provider work is ever queued by this path.
+
+#### Maintenance
+
+- `embedding-effects` repair: a superseded obligation whose current same-page snapshot has verified-complete vectors now settles `superseded` instead of `blocked_no_replacement_obligation` (#5935).
+
 ## [0.60.32.0] - 2026-10-02
 
 **Fix wave 7: automatic capture stops double-storing what you `remember`, the maintenance sweep reads whole transcripts, Gmail commitments and timelines work again on managed brains, `gbrain upgrade` refuses a Bun it can't run, the contradiction judge stops excusing undated conflicts, "who is waiting on me" ages and ranks requests honestly, and 62 community pull requests land.**

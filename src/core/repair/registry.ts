@@ -95,7 +95,7 @@ const SPECS: Record<RepairKind, Omit<RepairKindSpec, 'kind'>> = {
   'embedding-effects': {
     handler: embeddingEffectsRepair, embeds: 'effect', checks: ['stale_embedding_effects'],
     summary: 'Settle stale queued or failed embedding effects of committed writes (#5629, #5734), which block receipt compaction and activation. '
-      + 'Each effect is reconciled (current vectors pass the effect verifier), superseded (page deleted, or a newer revision owns its own effect), '
+      + 'Each effect is reconciled (current vectors pass the effect verifier), superseded (page deleted, a newer revision owns its own effect, or the newer revision has verified-complete vectors), '
       + 'retry_queued for its owner (paid; a consumed retry allowance gets one new bounded cycle per explicit run) or blocked with the reason. Never drops an obligation.',
   },
   'google-file-modes': {

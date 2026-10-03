@@ -143,6 +143,28 @@ for (const kind of testBackends()) {
       expect(await effect(f.effectId)).toMatchObject({ state: 'committed', outcome: { embedding: 'superseded', reason: 'revision_changed', replaced_by: replacement.id } });
     });
 
+    check('#5935: a superseded obligation with no replacement settles when the current revision has verified-complete vectors', async () => {
+      const f = await fixture('failed');
+      // Supersede the page revision (newer write, classic import/embed path →
+      // no replacement embedding effect) and embed the new revision fully.
+      await engine.executeRaw('UPDATE pages SET knowledge_revision=gen_random_uuid() WHERE source_id=$1', [f.sourceId]);
+      const prepared = (await readProjectionSnapshot(engine, 'page', f.sourceId, { allowUnsealed: true }))!;
+      await installPageProjection(engine, prepared, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Newer' }], { seal: true });
+      const sealed = (await readProjectionSnapshot(engine, 'page', f.sourceId))!;
+      await installPageEmbeddings(engine, sealed, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Newer', embedding: vector(), model }], signature);
+
+      const blocked = await repair(f.sourceId, false);
+      expect(blocked.affected).toBe(1);
+      const applied = await repair(f.sourceId, true);
+      expect(applied.outcomes).toEqual({ superseded: 1 });
+      expect(await effect(f.effectId)).toMatchObject({ state: 'committed',
+        outcome: { embedding: 'superseded', reason: 'revision_changed', verified: 'current_vectors_complete' } });
+      expect((await staleEmbeddingEffectsCheck(engine, [f.sourceId])).status).toBe('ok');
+      // The newer revision's own queued effect may remain; the superseded
+      // obligation no longer blocks compaction.
+      expect((await listBlockingEffects(engine, { sourceId: f.sourceId })).some(e => e.request_id === f.row.request_id)).toBe(false);
+    });
+
     check('retry_queued: a stale queued effect without vectors is re-queued, doctor stays pending, and the owner run settles it', async () => {
       const f = await fixture('stale');
       const applied = await repair(f.sourceId, true);
