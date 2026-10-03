@@ -122,6 +122,9 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
   // Unknown local edits require explicit import/recovery, even for force writes.
   if (before && snapshot) {
     const parsed = parseMarkdown(before.toString('utf8'), row.slug, { activePack: options.activePack });
+    // Subtype parity with #5521: a file without an explicit `subtype:` keeps the
+    // stored one (or none); a pack rule is not part of the file's bytes (#5928).
+    delete parsed.inferredSubtype;
     resolveParsedSubtype(parsed, snapshot.page);
     const expected = canonical(snapshot.page, snapshot.tags);
     // #1035 parity (#5521): a file without an explicit `type:` keeps the stored type on import.

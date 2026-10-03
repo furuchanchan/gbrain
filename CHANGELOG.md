@@ -10,6 +10,29 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.32.8] - 2026-10-03
+
+**Pages written before a pack gained a subtype rule accept edits again.**
+
+Since 0.60.32.0, a coordinated write to a page whose file carries no
+`subtype:` line could refuse with `source_changed` — "uncoordinated local
+edit" — when the active schema pack had since gained a rule inferring a
+subtype for that path. Nothing had touched the files; the check's own
+comparison added the pack-inferred subtype to the file side only, so a page
+written before the rule existed looked edited. Brains on `gbrain-base-v2`
+saw this on every `companies/`, `products/` and `orgs/` page written before
+the upgrade, and the refused batches included `extract_facts` work and the
+`repair captured-facts` write itself. The drift check now treats `subtype:`
+the way it already treats `type:` — a file without an explicit line keeps
+the stored value (or none), because a pack rule is not part of the file's
+bytes. The edit commits and stamps the inferred subtype, matching
+0.60.31.0 behavior.
+
+Recovery note: requests refused by this regression ended `source_changed`
+and were never applied — nothing was written, so the writes can simply be
+re-issued after upgrading. Re-run `gbrain repair captured-facts --apply` if
+a repair was refused.
+
 ## [0.60.32.0] - 2026-10-02
 
 **Fix wave 7: automatic capture stops double-storing what you `remember`, the maintenance sweep reads whole transcripts, Gmail commitments and timelines work again on managed brains, `gbrain upgrade` refuses a Bun it can't run, the contradiction judge stops excusing undated conflicts, "who is waiting on me" ages and ranks requests honestly, and 62 community pull requests land.**
