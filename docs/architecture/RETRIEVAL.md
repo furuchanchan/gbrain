@@ -275,7 +275,12 @@ Two cross-cutting seams sit around the pipeline rather than inside it:
   already run with the caller's expansion on (`shouldEscalateRetrieval` in
   `crag.ts`), so default-shape callers never pay a second expansion call for
   a near-identical candidate set. `search.crag_think=true` (local callers)
-  escalates a still-weak result to `think`.
+  escalates a still-weak result to `think`. An OR-relaxed keyword rank-1
+  grades `weak` (`keyword_relaxed_top`) — except when a top-five row covers
+  every capitalized entity token of the question plus one of its remaining
+  content words (or their acronym), which recovers `moderate`
+  (`keyword_relaxed_rescued`, #5919; the op passes `queryText` so the pure
+  grader can run the coverage check).
 
 ### Relational re-pin: edge answers bypass reranker demotion
 

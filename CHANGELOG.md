@@ -10,6 +10,25 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.32.1] - 2026-10-03
+
+**A keyword-only answer that does carry your answer no longer reads as "look closer".**
+
+When the brain runs without embeddings or a reranker, the retrieval-confidence
+grade the `query` op attaches told an agent how strong the evidence was. An
+answerable question whose answer sat in the returned top five still graded
+`weak` whenever the top row was only a partial keyword match — so a careful
+agent declined to answer questions it could have answered. The grade now
+checks the returned top five: when one row carries every capitalized name in
+your question and at least one of its remaining content words (or their
+acronym, so "annual recurring revenue" still finds a sentence that says
+"ARR"), the grade recovers to `moderate` (`keyword_relaxed_rescued`).
+Questions nothing can answer stay `weak` — a sibling fact's chunk never
+carries the name you asked about, and the page you asked about never carries
+the attribute it lacks. On the A4 abstention world, all 120 answerable
+questions now grade moderate-or-better (was 40) while all 120 unanswerable
+questions stay weak.
+
 ## [0.60.32.0] - 2026-10-02
 
 **Fix wave 7: automatic capture stops double-storing what you `remember`, the maintenance sweep reads whole transcripts, Gmail commitments and timelines work again on managed brains, `gbrain upgrade` refuses a Bun it can't run, the contradiction judge stops excusing undated conflicts, "who is waiting on me" ages and ranks requests honestly, and 62 community pull requests land.**
