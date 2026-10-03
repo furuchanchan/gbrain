@@ -24,6 +24,10 @@ import { assertMutationProtocol, assertSharedSkillPersistence, declarePersistenc
 import { assertBundleRecoveryBinding, bundleFileHash, prepareBundleRecovery, publishStagedBundleFile, stageBundleFile, type MutationFile } from './bundle-files.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
+import { redactFindings } from '../secret-scan.ts';
+import { redactConnectionInfo } from '../audit/redact-connection-info.ts';
+import { redactUrlsInText } from '../url-redact.ts';
+import { ensureWellFormed, truncateUtf8 } from '../text-safe.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -84,13 +88,29 @@ function publishFile(file: PageMutationFile, stagingPath?: string, afterStagingF
 // Effect recovery uses the same confined durable publication primitive, under
 // its own recovery record and native root capability.
 export { fileHash as persistenceFileHash, publishFile as publishPersistenceFile };
+const PUBLICATION_CAUSE_MAX_CHARS = 240;
+// The durable failure record is the only error surface a managed caller can
+// read — the publish runs in the owner process (#5929). Carry the cause in
+// the message itself: original message plus constructor name when the error
+// has no .code, sanitized and bounded like the other operator-facing failure
+// texts (secret/DSN/URL redaction, collapsed whitespace, UTF-8 safe).
+function publicationCause(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const ctor = error instanceof Error && error.constructor?.name && error.constructor.name !== 'Error'
+    ? `${error.constructor.name}: ` : '';
+  const text = `${ctor}${raw}`.trim();
+  if (!text) return '';
+  const redacted = redactUrlsInText(redactConnectionInfo(redactFindings(text, { highEntropy: true }).text));
+  return truncateUtf8(ensureWellFormed(redacted).replace(/\s+/g, ' ').trim(), PUBLICATION_CAUSE_MAX_CHARS);
+}
 function requestError(error: unknown): { code: string; message: string } {
   if (error instanceof OperationError) return { code: error.code, message: error.message };
   const code = (error as { code?: string })?.code;
   if (code === 'revision_conflict') {
     return { code, message: error instanceof Error && error.message ? error.message : 'The page changed after the supplied revision was read.' };
   }
-  return { code: 'storage_error', message: `Publication failed${code ? ` (${code})` : ''}. Inspect owner diagnostics.` };
+  const cause = publicationCause(error);
+  return { code: 'storage_error', message: `Publication failed${code ? ` (${code})` : ''}${cause ? `: ${cause}` : ''}. Inspect owner diagnostics.` };
 }
 function conflictCode(code: string): boolean { return ['revision_required','revision_conflict','source_changed','page_identity_changed'].includes(code); }
 export function transientDatabaseFailure(error: unknown): boolean {

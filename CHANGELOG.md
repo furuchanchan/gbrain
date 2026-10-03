@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.32.11] - 2026-10-03
+
+**A failed managed publication now says what actually failed.**
+
+Until now a non-`OperationError` thrown while the owner process published a write collapsed into `Publication failed. Inspect owner diagnostics.` — no message, no code, and no readable cause in `gbrain write-request`, doctor, or any log, because the publish ran in the owner process whose output the caller cannot reach. The durable failure record now carries the cause: the original error message plus its constructor name when the error has no `.code`, redacted like every other operator-facing failure text (secrets, connection strings and URLs stripped) and bounded to 240 characters.
+
+#### Maintenance
+
+- persistence: `storage_error` failure records from a managed publication include the sanitized cause (`Publication failed (<code>): <Constructor: message>. Inspect owner diagnostics.`) (#5929). The issue's stale-owner-process detection and last-error status field remain open asks.
+
 ## [0.60.32.0] - 2026-10-02
 
 **Fix wave 7: automatic capture stops double-storing what you `remember`, the maintenance sweep reads whole transcripts, Gmail commitments and timelines work again on managed brains, `gbrain upgrade` refuses a Bun it can't run, the contradiction judge stops excusing undated conflicts, "who is waiting on me" ages and ranks requests honestly, and 62 community pull requests land.**
