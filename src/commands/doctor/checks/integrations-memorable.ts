@@ -30,7 +30,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { loadConfig } from '../../../core/config.ts';
-import { CODEX_HOOK_OWNERSHIP_TOKEN } from '../../../core/bootstrap/codex-hooks.ts';
+import { CODEX_HOOK_OWNERSHIP_TOKEN, CODEX_HOOK_OWNERSHIP_TOKENS } from '../../../core/bootstrap/codex-hooks.ts';
 import { codexHooksPath } from '../../../core/bootstrap/host-specs.ts';
 import {
   clampRelayCause,
@@ -153,6 +153,19 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
         details: { ...details, reason: 'codex_hooks_never_fired' },
       };
     }
+    // #5941: an older install wired SessionEnd only — the context lanes are
+    // absent (and equally silent when missing), so surface the upgrade path.
+    const missing = codexMissingContextLanes();
+    if (codexHooksWired() && missing.length > 0) {
+      return {
+        name: NAME,
+        status: 'warn',
+        message:
+          `codex SessionEnd hook is wired but the ${missing.join('/')} context hook(s) are not — an older gbrain wrote this install. ` +
+          'Re-run `gbrain bootstrap hooks --harness codex` to add them (same silent-fail trust gate applies).',
+        details: { ...details, reason: 'codex_context_hooks_missing' },
+      };
+    }
     if (expectedRejection) return expectedRejection;
     return { name: NAME, status: 'ok', message: 'memorable relay healthy (consented, installed, last run ok)', details };
   } catch {
@@ -168,5 +181,19 @@ function codexHooksWired(): boolean {
     return readFileSync(p, 'utf8').includes(CODEX_HOOK_OWNERSHIP_TOKEN);
   } catch {
     return false;
+  }
+}
+
+/** Managed context events absent from the codex hooks file (#5941). */
+function codexMissingContextLanes(): string[] {
+  try {
+    const p = codexHooksPath();
+    if (!existsSync(p)) return [];
+    const text = readFileSync(p, 'utf8');
+    return (['SessionStart', 'UserPromptSubmit'] as const).filter(
+      (e) => !text.includes(CODEX_HOOK_OWNERSHIP_TOKENS[e]),
+    );
+  } catch {
+    return [];
   }
 }

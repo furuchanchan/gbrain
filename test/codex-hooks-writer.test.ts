@@ -73,7 +73,7 @@ describe('writeCodexHooks', () => {
     expect(readHooks().hooks!.SessionEnd!).toHaveLength(1);
     const cfg = readFileSync(configPath, 'utf8');
     expect(cfg.match(/gbrain:codex-hooks-trust \(managed/g)).toHaveLength(1);
-    expect(cfg.match(/trusted_hash/g)).toHaveLength(1);
+    expect(cfg.match(/trusted_hash/g)).toHaveLength(3); // SessionEnd + SessionStart + UserPromptSubmit
   });
 
   test('foreign SessionEnd groups keep their positions (ours appends LAST, key index shifts to match)', () => {

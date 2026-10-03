@@ -202,10 +202,15 @@ codex mcp remove gbrain
   paths above), or migrate to the Postgres/Supabase engine, which tolerates
   concurrent connections. Details:
   [serve ↔ sync concurrency](../architecture/serve-sync-concurrency.md).
-- **Ambient recall (Codex has no lifecycle hooks — use the pull path).** At the
-  start of a topical thread and after a compaction, call
+- **Ambient recall.** Codex ≥0.159 gets context automatically: `gbrain
+  bootstrap hooks --harness codex` wires SessionStart and UserPromptSubmit
+  entries (plus the SessionEnd capture lane) into `~/.codex/hooks.json` —
+  the greeting digest and per-turn context arrive without a pull call. On
+  older codex builds with no lifecycle-hook support, use the pull path: at
+  the start of a topical thread and after a compaction, call
   `context_pack(entities, budget_tokens)` to warm the standing entities; on a
   periodic wake call `delta(session_id, budget_tokens)` for "what changed since
   my last wake" (deduped per session). Both are zero-LLM, sub-second, world-only
-  by default, and on `--surface verbs`. See
+  by default, and on `--surface verbs`. The pull path remains the fallback
+  when hooks are not wired. See
   [ambient recall](../guides/ambient-recall.md) for the placement frontier.

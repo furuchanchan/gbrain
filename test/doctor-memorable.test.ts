@@ -215,7 +215,11 @@ describe('codex hooks wired but never fired [OV8c]', () => {
       const codexHome = join(home, 'codex-home');
       mkdirSync(codexHome, { recursive: true });
       writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({
-        hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'x gbrain hook session-end --harness codex y', timeout: 3 }] }] },
+        hooks: {
+          SessionEnd: [{ hooks: [{ type: 'command', command: 'x gbrain hook session-end --harness codex y', timeout: 3 }] }],
+          SessionStart: [{ hooks: [{ type: 'command', command: 'env GBRAIN_HOOK_LANE=harness /x/gbrain hook session-start', timeout: 15 }] }],
+          UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'env GBRAIN_HOOK_LANE=harness /x/gbrain hook user-prompt --harness codex', timeout: 15 }] }],
+        },
       }));
       await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined, GBRAIN_MEMORABLE_CONFIG: ev, PATH: stubBinDir(home), MEMORABLE_BIN: '', CODEX_HOME: codexHome }, async () => {
         await writeMemorableConsent();
@@ -235,7 +239,7 @@ describe('codex hooks wired but never fired [OV8c]', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
-  test('mixed host: the expected openclaw rejection never masks a dead codex trust entry', async () => {
+  test('#5941: an older SessionEnd-only install warns to re-run for the context lanes', async () => {
     const home = tempHome();
     try {
       seedGbrainConfig(home, true);
@@ -244,6 +248,36 @@ describe('codex hooks wired but never fired [OV8c]', () => {
       mkdirSync(codexHome, { recursive: true });
       writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({
         hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'x gbrain hook session-end --harness codex y', timeout: 3 }] }] },
+      }));
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined, GBRAIN_MEMORABLE_CONFIG: ev, PATH: stubBinDir(home), MEMORABLE_BIN: '', CODEX_HOME: codexHome }, async () => {
+        await writeMemorableConsent();
+        // SessionEnd works (receipt present) but the pre-#5941 install never
+        // wired the context lanes — the rung names the upgrade path.
+        await appendSessionReceipt({ ...RECEIPT, session_id: 'cdx-3', harness: 'codex', content_hash: 'cdx-h3' });
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ ts: 't', session_id: 'doc-sess', ok: true }) + '\n');
+        const c = await buildMemorableRelayCheck();
+        expect(c.status).toBe('warn');
+        expect(c.details?.reason).toBe('codex_context_hooks_missing');
+        expect(c.message).toContain('SessionStart');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('mixed host: the expected openclaw rejection never masks a dead codex trust entry', async () => {
+    const home = tempHome();
+    try {
+      seedGbrainConfig(home, true);
+      const ev = seedEvidence(home, { backend: 'local', consent: 'read-write' });
+      const codexHome = join(home, 'codex-home');
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({
+        hooks: {
+          SessionEnd: [{ hooks: [{ type: 'command', command: 'x gbrain hook session-end --harness codex y', timeout: 3 }] }],
+          SessionStart: [{ hooks: [{ type: 'command', command: 'env GBRAIN_HOOK_LANE=harness /x/gbrain hook session-start', timeout: 15 }] }],
+          UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'env GBRAIN_HOOK_LANE=harness /x/gbrain hook user-prompt --harness codex', timeout: 15 }] }],
+        },
       }));
       await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined, GBRAIN_MEMORABLE_CONFIG: ev, PATH: stubBinDir(home), MEMORABLE_BIN: '', CODEX_HOME: codexHome }, async () => {
         await writeMemorableConsent();

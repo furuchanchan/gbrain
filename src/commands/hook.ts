@@ -86,6 +86,7 @@ import {
   type HookHeartbeatEntry,
 } from '../core/context/hook-heartbeat.ts';
 import { CLAUDE_HOOK_OUTPUT_CAP_CHARS } from '../core/bootstrap/host-specs.ts';
+import { resolveSourceIdEngineFree } from '../core/source-resolver.ts';
 import { readManifest, readReceipt, type InstallReceipt } from '../core/bootstrap/format.ts';
 import { githubOwnerRepoString } from '../core/repo-visibility.ts';
 import { detectExecutionEnvironment } from '../core/execution-env.ts';
@@ -342,6 +343,23 @@ function write(io: HookIo, s: string): void {
 
 const DEADLINE: unique symbol = Symbol('deadline');
 
+/**
+ * The source a context hook's IPC calls scope to: GBRAIN_SOURCE when set,
+ * else a `.gbrain-source` walk anchored at the workspace dir — the same
+ * engine-free chain the thin-client CLI uses. Needed for the codex lanes
+ * (#5941): hooks.json is user-global and bakes no source, so the source
+ * must come from the payload cwd at runtime (the reporter's option (a)).
+ * Fail-open: an invalid env/dotfile value degrades to unscoped context,
+ * never a hook error.
+ */
+export function hookSourceId(ws: string): string | undefined {
+  try {
+    return resolveSourceIdEngineFree(null, ws) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function withDeadline<T>(ms: number, work: Promise<T>): Promise<T | typeof DEADLINE> {
   return new Promise((resolve) => {
     const t = setTimeout(() => resolve(DEADLINE), ms);
@@ -549,7 +567,7 @@ async function hookSessionStart(io: HookIo): Promise<number> {
               const res = await requestContextPack(packSocket, {
                 secret,
                 ...(sessionId ? { sessionId } : {}),
-                ...(process.env.GBRAIN_SOURCE ? { sourceId: process.env.GBRAIN_SOURCE } : {}),
+                ...(hookSourceId(ws) ? { sourceId: hookSourceId(ws) } : {}),
                 trigger,
               }, { timeoutMs: Math.min(CONTEXT_PACK_CLIENT_TIMEOUT_MS, remaining) });
               if (res !== IPC_UNAVAILABLE && !('degraded' in res)) {
@@ -1166,7 +1184,8 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     if (!secret) return { outcome: 'degraded', reason: 'no_serve' };
 
     const sessionId = typeof j.session_id === 'string' ? j.session_id : undefined;
-    const sourceId = process.env.GBRAIN_SOURCE || undefined;
+    const ws = io.cwd ?? (typeof j.cwd === 'string' ? j.cwd : process.cwd());
+    const sourceId = hookSourceId(ws);
     const res = await requestTurnContext(socketPath, {
       secret,
       window: turns,

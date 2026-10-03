@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.32.12] - 2026-10-05
+
+**`gbrain bootstrap hooks --harness codex` wires the SessionStart and UserPromptSubmit context lanes alongside SessionEnd.**
+
+Codex ≥0.159 fires `SessionStart` and `UserPromptSubmit` hooks and can inject their stdout as context, but gbrain only wired SessionEnd — a codex session got end-of-session capture and no ambient recall, while Claude Code users had all three. The codex writer now manages all three events: each lane gets its own `hooks.json` group (fresh install appends last, re-run replaces in place — foreign group indexes and their trust entries never shift) and its own `trusted_hash` inside the same managed config.toml block, under the same silent-fail trust gate. The context lanes run a synchronous `env GBRAIN_HOOK_LANE=harness <bin> hook session-start|user-prompt --harness codex` (no detach — stdout IS the injected context) and bake no `GBRAIN_SOURCE`; the source resolves from the payload cwd's `.gbrain-source` pin at runtime. Existing installs keep working but inject nothing — re-run `gbrain bootstrap hooks --harness codex` to add the lanes; `gbrain doctor` names an install missing them (`codex_context_hooks_missing`). On codex builds older than 0.159 the new lanes simply never fire and the `context` command's pull path stays the fallback (#5941).
+
+#### Maintenance
+
+- codex hooks (SessionStart/UserPromptSubmit): new lanes inject the memory digest at session start and the warm context pack per prompt; SessionEnd capture is unchanged.
+
 ## [0.60.32.0] - 2026-10-02
 
 **Fix wave 7: automatic capture stops double-storing what you `remember`, the maintenance sweep reads whole transcripts, Gmail commitments and timelines work again on managed brains, `gbrain upgrade` refuses a Bun it can't run, the contradiction judge stops excusing undated conflicts, "who is waiting on me" ages and ranks requests honestly, and 62 community pull requests land.**

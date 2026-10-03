@@ -1,5 +1,6 @@
 /**
- * codex-hooks.ts — the codex `hooks.json` writer (SessionEnd capture lane).
+ * codex-hooks.ts — the codex `hooks.json` writer (SessionEnd capture lane
+ * plus the SessionStart/UserPromptSubmit context lanes, #5941).
  *
  * SPEC TARGET (verified): codex-cli 0.147.0, observation run 2026-08-25
  * (live captures + openai/codex source at tag rust-v0.147.0). The facts this
@@ -24,13 +25,17 @@
  *  - SessionEnd handlers are hard-killed at 3s — the command captures stdin
  *    to a temp file and detaches a grandchild (`nohup … &`) that runs the
  *    real `gbrain hook session-end --harness codex`, so ingest time never
- *    races the kill.
- *  - Deliberately NO GBRAIN_SOURCE in the command [OV2]: hooks.json is
+ *    races the kill. The context lanes are the opposite shape: synchronous
+ *    `env GBRAIN_HOOK_LANE=harness <bin> hook <event>` (stdout is the
+ *    injected context; `env` is a binary so the prefix parses in any shell).
+ *  - Deliberately NO GBRAIN_SOURCE in any command [OV2]: hooks.json is
  *    user-global; a baked source would stamp every codex session on the
  *    machine with the last-bootstrapped repo. session-end resolves everything
  *    from the payload (cwd/transcript_path/session_id) at runtime — and it
  *    reads no GBRAIN_SOURCE at all, so the ambient-env tier [EV4] cannot
- *    misattribute this lane either.
+ *    misattribute this lane either. The context lanes (#5941 option (a))
+ *    resolve the same way at runtime: the handlers anchor a .gbrain-source
+ *    walk at the payload cwd when GBRAIN_SOURCE is unset.
  *  - Index sensitivity (documented residual): the trust key embeds our
  *    group's index in the SessionEnd array. A fresh install APPENDS last; a
  *    re-run REPLACES our group IN PLACE — so writing never shifts a FOREIGN
@@ -49,7 +54,14 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { atomicWriteTextFile } from './atomic-write.ts';
 import type { HostSpecTarget } from './host-specs.ts';
-import { CODEX_HOOK_EVENTS, codexConfigPath, codexHooksPath } from './host-specs.ts';
+import {
+  CODEX_HOOK_EVENTS,
+  CODEX_HOOK_EVENT_NAME,
+  CODEX_HOOK_SUBCOMMAND,
+  codexConfigPath,
+  codexHooksPath,
+  type CodexHookEvent,
+} from './host-specs.ts';
 
 export const CODEX_HOOKS_SPEC_TARGET: HostSpecTarget = {
   id: 'codex-hooks-2026-08',
@@ -61,25 +73,45 @@ export const CODEX_HOOKS_SPEC_TARGET: HostSpecTarget = {
   ],
   note:
     'hooks.json is top-level deny-unknown-fields (description is the one legal metadata slot); ' +
-    'user-layer hooks are trust-gated via [hooks.state."<path>:session_end:<g>:<h>"].trusted_hash ' +
+    'user-layer hooks are trust-gated via [hooks.state."<path>:<event>:<g>:<h>"].trusted_hash ' +
     'in config.toml (silent non-execution without it); SessionEnd budget 3s hard-kill; payload ' +
     '{session_id, transcript_path, cwd, hook_event_name, reason:"other" always}; fires on normal/' +
-    'API-error exit + SIGINT, never SIGKILL; rollout flushed before the hook.',
+    'API-error exit + SIGINT, never SIGKILL; rollout flushed before the hook. ' +
+    '#5941: SessionStart/UserPromptSubmit accept hookSpecificOutput.additionalContext ' +
+    '(reporter-verified on codex-cli 0.159.3 — the model sees the injected context).',
 };
 
 /** Substring that marks a SessionEnd handler as gbrain-owned (the command
  * string is the only marker surface deny-unknown-fields leaves us). */
 export const CODEX_HOOK_OWNERSHIP_TOKEN = 'hook session-end --harness codex';
 
+/** Per-event ownership markers, keyed the same way. */
+export const CODEX_HOOK_OWNERSHIP_TOKENS: Record<CodexHookEvent, string> = {
+  SessionEnd: CODEX_HOOK_OWNERSHIP_TOKEN,
+  SessionStart: 'hook session-start',
+  UserPromptSubmit: 'hook user-prompt --harness codex',
+};
+
 const GBRAIN_DESCRIPTION =
-  'gbrain session-end capture — the SessionEnd entry whose command mentions "gbrain" is managed by `gbrain bootstrap` (re-runs rewrite it; `gbrain bootstrap uninstall` deletes it)';
+  'gbrain codex hooks — the SessionEnd/SessionStart/UserPromptSubmit entries whose commands mention "gbrain" are managed by `gbrain bootstrap` (re-runs rewrite them; `gbrain bootstrap uninstall` deletes them)';
 
 const TRUST_BLOCK_BEGIN = '# --- gbrain:codex-hooks-trust (managed block — do not edit; gbrain bootstrap rewrites it) ---';
 const TRUST_BLOCK_END = '# --- /gbrain:codex-hooks-trust ---';
 
-/** The hooks.json event key this lane manages — derived from host-specs so
+/** The hooks.json event keys this lane manages — derived from host-specs so
  * the declared event list and the writer can never drift apart. */
-const SESSION_END_EVENT: string = CODEX_HOOK_EVENTS[0];
+const MANAGED_EVENTS: readonly CodexHookEvent[] = CODEX_HOOK_EVENTS;
+
+/** SessionEnd is hard-clamped to 3s by codex; declare exactly that. The
+ * context lanes get a wider nominal budget — each `gbrain hook` event
+ * self-limits internally (session-start ≤1.5s, user-prompt ≤800ms), so the
+ * declared timeout is a backstop, never the primary limiter; 15s is the
+ * value the #5941 reporter verified end-to-end on codex-cli 0.159.3. */
+const CODEX_HOOK_TIMEOUT_SECS: Record<CodexHookEvent, number> = {
+  SessionEnd: 3,
+  SessionStart: 15,
+  UserPromptSubmit: 15,
+};
 
 /** Strip the managed trust block (and trailing blank lines) out of a
  * config.toml text — THE one implementation for write and remove, so a
@@ -94,9 +126,6 @@ function stripTrustBlock(text: string): { remainder: string[]; crlf: boolean; fo
   while (remainder.length > 0 && remainder[remainder.length - 1]!.trim() === '') remainder.pop();
   return { remainder, crlf, found };
 }
-
-/** SessionEnd is hard-clamped to 3s by codex; declare exactly that. */
-const SESSION_END_TIMEOUT_SEC = 3;
 
 function shellQuote(arg: string): string {
   if (/^[A-Za-z0-9_.:/@=-]+$/.test(arg)) return arg;
@@ -121,6 +150,25 @@ export function buildCodexSessionEndCommand(gbrainBin: string): string {
   return `sh -c '${script.replace(/'/g, "'\\''")}' ${shellQuote(gbrainBin)}`;
 }
 
+/**
+ * The SessionStart / UserPromptSubmit commands: synchronous, no detach —
+ * stdout IS the injected context. `env` is a binary so the env-prefix form
+ * parses in every $SHELL (incl. fish/csh), no sh -c wrapper needed. No
+ * GBRAIN_SOURCE is baked: hooks.json is user-global, so the source resolves
+ * from the payload cwd's .gbrain-source at runtime (same discipline as the
+ * session-end lane, issue #5941 option (a)).
+ */
+export function buildCodexContextCommand(gbrainBin: string, subcommand: string): string {
+  return `env GBRAIN_HOOK_LANE=harness ${shellQuote(gbrainBin)} hook ${subcommand}`;
+}
+
+/** The command every managed event writes. */
+function buildCodexCommand(event: CodexHookEvent, gbrainBin: string): string {
+  return event === 'SessionEnd'
+    ? buildCodexSessionEndCommand(gbrainBin)
+    : buildCodexContextCommand(gbrainBin, CODEX_HOOK_SUBCOMMAND[event]);
+}
+
 /** Compact JSON with recursively-sorted keys — codex's canonical form. */
 function canonicalJson(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
@@ -134,11 +182,13 @@ function canonicalJson(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** The trust hash for OUR SessionEnd handler shape (matcher/None fields omitted). */
-export function codexTrustHash(command: string): string {
+/** The trust hash for OUR handler shape of one managed event (matcher/None
+ * fields omitted). The identity's `timeout` must equal what hooks.json
+ * declares — codex hashes the normalized handler, not the file bytes. */
+export function codexTrustHash(command: string, event: CodexHookEvent = 'SessionEnd'): string {
   const identity = {
-    event_name: 'session_end',
-    hooks: [{ type: 'command', command, timeout: SESSION_END_TIMEOUT_SEC, async: false }],
+    event_name: CODEX_HOOK_EVENT_NAME[event],
+    hooks: [{ type: 'command', command, timeout: CODEX_HOOK_TIMEOUT_SECS[event], async: false }],
   };
   return 'sha256:' + createHash('sha256').update(canonicalJson(identity), 'utf8').digest('hex');
 }
@@ -149,15 +199,18 @@ interface HooksJson {
   [k: string]: unknown;
 }
 
-function isOurGroup(group: { hooks?: Array<{ command?: unknown }> }): boolean {
-  return (group.hooks ?? []).some((h) => typeof h.command === 'string' && h.command.includes(CODEX_HOOK_OWNERSHIP_TOKEN));
+function isOurGroup(group: { hooks?: Array<{ command?: unknown }> }, token: string): boolean {
+  return (group.hooks ?? []).some((h) => typeof h.command === 'string' && h.command.includes(token));
 }
 
 export interface WriteCodexHooksResult {
   ok: boolean;
   hooksPath: string;
   configPath: string;
+  /** The SessionEnd trust key (first managed event) — kept for older callers. */
   trustKey?: string;
+  /** Every managed event's trust key, in CODEX_HOOK_EVENTS order. */
+  trustKeys?: string[];
   replacedPrior?: boolean;
   reason?: 'hooks_json_unparseable' | 'foreign_trust_entry' | 'config_toml_unreadable';
   notes: string[];
@@ -192,31 +245,42 @@ export function writeCodexHooks(opts: {
     }
   }
   const hooks = (doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {}) as NonNullable<HooksJson['hooks']>;
-  const sessionEnd = Array.isArray(hooks[SESSION_END_EVENT]) ? hooks[SESSION_END_EVENT]! : [];
-  const command = buildCodexSessionEndCommand(opts.gbrainBin);
-  const ourGroup = { hooks: [{ type: 'command', command, timeout: SESSION_END_TIMEOUT_SEC }] };
-  // Fresh install appends LAST; a re-run replaces our group IN PLACE — a
-  // strip-then-append would shift every foreign group sitting after ours
-  // down one index, silently staling THEIR codex trust entries.
-  const priorIdx = sessionEnd.findIndex(isOurGroup);
-  const replacedPrior = priorIdx >= 0;
-  const withoutDupes = sessionEnd.filter((g, i) => i === priorIdx || !isOurGroup(g));
-  if (withoutDupes.length !== sessionEnd.length) {
-    notes.push(
-      `${sessionEnd.length - withoutDupes.length} duplicate gbrain SessionEnd group(s) dropped — foreign groups after them shift down; re-trust any of your own entries that stop firing.`,
-    );
+
+  // Per event: fresh install appends LAST; a re-run replaces our group IN
+  // PLACE — a strip-then-append would shift every foreign group sitting
+  // after ours down one index, silently staling THEIR codex trust entries.
+  const nextHooks: NonNullable<HooksJson['hooks']> = { ...hooks };
+  const planned: Array<{ event: CodexHookEvent; command: string; trustKey: string }> = [];
+  let replacedPrior = false;
+  for (const event of MANAGED_EVENTS) {
+    const existing = Array.isArray(hooks[event]) ? hooks[event]! : [];
+    const command = buildCodexCommand(event, opts.gbrainBin);
+    const ourGroup = { hooks: [{ type: 'command', command, timeout: CODEX_HOOK_TIMEOUT_SECS[event] }] };
+    const token = CODEX_HOOK_OWNERSHIP_TOKENS[event];
+    const priorIdx = existing.findIndex((g) => isOurGroup(g, token));
+    const replaced = priorIdx >= 0;
+    const withoutDupes = existing.filter((g, i) => i === priorIdx || !isOurGroup(g, token));
+    if (withoutDupes.length !== existing.length) {
+      notes.push(
+        `${existing.length - withoutDupes.length} duplicate gbrain ${event} group(s) dropped — foreign groups after them shift down; re-trust any of your own entries that stop firing.`,
+      );
+    }
+    const next = replaced ? withoutDupes.map((g, i) => (i === priorIdx ? ourGroup : g)) : [...withoutDupes, ourGroup];
+    const ourGroupIndex = replaced ? priorIdx : next.length - 1;
+    nextHooks[event] = next;
+    replacedPrior ||= replaced;
+    planned.push({ event, command, trustKey: `${hooksPath}:${CODEX_HOOK_EVENT_NAME[event]}:${ourGroupIndex}:0` });
   }
-  const nextSessionEnd = replacedPrior ? withoutDupes.map((g, i) => (i === priorIdx ? ourGroup : g)) : [...withoutDupes, ourGroup];
-  const ourGroupIndex = replacedPrior ? priorIdx : nextSessionEnd.length - 1;
   const nextDoc: HooksJson = {
     ...doc,
     ...(doc.description === undefined ? { description: GBRAIN_DESCRIPTION } : {}),
-    hooks: { ...hooks, [SESSION_END_EVENT]: nextSessionEnd },
+    hooks: nextHooks,
   };
 
-  // 2. config.toml trust entry — OUR entries live inside the managed marker
+  // 2. config.toml trust entries — OUR entries live inside the managed marker
   //    block; everything outside survives byte-for-byte.
-  const trustKey = `${hooksPath}:session_end:${ourGroupIndex}:0`;
+  const trustKey = planned[0]!.trustKey;
+  const trustKeys = planned.map((p) => p.trustKey);
   let configText = '';
   if (existsSync(configPath)) {
     try {
@@ -231,18 +295,21 @@ export function writeCodexHooks(opts: {
   // match — any [hooks.state.…] header line mentioning our key, in either
   // TOML string spelling and any interior whitespace, not just our exact
   // JSON.stringify rendering.
-  const header = `[hooks.state.${JSON.stringify(trustKey)}]`;
   const headerRe = /^\s*\[\s*hooks\s*\.\s*state\s*[.\]]/;
-  if (remainder.some((l) => headerRe.test(l) && l.includes(trustKey))) {
-    return {
-      ok: false, hooksPath, configPath, reason: 'foreign_trust_entry',
-      notes: [`${configPath} already defines a [hooks.state] entry for ${trustKey} outside the gbrain-managed block — refusing to double-define it (a hard TOML parse error). Remove that entry and re-run.`],
-    };
+  for (const p of planned) {
+    if (remainder.some((l) => headerRe.test(l) && l.includes(p.trustKey))) {
+      return {
+        ok: false, hooksPath, configPath, reason: 'foreign_trust_entry',
+        notes: [`${configPath} already defines a [hooks.state] entry for ${p.trustKey} outside the gbrain-managed block — refusing to double-define it (a hard TOML parse error). Remove that entry and re-run.`],
+      };
+    }
   }
   const block = [
     TRUST_BLOCK_BEGIN,
-    `${header}`,
-    `trusted_hash = ${JSON.stringify(codexTrustHash(command))}`,
+    ...planned.flatMap((p) => [
+      `[hooks.state.${JSON.stringify(p.trustKey)}]`,
+      `trusted_hash = ${JSON.stringify(codexTrustHash(p.command, p.event))}`,
+    ]),
     TRUST_BLOCK_END,
   ];
   const nextConfig = [...(remainder.length ? [...remainder, ''] : []), ...block, ''].join('\n');
@@ -266,13 +333,15 @@ export function writeCodexHooks(opts: {
   }
   atomicWriteTextFile(configPath, crlf ? nextConfig.replace(/\n/g, '\r\n') : nextConfig, { freshMode: 0o600 });
 
-  const foreignCount = nextSessionEnd.length - 1;
-  if (foreignCount > 0) {
-    notes.push(
-      `${foreignCount} foreign SessionEnd group(s) preserved at their original indexes (${replacedPrior ? "gbrain's entry replaced in place" : "gbrain's entry appended last"}) so their trust-state entries never go stale.`,
-    );
+  for (const event of MANAGED_EVENTS) {
+    const foreignCount = (nextHooks[event]?.length ?? 1) - 1;
+    if (foreignCount > 0) {
+      notes.push(
+        `${foreignCount} foreign ${event} group(s) preserved at their original indexes so their trust-state entries never go stale.`,
+      );
+    }
   }
-  return { ok: true, hooksPath, configPath, trustKey, replacedPrior, notes };
+  return { ok: true, hooksPath, configPath, trustKey, trustKeys, replacedPrior, notes };
 }
 
 export interface RemoveCodexHooksResult {
@@ -294,21 +363,24 @@ export function removeCodexHooks(opts: { hooksPath?: string; configPath?: string
     try {
       const doc = JSON.parse(readFileSync(hooksPath, 'utf8')) as HooksJson;
       const hooks = (doc.hooks ?? {}) as NonNullable<HooksJson['hooks']>;
-      const sessionEnd = Array.isArray(hooks[SESSION_END_EVENT]) ? hooks[SESSION_END_EVENT]! : [];
-      const ourIdx = sessionEnd.findIndex(isOurGroup);
-      const foreign = sessionEnd.filter((g) => !isOurGroup(g));
       let changed = false;
-      if (foreign.length !== sessionEnd.length) {
-        changed = true;
-        if (foreign.length > 0) hooks[SESSION_END_EVENT] = foreign;
-        else delete hooks[SESSION_END_EVENT];
-        // Removal is inherently index-shifting for anything AFTER ours — the
-        // user's own trust entries for those groups go stale (silent
-        // non-execution). Say so instead of leaving them to find out.
-        if (ourIdx >= 0 && ourIdx < sessionEnd.length - 1) {
-          notes.push(
-            `${sessionEnd.length - 1 - ourIdx} of your own SessionEnd group(s) sat after gbrain's — their index just shifted down, so codex will treat their config.toml trust entries as stale. Re-trust them (codex prompts on next run) or update the [hooks.state] indexes.`,
-          );
+      for (const event of MANAGED_EVENTS) {
+        const existing = Array.isArray(hooks[event]) ? hooks[event]! : [];
+        const token = CODEX_HOOK_OWNERSHIP_TOKENS[event];
+        const ourIdx = existing.findIndex((g) => isOurGroup(g, token));
+        const foreign = existing.filter((g) => !isOurGroup(g, token));
+        if (foreign.length !== existing.length) {
+          changed = true;
+          if (foreign.length > 0) hooks[event] = foreign;
+          else delete hooks[event];
+          // Removal is inherently index-shifting for anything AFTER ours —
+          // the user's own trust entries for those groups go stale (silent
+          // non-execution). Say so instead of leaving them to find out.
+          if (ourIdx >= 0 && ourIdx < existing.length - 1) {
+            notes.push(
+              `${existing.length - 1 - ourIdx} of your own ${event} group(s) sat after gbrain's — their index just shifted down, so codex will treat their config.toml trust entries as stale. Re-trust them (codex prompts on next run) or update the [hooks.state] indexes.`,
+            );
+          }
         }
       }
       // Same only-if-we-wrote-it discipline as the writer: the description is
