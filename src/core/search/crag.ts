@@ -15,8 +15,10 @@
  *              calibrated-semantic signal.
  *   weak     — zero results, a reranked top BELOW the weak-top floor
  *              (the #1863 "whole list is low-confidence" shape), an
- *              OR-relaxed keyword top (keyword_relaxed), or an unverified
- *              weak_semantic top.
+ *              OR-relaxed keyword top (keyword_relaxed — unless a top-five
+ *              row carries the question's entity + attribute words, the
+ *              #5919 `keyword_relaxed_rescued` moderate path), or an
+ *              unverified weak_semantic top.
  *
  * Consumers: the `query` op attaches the grade (+ query shape) to its
  * retrieval response meta on every call, and — config-gated, default OFF —
@@ -51,6 +53,7 @@ export interface ConfidenceGrade {
     | 'rerank_top_below_floor'
     | 'keyword_exact_top'
     | 'keyword_relaxed_top'
+    | 'keyword_relaxed_rescued'
     | 'weak_semantic_top'
     | 'decide_evidence';
   /** Rank-1 evidence label when present (auditability). */
@@ -68,8 +71,24 @@ export const DEFAULT_CRAG_MIN_TOP = 0.2;
 
 export function gradeRetrievalConfidence(
   results: SearchResult[],
-  /** `ignoreDecideEvidence`: the deterministic grade (S4's agreement rule excludes the S3-derived input). */
-  opts: { minTopScore?: number; ignoreDecideEvidence?: boolean } = {},
+  opts: {
+    minTopScore?: number;
+    /** `ignoreDecideEvidence`: the deterministic grade (S4's agreement rule excludes the S3-derived input). */
+    ignoreDecideEvidence?: boolean;
+    /**
+     * The query text — enables the #5919 relaxed-top rescue: an OR-relaxed
+     * rank-1 alone is not verification, but when a top-five row covers every
+     * capitalized entity token of the question AND at least one of its
+     * remaining content words (or their >=3-letter acronym, e.g. "annual
+     * recurring revenue" -> `arr`), an answer-bearing chunk is in the list
+     * and the grade recovers to `moderate`. Unanswerable questions stay
+     * weak: a sibling attribute's chunk never carries the asked entity, and
+     * the entity's own page never carries the missing attribute. Omitted ->
+     * the rescue does not run (callers without the query text keep the
+     * wave-7 behavior).
+     */
+    queryText?: string;
+  } = {},
 ): ConfidenceGrade {
   if (results.length === 0) return { level: 'weak', reason: 'zero_results' };
   const top = results[0];
@@ -105,12 +124,75 @@ export function gradeRetrievalConfidence(
   // lexical top matched some query terms, not the query (gbrain-evals A4-2:
   // 120 of 120 unanswerable questions had one at rank 1).
   if (top.keyword_relaxed === true) {
+    if (opts.queryText !== undefined && relaxedTopRescued(results, opts.queryText)) {
+      return { level: 'moderate', reason: 'keyword_relaxed_rescued', top_evidence: top.evidence };
+    }
     return { level: 'weak', reason: 'keyword_relaxed_top', top_evidence: top.evidence };
   }
   if (top.evidence === 'keyword_exact') {
     return { level: 'moderate', reason: 'keyword_exact_top', top_evidence: top.evidence };
   }
   return { level: 'weak', reason: 'weak_semantic_top', top_evidence: top.evidence };
+}
+
+/** #5919 — the rescue only looks inside the returned top five. */
+const RELAXED_RESCUE_DEPTH = 5;
+
+/**
+ * Question scaffolding words — stripped before a word counts as question
+ * content. Deliberately small (interrogatives, auxiliaries, articles,
+ * quantifiers): attribute-bearing words like `employees`, `months`,
+ * `runway` MUST stay, since they are what an answer chunk must carry
+ * beside the entity name.
+ */
+const QUERY_SCAFFOLD_WORDS: ReadonlySet<string> = new Set([
+  'what', 'which', 'who', 'whom', 'whose', 'when', 'where', 'why', 'how',
+  'is', 'are', 'was', 'were', 'does', 'do', 'did',
+  'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'by', 'and', 'or',
+  'many', 'much', 'there', 'its', 'it', 'any', 'have', 'has',
+]);
+
+const tokenize = (s: string): string[] =>
+  s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 1);
+
+/**
+ * Split the question into entity tokens (capitalized words after the first
+ * word — the named thing asked about) and attribute tokens (the remaining
+ * content words — what is asked of it).
+ */
+function questionTokenSets(queryText: string): { entity: Set<string>; attribute: Set<string> } {
+  const entity = new Set<string>();
+  const attribute = new Set<string>();
+  const raw = queryText.split(/\s+/);
+  for (let i = 0; i < raw.length; i++) {
+    const w = raw[i].replace(/[^a-zA-Z0-9]/g, '');
+    if (w.length <= 1) continue;
+    const lower = w.toLowerCase();
+    if (i > 0 && /^[A-Z]/.test(w)) { entity.add(lower); continue; }
+    if (!QUERY_SCAFFOLD_WORDS.has(lower)) attribute.add(lower);
+  }
+  return { entity, attribute };
+}
+
+function relaxedTopRescued(results: SearchResult[], queryText: string): boolean {
+  const { entity, attribute } = questionTokenSets(queryText);
+  if (entity.size === 0 && attribute.size === 0) return false;
+  // Acronym bridge for paraphrased attributes: the question says
+  // "annual recurring revenue", the stored sentence writes "ARR".
+  const acronym = attribute.size >= 2 ? [...attribute].map((w) => w[0]).join('') : null;
+  for (const r of results.slice(0, RELAXED_RESCUE_DEPTH)) {
+    const words = new Set(tokenize(typeof r.chunk_text === 'string' ? r.chunk_text : ''));
+    if (![...entity].every((w) => words.has(w))) continue;
+    // No named entity in the question: a row must cover the full attribute
+    // content, not just share a word with it.
+    if (entity.size === 0) {
+      if (attribute.size > 0 && [...attribute].every((w) => words.has(w))) return true;
+      continue;
+    }
+    if ([...attribute].some((w) => words.has(w))) return true;
+    if (acronym !== null && acronym.length >= 3 && words.has(acronym)) return true;
+  }
+  return false;
 }
 
 /** Meta block the `query` op attaches under `retrieval.crag`. */

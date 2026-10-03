@@ -747,7 +747,7 @@ const query: Operation = {
     //   search.crag_think=true → still weak + LOCAL caller → run think and
     //     attach its synthesis to the meta (spend-gated by config + trust).
     const queryShape = classifyQueryShape(queryText);
-    let grade = gradeRetrievalConfidence(results);
+    let grade = gradeRetrievalConfidence(results, { queryText });
     const crag: CragMetaBlock = {
       confidence: grade.level,
       reason: grade.reason,
@@ -811,7 +811,7 @@ const query: Operation = {
           // caller's row contract — pre-fix, an adopted escalation handed the
           // whole uncut sweep back (14-18 rows for a limit:10 request), and
           // bumpLastRetrievedAt + eval capture recorded the oversized set.
-          const regraded = gradeRetrievalConfidence(escalated);
+          const regraded = gradeRetrievalConfidence(escalated, { queryText });
           crag.escalated = true;
           crag.escalated_confidence = regraded.level;
           if (confidenceRank(regraded.level) > confidenceRank(grade.level)) {
