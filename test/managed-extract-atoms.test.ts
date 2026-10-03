@@ -53,5 +53,25 @@ test('managed public atom extraction publishes searchable atoms and replays with
   } finally { await stopPersistenceConsumer(engine); rmSync(home, { recursive: true, force: true }); }
 }, 60_000);
 
+test('managed atom extraction flips the provisional source_hash once the batch commits (#5938)', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'gbrain-managed-atoms-'));
+  try {
+    await withEnv({ GBRAIN_HOME: home }, async () => {
+      await engine.putPage('notes/example', { type: 'note', title: 'Example', compiled_truth: 'A private project record. '.repeat(40), frontmatter: { visibility: 'private' } });
+      const page = (await engine.getPage('notes/example', { sourceId: 'default' }))!;
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+      const chat = async (): Promise<ChatResult> => ({ text: '[{"title":"Measured progress","atom_type":"insight","body":"Measure progress against clear exit criteria."}]', blocks: [], stopReason: 'end',
+        usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 }, model: 'anthropic:claude-haiku-4-5', providerId: 'anthropic' });
+      const result = await runPhaseExtractAtoms(engine, { _transcripts: [], _pages: [{ slug: page.slug, content: page.compiled_truth, contentHash: page.content_hash! }], _chat: chat });
+      expect(result.status).toBe('ok');
+      const atoms = await engine.executeRaw<{ slug: string; source_hash: string }>("SELECT slug,frontmatter->>'source_hash' AS source_hash FROM pages WHERE type='atom'");
+      expect(atoms).toHaveLength(1);
+      // Completion receipt flipped the provisional stamp: the atom now carries
+      // the same hash doctor and discovery compare against.
+      expect(atoms[0].source_hash).toBe(page.content_hash!.slice(0, 16));
+    });
+  } finally { await stopPersistenceConsumer(engine); rmSync(home, { recursive: true, force: true }); }
+}, 60_000);
+
 test('managed extraction retires stale atom pages and files after a source edit', () => exerciseManagedAtomReconciliation(engine), 60_000);
 for (const scenario of atomRetirementCases) test(`managed atom retirement ${scenario}`, () => exerciseManagedAtomRetirement(engine, scenario), 60_000);

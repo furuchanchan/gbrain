@@ -611,7 +611,10 @@ export async function exerciseManagedAtomBatch(engine: BrainEngine, scenario: ty
       expect(completionLocks).toContainEqual(expect.arrayContaining(slugs.map(slug => ({ sourceId, slug }))));
       const atoms = await engine.executeRaw<{ slug: string; source_hash: string }>("SELECT slug,frontmatter->>'source_hash' AS source_hash FROM pages WHERE source_id=$1 AND type='atom' ORDER BY slug", [sourceId]);
       expect(atoms).toHaveLength(scenario === 'partial_publication' || scenario === 'missing_after_provenance' ? 1 : 2);
-      for (const atom of atoms) expect(atom.source_hash).toBe(`pending:${page.content_hash!.slice(0, 16)}`);
+      // Managed atoms carry the final hash from mint (#5938): an
+      // uncompleted batch stays retryable through the missing
+      // managed-atoms checkpoint, not the provisional hash.
+      for (const atom of atoms) expect(atom.source_hash).toBe(page.content_hash!.slice(0, 16));
       expect(await engine.executeRaw('SELECT page_id FROM extract_atoms_page_state WHERE page_id=$1', [page.id])).toEqual([]);
       expect(await engine.executeRaw("SELECT fingerprint FROM op_checkpoints WHERE op='managed-atoms' AND completed_keys->0->>'sourceId'=$1", [sourceId])).toEqual([]);
       expect((await discoverExtractablePages(engine, sourceId)).map(item => item.slug)).toEqual([page.slug]);

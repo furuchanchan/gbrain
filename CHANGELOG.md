@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.32.10] - 2026-10-03
+
+**Managed atom extraction stamps the final `source_hash` instead of a `pending:` marker that never flips.**
+
+On a managed brain every extracted atom carried `frontmatter.source_hash = "pending:<hash16>"` for good — the provisional-to-final flip existed only on the unmanaged path, so the two halves of the same module disagreed about whether the atom's provenance resolved. The managed path's done-signal is the durable managed-atoms checkpoint, not the hash, so the provisional marker bought nothing there: managed atoms now mint the final hash directly. A database-only flip was not an option — it would diverge the stored frontmatter from the canonical atom file and read as an uncoordinated local edit on the next write.
+
+#### Maintenance
+
+- extract_atoms (managed): atoms are stamped with the final `source_hash` at mint instead of `pending:<hash16>` (#5938). Atoms already carrying the provisional marker keep resolving through the doctor check's `pending:` strip; they are not rewritten.
+
 ## [0.60.32.0] - 2026-10-02
 
 **Fix wave 7: automatic capture stops double-storing what you `remember`, the maintenance sweep reads whole transcripts, Gmail commitments and timelines work again on managed brains, `gbrain upgrade` refuses a Bun it can't run, the contradiction judge stops excusing undated conflicts, "who is waiting on me" ages and ranks requests honestly, and 62 community pull requests land.**

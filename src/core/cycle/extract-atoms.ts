@@ -1209,15 +1209,18 @@ export async function runPhaseExtractAtoms(
       }
 
       if (!opts.dryRun) {
-        // gbrain#4148 completion receipt: atoms import with a PROVISIONAL
-        // source_hash (`pending:<hash>`) that discovery's NOT-EXISTS check
-        // can never match, then ONE flip UPDATE marks the whole item done
-        // after every atom persisted. Pre-fix, atom writes were per-atom
-        // while discovery treated any matching source_hash as complete — if
-        // atom 1 persisted and atom 2 failed, the next run skipped the item
-        // and atom 2 was permanently lost. On partial failure the pending
-        // rows stay invisible to doneness, the item re-runs, and the
-        // deterministic slugs upsert instead of duplicating.
+        // gbrain#4148 completion receipt: unmanaged atoms import with a
+        // PROVISIONAL source_hash (`pending:<hash>`) that discovery's
+        // NOT-EXISTS check can never match, then ONE flip UPDATE marks the
+        // whole item done after every atom persisted. Pre-fix, atom writes
+        // were per-atom while discovery treated any matching source_hash as
+        // complete — if atom 1 persisted and atom 2 failed, the next run
+        // skipped the item and atom 2 was permanently lost. On partial
+        // failure the pending rows stay invisible to doneness, the item
+        // re-runs, and the deterministic slugs upsert instead of
+        // duplicating. Managed atoms mint the final hash directly (#5938):
+        // their done-signal is the managed-atoms checkpoint, and discovery
+        // excludes managed_extraction rows from the hash probe either way.
         const hash16 = item.contentHash.slice(0, 16);
         const importedSlugs: string[] = [];
         const managedAtoms: Array<{ slug: string; content: string; links: LinkBatchInput[] }> = [];
@@ -1280,7 +1283,10 @@ export async function runPhaseExtractAtoms(
               atom_type: atom.atom_type,
               ...originFrontmatter,
               // Provisional until the whole item's atoms persist (see above).
-              source_hash: `pending:${hash16}`,
+              // The managed path stamps the final hash at mint: its
+              // done-signal is the managed-atoms checkpoint, and a file/DB
+              // flip would read as an uncoordinated local edit (#5938).
+              source_hash: managed ? hash16 : `pending:${hash16}`,
               visibility, ...(origin ? { managed_extraction: true } : {}),
               ...quoteFields,
               ...(atom.lesson && { lesson: atom.lesson }),
