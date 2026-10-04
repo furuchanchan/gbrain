@@ -35,6 +35,9 @@ export interface RepairPlanStep {
   lifetime_ids: number;
   checks: string[];
   rationale: string;
+  /** Set when the kind's own preview threw: the step stays listed (with the
+   * reason) instead of taking the whole plan down. */
+  preview_failed?: string;
 }
 
 export type RepairStepStatus = 'completed' | 'stopped' | 'failed' | 'budget_refused' | 'budget_exhausted';
@@ -55,7 +58,20 @@ export async function planRepairSteps(engine: BrainEngine, opts: { noEmbed?: boo
   const steps: RepairPlanStep[] = [];
   for (const spec of AUTO_REPAIR_REGISTRY) {
     if (opts.kinds && !opts.kinds.includes(spec.kind)) continue;
-    const preview = await runner.run(spec.kind, scope);
+    let preview: Awaited<ReturnType<typeof runner.run>>;
+    try {
+      preview = await runner.run(spec.kind, scope);
+    } catch (error) {
+      // One kind's unplannable preview (e.g. a statement timeout joining the
+      // whole journal on a large brain) must not take the plan down; the step
+      // stays listed with its reason and the rest of the plan still prints.
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      steps.push({ step: steps.length + 1, id: `repair:${spec.kind}`, kind: spec.kind, affected: 0,
+        command: repairApplyCommand(spec.kind, { noEmbed: opts.noEmbed }), requires_user_agreement: true, protected: true,
+        paid: false, embeds: spec.embeds, est_usd_cost: 0, lifetime_ids: 0, checks: spec.checks,
+        rationale: `preview failed for gbrain repair ${spec.kind}: ${message}`, preview_failed: message });
+      continue;
+    }
     // contextual-mode stamps only sealed pages; pages the safe-chunks step re-seals become eligible during the run.
     const unlocked = spec.kind === 'contextual-mode' && steps.some(step => step.kind === 'safe-chunks') ? Number(preview.residuals.unsealed_projection ?? 0) : 0;
     if (!preview.affected && !unlocked) continue;
@@ -103,6 +119,10 @@ export async function runRepairSteps(engine: BrainEngine, steps: RepairPlanStep[
         : `Not started: estimated $${step.est_usd_cost.toFixed(4)} exceeds the $${remaining.toFixed(4)} remaining under --max-usd.` };
     } else if (step.paid && opts.exhausted?.()) {
       result = { ...base, status: 'budget_refused', message: 'Not started: the --max-usd budget ran out earlier in this run.' };
+    } else if (step.preview_failed) {
+      // Its apply would replay the same unplannable preview; surface the
+      // recorded reason instead of re-throwing it inside the run.
+      result = { ...base, status: 'failed', message: `Preview failed during planning: ${step.preview_failed}` };
     } else {
       if (step.paid && step.embeds === 'effect' && step.est_usd_cost) opts.charge?.(step.est_usd_cost);
       try {

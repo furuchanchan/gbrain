@@ -154,6 +154,11 @@ export function renderRemediationPlanLines(plan: RemediationPlanShape, targetSco
   if (repairs.length > 0) {
     lines.push(`\nRepair steps: ${repairs.length} (requires user agreement; PROTECTED, run on this host only; independent of the score target)`);
     for (const step of repairs) {
+      if (step.preview_failed) {
+        lines.push(`  R${step.step}. ${step.kind} — preview failed: ${step.preview_failed}`);
+        lines.push(`     preview/apply manually: ${step.command}`);
+        continue;
+      }
       const cost = step.paid ? (step.est_usd_cost === null ? ' (paid embeddings, price unknown)' : ` (~$${step.est_usd_cost.toFixed(4)} embeddings)`) : ' (free)';
       lines.push(`  R${step.step}. ${step.kind} — ${step.affected} item(s)${cost} [requires user agreement]`);
       lines.push(`     apply: ${step.command}`);

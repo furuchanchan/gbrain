@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.45.1] - 2026-10-05
+
+**One repair kind whose preview cannot run no longer takes `gbrain doctor --remediation-plan` (or `--remediate`) down with it — the step stays listed with its failure reason and the rest of the plan still prints (#6000).**
+
+`planRepairSteps` previews every registered repair kind to size its step; a preview that throws — the reporter's case is the attribution-backfill journal join hitting the statement timeout on a ~500k-request Postgres brain — previously propagated and killed the entire plan. The preview now runs per-kind inside the plan: a throwing kind produces a step with `preview_failed` and `affected: 0`, printed as `R<n>. <kind> — preview failed: <reason>` with the manual preview/apply command, and `--json` carries the same `preview_failed` field. `runRepairSteps` reports such a step as `failed` with the recorded reason instead of re-running (and re-throwing) the unplannable preview inside the run. Every other kind plans normally.
+
 ## [0.60.45.0] - 2026-10-04
 
 **Meeting notes, conversations and past calendar events turn into timeline events on their own again. Each page costs one paid chat call, capped at $0.25 per page and 200 calls a day. Turn it off with `gbrain config set auto_chronicle false`.**
