@@ -660,6 +660,7 @@ function emitSyncAllEnvelope(input: {
         // types) — the whole point of the result-field plumbing is that
         // JSON/worker consumers can see them (codex re-review).
         ...(r.result.malformedSkipped ? { malformed_skipped: r.result.malformedSkipped } : {}),
+        ...(r.result.quarantinedFiles ? { quarantined_files: r.result.quarantinedFiles, quarantined_paths: r.result.quarantinedPaths } : {}),
         ...(r.result.type_warnings ? { type_warnings: r.result.type_warnings } : {}),
       } : {}),
       ...(r.error ? { error: r.error } : {}),

@@ -114,11 +114,13 @@ export function printSyncResult(result: SyncResult, sink: NodeJS.WriteStream = p
       write(result.toCommit ? `Synced ${result.fromCommit?.slice(0, 8) ?? '<initial>'}..${result.toCommit.slice(0, 8)}:` : 'Synced:');
       write(`  +${result.added} added, ~${result.modified} modified, -${result.deleted} soft-deleted (recoverable 72h), R${result.renamed} renamed`);
       write(`  ${result.chunksCreated} chunks created${result.embedded > 0 ? `, ${result.embedded} pages embedded` : ''}`);
+      if (result.quarantinedFiles) write(`  ${result.quarantinedFiles} file(s) quarantined: unparseable frontmatter (see 'gbrain doctor'; retried automatically when the content changes)${result.quarantinedPaths?.length ? ` — ${result.quarantinedPaths.slice(0, 10).join(', ')}${result.quarantinedFiles > 10 ? ', …' : ''}` : ''}`);
       if (result.uncommitted) writeUncommittedNote(result.uncommitted);
       break;
     case 'first_sync':
       write(`First sync complete. Checkpoint: ${result.toCommit.slice(0, 8)}`);
       write(`  ${result.added} file(s) imported, ${result.chunksCreated} chunks${result.embedded > 0 ? `, ${result.embedded} pages embedded` : ''}`);
+      if (result.quarantinedFiles) write(`  ${result.quarantinedFiles} file(s) quarantined: unparseable frontmatter (see 'gbrain doctor'; retried automatically when the content changes)`);
       break;
     case 'dry_run':
       break; // already printed in performSync

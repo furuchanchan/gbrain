@@ -13,6 +13,8 @@ import { assertSyncEntryOrigin, discoverManagedSync, resolveManagedSyncContext, 
 import { assertSyncPageOrigin, sameSyncOrigin, syncOriginScope } from './sync-origin.ts';
 import { assertManagedSyncActive, assertSyncDispatchActive, managedSyncAuthority, validateSyncAuthority, validateManagedSyncOptions, syncProcessingOptions, SYNC_PROCESSING_KEYS, type SyncAuthority, type SyncProcessingOptions } from './sync-authority.ts';
 import { prepareManagedSyncMutation, type SyncCursorOptions, type SyncIntent } from './sync-prepare.ts';
+import { parseMarkdown } from '../markdown.ts';
+import { invalidYamlFrontmatterError } from '../import-file.ts';
 import { inspectUnchanged, screeningRequest, type NoopKernelWaiver } from './noop-kernel.ts';
 import type { GBrainConfig } from '../config.ts';
 import { join, resolve } from 'node:path';
@@ -48,7 +50,9 @@ interface Cursor extends SyncDiscovery { runId: string; index: number; authority
   processingOptions?: SyncProcessingOptions; syncOptions?: SyncCursorOptions; overtaken?: true;
   counts: { added: number; modified: number; deleted: number; chunks: number; renamed?: number;
     /** #5751: unchanged working-tree files skipped only because a no-op publication could never resolve their admit reason. */
-    skippedContextualMode?: number; skippedCanonicalBytes?: number }; }
+    skippedContextualMode?: number; skippedCanonicalBytes?: number;
+    /** Files whose unparseable frontmatter was quarantined instead of gating the cursor. */
+    quarantined?: number; quarantinedPaths?: string[] }; }
 const OP = 'managed-sync';
 type CursorHeader = Omit<Cursor, 'entries' | 'companyPlan'> & { total: number };
 const header = ({ entries, companyPlan: _plan, ...value }: Cursor): CursorHeader => ({ ...value, total: entries.length });
@@ -122,7 +126,8 @@ function result(cursor: Cursor | CursorHeader, status: SyncResult['status'], rea
     ...(cursor.fileRefusals?.length ? { fileRefusals: cursor.fileRefusals } : {}),
     filesImported: cursor.index, bankedFiles: cursor.index, ...(cursor.uncommitted ? { uncommitted: cursor.uncommitted } : {}), ...(reason ? { reason } : {}),
     ...(cursor.counts.skippedContextualMode || cursor.counts.skippedCanonicalBytes ? { legacySkips: {
-      contextualMode: cursor.counts.skippedContextualMode ?? 0, canonicalBytes: cursor.counts.skippedCanonicalBytes ?? 0 } } : {}) };
+      contextualMode: cursor.counts.skippedContextualMode ?? 0, canonicalBytes: cursor.counts.skippedCanonicalBytes ?? 0 } } : {}),
+    ...(cursor.counts.quarantined ? { quarantinedFiles: cursor.counts.quarantined, quarantinedPaths: cursor.counts.quarantinedPaths } : {}) };
 }
 function writeDiagnostic(cursor: Cursor, pending: Pending, row: WriteRequest): ManagedSyncWriteDiagnostic {
   const terminal = isTerminalWriteState(row.state);
@@ -429,6 +434,18 @@ export async function performManagedSync(engine: BrainEngine, opts: SyncOpts, sl
       const prior = await getWriteRequest(engine, cursor.authority.writer.principal, pending.requestId);
       assertActive();
       // #5470: a frozen import whose publication would change nothing advances the cursor without an admission.
+      const quarantined = prior ? false : await quarantineInvalidFrontmatter(engine, cursor, pending, key);
+      if (quarantined) {
+        const skipped: Cursor = { ...cursor, index: cursor.index + 1, counts: { ...cursor.counts,
+          quarantined: (cursor.counts.quarantined ?? 0) + 1,
+          quarantinedPaths: [...(cursor.counts.quarantinedPaths ?? []), pending.intent.path ?? pending.slug].slice(0, 50) } };
+        delete skipped.pending;
+        cursor = await saveCursor(engine, key, cursor, skipped);
+        opts.onProgress?.({ phase: 'managed_sync.page_committed', bankedFiles: cursor.index });
+        assertActive();
+        if (slice && (cursor.index - sliceFirstIndex >= slice.maxPages || performance.now() - sliceStarted >= slice.maxMs)) return result(cursor, 'partial', 'writer_yield');
+        continue;
+      }
       const waived = prior ? null : await unchangedSyncImport(engine, cursor, pending, config);
       if (waived) {
         const skipped: Cursor = { ...cursor, index: cursor.index + 1, counts: { ...cursor.counts } }; delete skipped.pending;
@@ -562,3 +579,24 @@ async function unchangedSyncImport(engine: BrainEngine, cursor: Cursor, pending:
     return null;
   }
 }
+
+/**
+ * A file whose frontmatter cannot be parsed can never import, so it must not
+ * gate the cursor behind it: record it in the managed-sync failures ledger as
+ * quarantined and let the cursor advance. A changed blob produces a new
+ * manifest entry, so a repaired file retries automatically.
+ */
+async function quarantineInvalidFrontmatter(engine: BrainEngine, cursor: Cursor, pending: Pending, key: string): Promise<boolean> {
+  const intent = pending.intent;
+  if (intent.kind !== 'managed_sync_import' || typeof intent.content !== 'string') return false;
+  const parsed = parseMarkdown(intent.content, `${pending.slug}.md`, { validate: true });
+  const message = invalidYamlFrontmatterError(parsed);
+  if (!message) return false;
+  await recordManagedSyncFailure(engine, { source_id: cursor.sourceId, source_incarnation: cursor.incarnation,
+    path: intent.path ?? pending.slug, code: 'invalid_frontmatter', message,
+    request_id: null, run_id: cursor.runId, target: cursor.target,
+    cursor_key: `${key}#quarantine:${intent.path ?? pending.slug}`, phase: 'admission',
+    state: 'quarantined', observation_id: `${cursor.runId}:${cursor.index}` });
+  return true;
+}
+

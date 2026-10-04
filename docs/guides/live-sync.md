@@ -172,7 +172,14 @@ vars — incident-time escape hatches, not everyday knobs.
    or delete them, and fixing the file clears it on the next sync. A repository
    history rewrite still hard-blocks even with `--skip-failed`. For legacy
    sync only, `gbrain sync --skip-failed` acknowledges a known-bad set.
-   **Managed sync never acknowledges or auto-skips failed cursors.** Its
+   **Managed sync never acknowledges or auto-skips failed cursors** — with one
+   exception: a file whose frontmatter cannot be parsed at all (`YAML_PARSE`,
+   the class that can never admit) is quarantined before admission. The cursor
+   advances past it, the failures ledger records it as
+   `invalid_frontmatter`/`quarantined` (`gbrain doctor`, `gbrain sources
+   status`), the run reports `quarantined_files`/`quarantined_paths`, and a
+   repaired file imports on the next run because its changed blob hash produces
+   a new manifest entry. Every other failure class still fails closed: the
    durable failed receipt remains immutable on ordinary replay. Correct and
    commit the source, inspect local `gbrain doctor`, then explicitly retry an
    idle ordinary-source cursor with the same full/working-tree/filter options:

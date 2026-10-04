@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.41.2] - 2026-10-05
+
+**On a managed brain, one file whose frontmatter cannot parse no longer blocks the whole source: managed sync quarantines it, records it for `gbrain doctor`, and retries it automatically when its content changes (#5988).**
+
+A managed sync previously refused to advance its cursor past a `YAML_PARSE` file: the admission failed, the request stayed `failed`, and every later file waited behind it — a single bad atom page blocked a multi-thousand-file catch-up. The screen that runs before each admission now checks the frozen entry's frontmatter the same way the importer does; a `YAML_PARSE` result is recorded in the managed-sync failures ledger as `invalid_frontmatter` / `quarantined` (visible through `gbrain doctor` and `gbrain sources status`), the cursor advances, and the run result reports `quarantined_files`/`quarantined_paths`. The file is retried automatically when its blob hash changes, because that produces a new manifest entry. Files with other frontmatter problems (`MISSING_CLOSE`, `SLUG_MISMATCH`, …) keep their existing behavior — only the class that hard-fails admission is quarantined.
+
 ## [0.60.41.0] - 2026-10-04
 
 **A keyword-only `query` whose answer is in the top five now grades `moderate` again when the question merely uses a word the brain never writes, while questions about a missing attribute or an unknown company still grade `weak` (#5919). Conversation pages can set their own segmentation gap (#5918).**

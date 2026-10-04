@@ -48,6 +48,13 @@ export interface SyncResult {
   malformedSkipped?: number;
   /** #5751: unchanged managed working-tree files skipped although a no-op publication cannot resolve their admit reason. */
   legacySkips?: { contextualMode: number; canonicalBytes: number };
+  /**
+   * Managed sync: files quarantined because their frontmatter does not parse.
+   * Quarantined entries advance the cursor instead of gating it — the file is
+   * retried automatically when its content hash changes.
+   */
+  quarantinedFiles?: number;
+  quarantinedPaths?: string[];
   /** Managed sync: files skipped because another origin keeps their slug, and links derived after the checkpoint. */
   slugCollisions?: import('../core/persistence/sync-discovery.ts').SyncSlugCollision[];
   fileRefusals?: import('../core/persistence/sync-discovery.ts').SyncFileRefusal[]; links?: import('../core/persistence/links-maintenance.ts').ManagedLinkExtraction;

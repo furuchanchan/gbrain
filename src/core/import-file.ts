@@ -165,7 +165,7 @@ export interface ImportResult {
 
 export const MAX_FILE_SIZE = 5_000_000; // 5MB
 
-function invalidYamlFrontmatterError(parsed: ReturnType<typeof parseMarkdown>): string | null {
+export function invalidYamlFrontmatterError(parsed: ReturnType<typeof parseMarkdown>): string | null {
   const yamlError = parsed.errors?.find((error) => error.code === 'YAML_PARSE');
   if (!yamlError) return null;
   const detail = yamlError.message.replace(/^YAML parse failed:\s*/, '').trim();
