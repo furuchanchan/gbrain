@@ -9457,8 +9457,9 @@ subject the original resolved. Each replay uses a new request id derived from
 the failed one, so a rerun after a crash resumes the same request and a second
 apply never writes it twice (`pending_elsewhere` when another writer holds that
 request). Attribution names the local owner's writer for that lane. A replay the
-brain refuses reports `refused` with the code. The failed receipts stay as
-history.
+brain refuses reports `refused` with the code. The apply prints each reasoned
+outcome — up to eight items; `--json` carries the sampled set. The failed
+receipts stay as history.
 
 ## Resume
 

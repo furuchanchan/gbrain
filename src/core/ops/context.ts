@@ -161,11 +161,22 @@ export function matchesSlugAllowList(slug: string, prefixes: readonly string[]):
  */
 export function enforceSubagentSlugFence(ctx: OperationContext, slug: string, opName: string): void {
   if (ctx.viaSubagent !== true) return;
+  const allowList = ctx.allowedSlugPrefixes;
   if (typeof ctx.subagentId !== 'number' || Number.isNaN(ctx.subagentId)) {
+    // A numeric id only derives the legacy 'wiki/agents/<id>/' fence. A
+    // trusted-workspace lane's confinement is its allow-list — the stored
+    // WriteAuthority persists it as delegatedPrefixes without the original
+    // job's id, so a repair replay rebuilds exactly this shape.
+    if (allowList && allowList.length > 0) {
+      if (matchesSlugAllowList(slug, allowList)) return;
+      throw new OperationError(
+        'permission_denied',
+        `${opName} slug '${slug}' is not within the trusted-workspace allow-list (${allowList.join(', ')})`,
+      );
+    }
     throw new OperationError('permission_denied', `${opName} via subagent requires ctx.subagentId`);
   }
   if (slugUnderSubagentFence(ctx, slug)) return;
-  const allowList = ctx.allowedSlugPrefixes;
   throw new OperationError(
     'permission_denied',
     allowList && allowList.length > 0

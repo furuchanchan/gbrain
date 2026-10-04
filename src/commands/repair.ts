@@ -118,6 +118,14 @@ function human(result: RepairResult): string {
   if (result.stopped) lines.push(`  STOPPED: ${result.stopped.message}`);
   for (const entry of result.listing ?? []) lines.push(`  ${entry.class}: ${entry.item}${entry.detail ? ` (${entry.detail})` : ''}`);
   if (result.mode === 'apply' && result.outcomes) lines.push(`  outcomes: ${Object.entries(result.outcomes).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  // A bare `refused=N` count hides the one reason that blocks the whole run;
+  // print the sampled reasons alongside it. --json carries the full
+  // outcome_items sample.
+  const explained = (result.outcome_items ?? []).filter(i => i.reason);
+  if (result.mode === 'apply' && explained.length) {
+    for (const i of explained.slice(0, 8)) lines.push(`  ${i.outcome}: ${i.item} (${i.reason})`);
+    if (explained.length > 8) lines.push(`  … ${explained.length - 8} more reasoned item(s); --json shows the sampled set.`);
+  }
   if (result.mode === 'dry_run' && result.affected) lines.push(`  apply: ${result.apply_command}`);
   return lines.join('\n');
 }

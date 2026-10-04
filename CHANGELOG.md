@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.41.1] - 2026-10-05
+
+**`gbrain repair failed-writes` now replays writes that came through a subagent or another restricted namespace, and the apply prints why each refused item stayed refused (#5994).**
+
+Every subagent write that the managed writer guard refused could not be replayed: the replay lane rebuilds the caller's trust from the stored receipt — remote, take holders, the delegated namespace list — but the original job's numeric id is not part of that record, and the subagent slug fence demanded one before it would look at the allow-list. The fence now checks the stored allow-list without the id: a replayed write may do exactly what its receipt says it could and nothing more, because the durable authority layer still verifies the delegated namespace against the stored record first. A stored authority whose namespace no longer covers the slug is refused as before.
+
+The apply also prints each refused or revoked item's reason — up to eight entries — instead of only `refused=N`; `--json` carries the full sampled set. If a repair you ran earlier left restricted-namespace writes refused, rerun the preview and apply: the receipts are still there.
+
 ## [0.60.41.0] - 2026-10-04
 
 **A keyword-only `query` whose answer is in the top five now grades `moderate` again when the question merely uses a word the brain never writes, while questions about a missing attribute or an unknown company still grade `weak` (#5919). Conversation pages can set their own segmentation gap (#5918).**
