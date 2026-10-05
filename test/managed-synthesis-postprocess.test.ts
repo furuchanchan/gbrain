@@ -15,6 +15,9 @@ import { isolatedPersistencePostgres } from './helpers/persistence-postgres.ts';
 import { withEnv } from './helpers/with-env.ts';
 import * as staleEmbedding from '../src/core/embed-stale.ts';
 import { testBackends } from './helpers/test-backends.ts';
+import { OperationError } from '../src/core/ops/contract.ts';
+import { isWriteAdmissionContention } from '../src/core/persistence/accepted-pending.ts';
+import { retryWriteAdmission } from '../src/core/persistence/admission-retry.ts';
 
 const backends = testBackends();
 const engines: BrainEngine[] = [];
@@ -397,3 +400,64 @@ test('#5854: a postprocess publish still pending after its wait is deferred, the
     expect(await engine.getConfig('dream.synthesize.last_completion_ts')).not.toBeNull();
   });
 }, 120_000);
+
+test('#6006: isWriteAdmissionContention recognizes the admission retry-budget exhaustion', async () => {
+  const contention = new OperationError('storage_error', 'Write admission is temporarily blocked by database contention.');
+  contention.detail = 'database_contention';
+  expect(isWriteAdmissionContention(contention)).toBe(true);
+  expect(isWriteAdmissionContention(new OperationError('storage_error', 'a real storage failure.'))).toBe(false);
+  expect(isWriteAdmissionContention(new OperationError('write_pending', 'still queued.'))).toBe(false);
+  // The real producer: an attempt that only ever sees lock_timeout (55P03)
+  // exhausts the 5 s budget and throws the contention-tagged storage_error.
+  const exhausted = await retryWriteAdmission('00000000-0000-4000-8000-000000000000', async () => {
+    throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+  }).catch(error => error);
+  expect(isWriteAdmissionContention(exhausted)).toBe(true);
+}, 30_000);
+
+test('#6006: postprocess defers a publish whose admission exhausts under counter-row contention, resumed next cycle', async () => {
+  if (!engines.some(engine => engine.kind === 'postgres')) return;
+  await fixture(async ({ engine, sourceId, root, opts }) => {
+    if (engine.kind !== 'postgres') return;
+    const corpus = join(root, '..', 'corpus');
+    mkdirSync(corpus);
+    writeFileSync(join(corpus, basename(opts.inputFile)), readFileSync(opts.inputFile));
+    await engine.setConfig('dream.synthesize.session_corpus_dir', corpus);
+    const ordinary = { brainDir: root, sourceId, dryRun: false };
+    await interruptAfterChild(engine, sourceId, ordinary);
+    const slug = await outputSlug(engine, sourceId);
+    await engine.executeRaw("DELETE FROM config WHERE key='dream.synthesize.last_completion_ts'");
+    // A competing transaction holds the 'brain' counter row FOR UPDATE: the
+    // publish's admission lock timeouts (55P03) exhaust the 5 s retry budget.
+    let release!: () => void;
+    const held = engine.transaction(async tx => {
+      await tx.executeRaw("INSERT INTO persistence_counters(key) VALUES('brain') ON CONFLICT DO NOTHING");
+      await tx.executeRaw("SELECT key FROM persistence_counters WHERE key='brain' FOR UPDATE");
+      await new Promise<void>(resolve => { release = resolve; });
+    });
+    let deferred: Awaited<ReturnType<typeof runPhaseSynthesize>>;
+    try { deferred = await runPhaseSynthesize(engine, ordinary); }
+    finally { release(); await held; }
+    expect(deferred.status).toBe('warn');
+    expect(deferred.details.publish_pending).toBe(1);
+    expect(deferred.details.publish_deferred).toBe('publish deferred (writer busy); finishes next cycle, no action needed');
+    expect(deferred.details.pages_written).toBe(0);
+    expect(await engine.getConfig('dream.synthesize.last_completion_ts')).toBeNull();
+    // No request row was admitted: the next cycle resubmits the same intent
+    // under the same deterministic request id.
+    expect(await engine.executeRaw(
+      "SELECT request_id::text FROM persistence_requests WHERE source_id=$1 AND slug=$2 AND intent->>'kind'='managed_maintenance_page'",
+      [sourceId, slug])).toEqual([]);
+    await disposePersistenceConsumer(engine);
+    const next = await runPhaseSynthesize(engine, ordinary);
+    expect(next.status).toBe('ok');
+    expect(next.details.publish_pending).toBeUndefined();
+    expect(next.details.written_slugs).toEqual([slug]);
+    const [receipt] = await engine.executeRaw<{ request_id: string; state: string }>(
+      "SELECT request_id::text, state FROM persistence_requests WHERE source_id=$1 AND slug=$2 AND intent->>'kind'='managed_maintenance_page'",
+      [sourceId, slug]);
+    expect(receipt.state).toBe('committed');
+    const snapshot = (await engine.readPageSnapshot(slug, { sourceId }))!;
+    expect(snapshot.page.frontmatter.dream_generated).toBe(true);
+  });
+}, 180_000);

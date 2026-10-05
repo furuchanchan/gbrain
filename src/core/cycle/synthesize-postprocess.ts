@@ -10,7 +10,7 @@ import { getWriteRequest } from '../persistence/journal.ts';
 import type { WriteRequest } from '../persistence/model.ts';
 import { publishMaintenancePage, type MaintenanceAuthority } from '../persistence/prepared-maintenance.ts';
 import { writeResponse } from '../persistence/service.ts';
-import { acceptedPendingReceipt } from '../persistence/accepted-pending.ts';
+import { acceptedPendingReceipt, isWriteAdmissionContention } from '../persistence/accepted-pending.ts';
 import type { PhaseResult } from '../cycle.ts';
 import type { DiscoveredTranscript } from './transcript-discovery.ts';
 import { emptyQuoteVerifyStats, groundSource, isDreamOwnedPage, resolveVerifyPrior, verifyDreamPage, type GroundedSource, type GroundingPass } from './synthesize-verify.ts';
@@ -109,7 +109,9 @@ export async function postprocessManagedSynthesis(
     try {
       await publishMaintenancePage(engine, authority, ref.slug, content, { requestId, expectedRevision: revision });
     } catch (error) {
-      if (!acceptedPendingReceipt(error)) throw error;
+      // Admission contention never reached a request row: the deterministic
+      // request id still makes the deferred publish resumable next cycle.
+      if (!acceptedPendingReceipt(error) && !isWriteAdmissionContention(error)) throw error;
       pending++;
       continue;
     }

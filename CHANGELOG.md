@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.52.6] - 2026-10-05
+
+### Fixed
+
+- **Managed synthesis postprocessing defers a publish whose write admission exhausted its retry budget under database contention, instead of failing the whole phase** (#6006). When a maintenance output publish could not even reach a request row because the `persistence_counters` row stayed contended past the 5 s admission budget, the resulting `storage_error` propagated as `SYNTH_PHASE_FAIL` — the phase reported zero pages although every child write had committed, no summary page was written, and `dream.synthesize.last_completion_ts` stayed unstamped. The postprocess loop now treats the contention-tagged admission miss like a `write_pending` publish: `isWriteAdmissionContention` recognizes the `storage_error`/`database_contention` pair, the phase warns with `publish_pending`, and the next ordinary cycle resubmits the same deterministic request id — the durable retry path is the same one pending publishes already use.
+
 ## [0.60.52.0] - 2026-10-04
 
 **A PGLite brain that has saved memory can now move to Postgres with nothing lost: one command shows the plan, one confirmation moves it, and the move proves the copy matches before it switches.**
