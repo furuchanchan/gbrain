@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.52.2] - 2026-10-05
+
+**The `enrich` skill now files entities where the active schema pack says they belong, instead of forcing everything through the hardcoded person and company templates.**
+
+On a brain whose active pack declares entity types beyond `person` and
+`company` — an `investment_firm` type with its own directory and subtypes,
+for example — enrichment used to write `companies/fund`, `type: company`,
+no subtype, plus `null` placeholder contact fields the pack never asked
+for. The skill now resolves each entity's type, directory and subtype from
+the active pack (`skills/brain-taxonomist/SKILL.md`, or `gbrain schema show
+--json`) before writing: a pack-declared type wins when the evidence fits
+one, frontmatter keys come from the pack and from sibling pages of that
+type with unknown values omitted rather than nulled, and link-target pages
+are written before the pages that reference them. Fixes
+[#6030](https://github.com/garrytan/gbrain/issues/6030).
+
 ## [0.60.52.0] - 2026-10-04
 
 **A PGLite brain that has saved memory can now move to Postgres with nothing lost: one command shows the plan, one confirmation moves it, and the move proves the copy matches before it switches.**

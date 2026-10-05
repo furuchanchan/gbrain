@@ -39,7 +39,11 @@ This skill guarantees:
 - Tiered enrichment: Tier 1 (full), Tier 2 (medium), Tier 3 (minimal) based on notability
 - No stubs: every new page has meaningful content from web search or existing brain context
 
-> **Filing rule:** Read `skills/_brain-filing-rules.md` before creating any new page.
+> **Filing rule:** Read `skills/_brain-filing-rules.md` before creating any new
+> page, and resolve the directory from the ACTIVE schema pack via
+> `skills/brain-taxonomist/SKILL.md` (`gbrain schema show --json`) — a
+> pack-declared entity type outranks the hardcoded person/company templates
+> below.
 
 > **Convention:** See `skills/conventions/quality.md` for Iron Law back-linking.
 
@@ -165,11 +169,20 @@ the raw data shows exactly what the API returned.
 #### CREATE path
 
 1. Check notability gate (see `skills/_brain-filing-rules.md`)
-2. Check filing rules -- where does this entity go?
-3. Create page with the appropriate template (below)
-4. Fill compiled truth with citations
-5. Add first timeline entry
-6. Leave empty sections as `[No data yet]` (don't fill with boilerplate)
+2. Resolve the entity's type, directory and subtype from the ACTIVE schema
+   pack -- read `skills/brain-taxonomist/SKILL.md` or `gbrain schema show
+   --json`, and choose a pack-declared entity type over `company`/`person`
+   whenever the evidence fits one. The templates below are the fallback for
+   packs that declare nothing better.
+3. Reuse the frontmatter keys and conventions of sibling pages already filed
+   under that type; omit keys whose values are unknown -- never write `null`
+   placeholders (an empty `email:` serializes as null).
+4. Create page with the appropriate template (below)
+5. Fill compiled truth with citations
+6. Add first timeline entry
+7. Leave empty sections as `[No data yet]` (don't fill with boilerplate)
+8. In a batch, write link-target pages before the pages that reference them
+   (or add the links once every target exists)
 
 #### UPDATE path
 
@@ -190,10 +203,11 @@ updated: YYYY-MM-DD
 tags: []
 company: Current Company
 relationship: How the user knows them
-email:
-linkedin:
-twitter:
-location:
+# contact keys are examples: include a key only when its value is known
+email: jane@example.com
+linkedin: jane-doe
+twitter: janedoe
+location: City
 ---
 
 # Full Name
@@ -282,7 +296,9 @@ put_page response carries `auto_links: { created, removed, errors }`; MCP
 writes (stdio and HTTP) return `auto_links: { skipped: "remote", hint }`
 instead — edges are reconciled by the serve maintenance sweep or
 `gbrain sweep --once`, and `add_link` covers an edge you need immediately.
-Timeline entries still need explicit `gbrain timeline-add` calls.
+Timeline entries still need explicit `gbrain timeline-add` calls. A wikilink
+to a page that does not exist yet is not reconciled by any of these — create
+each link's target before (or together with) the page that references it.
 
 ## Bulk Enrichment Rules
 
