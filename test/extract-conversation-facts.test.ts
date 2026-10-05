@@ -650,6 +650,32 @@ describe('runExtractConversationFactsCore', () => {
     expect(mainChatCalls).toBe(0);
   });
 
+  test('#6033 an explicit slug list counts a failed page and still extracts the rest', async () => {
+    const slugs = ['conversations/list-path-p1', 'conversations/list-path-p2', 'conversations/list-path-p3'];
+    for (const slug of slugs) {
+      await engine.putPage(slug, {
+        type: 'conversation', title: slug,
+        compiled_truth: [
+          fmt('Alice Example', '2024-03-15', '9:00 AM', `hello from ${slug}`),
+          fmt('Bob Demo', '2024-03-15', '9:01 AM', `hi for ${slug}`),
+        ].join('\n'),
+        timeline: '', frontmatter: { date: '2024-03-15' },
+      });
+    }
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default', slugs, sleepMs: 0,
+      extractor: async ({ turnText }) => {
+        if (turnText.includes(`hi for ${slugs[1]}`)) throw new Error('segment extraction failed (malformed_output)');
+        return [{ fact: `fact for ${turnText.slice(-20)}`, kind: 'event', confidence: 1, entity_slug: null, source: 'test', context: turnText }];
+      },
+    });
+    expect(result.pages_failed).toBe(1);
+    expect(result.pages_processed).toBe(2);
+    const rows = await engine.executeRaw<{ source_markdown_slug: string }>(
+      'SELECT DISTINCT source_markdown_slug FROM facts ORDER BY source_markdown_slug', []);
+    expect(rows.map(row => row.source_markdown_slug)).toEqual([slugs[0], slugs[2]]);
+  });
+
   test('#5364 repairing the same no-match page extracts once without touching another source', async () => {
     const slug = 'conversations/repairable-speaker-object-example';
     const sourceId = 'default';

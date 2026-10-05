@@ -1289,6 +1289,24 @@ function nonExtractableAuditFact(
   };
 }
 
+/** #6033: an explicit `opts.slugs` run uses the enumeration pool's per-page
+ * accounting — count the failure, log it, keep going. Aborts and
+ * BudgetExhausted still halt the run. */
+async function processExplicitSlugWithLock(
+  page: Page,
+  processPageWithLock: (page: Page) => Promise<void>,
+  result: ExtractConversationFactsResult,
+): Promise<void> {
+  try {
+    await processPageWithLock(page);
+  } catch (error) {
+    if (isAbortError(error) || error instanceof BudgetExhausted) throw error;
+    result.pages_failed++;
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[extract-conversation-facts] ${page.slug} failed: ${message}\n`);
+  }
+}
+
 /**
  * Core entry point — one source per call. Caller (CLI / Minion / cycle
  * phase) handles multi-source iteration externally.
@@ -1494,7 +1512,7 @@ export async function runExtractConversationFactsCore(
           result.pages_skipped_type_mismatch++;
           continue;
         }
-        await processPageWithLock(page);
+        await processExplicitSlugWithLock(page, processPageWithLock, result);
       }
     } else if (opts.slug) {
       const page = await engine.getPage(opts.slug, { sourceId });

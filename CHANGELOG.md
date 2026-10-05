@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.64.1] - 2026-10-05
+
+### Fixed
+
+- **`extract-conversation-facts` with an explicit `slugs` list now counts a failed page and keeps processing the remaining slugs, instead of aborting the whole call** (#6033). A single `malformed_output` (or any other non-abort) segment error on one page previously propagated out of the `opts.slugs` loop, leaving every later page untouched — `gbrain transcripts ingest` lost facts for the rest of an import when one model reply failed to parse. The list path now applies the enumeration pool's per-page accounting: catch, count in `pages_failed`, log, continue. Abort errors and `BudgetExhausted` still halt the run.
+
 ## [0.60.64.0] - 2026-10-05
 
 **An agent connected to a remote brain can now save a stack of long pages in under a minute, and gbrain tells it how.**
