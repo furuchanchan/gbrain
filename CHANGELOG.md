@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.64.2] - 2026-10-05
+
+### Fixed
+
+- **`repair timeline` and `repair visibility` no longer queue a paid `facts-absorb` job per rewritten page** (#6042). A repair that only materializes rows the database already holds (or flips the visibility flag) republishes identical prose, yet every committed write fired the facts backstop — one LLM extraction per page, uncounted in the preview and unmentioned in the consent block; one 1,293-page apply queued over 40 hours of paid jobs and starved every `sync` and `autopilot-cycle` behind them. Such repairs now submit with `maintenanceWrite`, the write journals `intent.maintenance_rewrite`, and the backstop skips it at prepare and at dispatch. Repair kinds that genuinely change content (`failed-writes`, `captured-facts`, `take-supersession`, `connector-fences`) keep full extraction.
+
 ## [0.60.64.0] - 2026-10-05
 
 **An agent connected to a remote brain can now save a stack of long pages in under a minute, and gbrain tells it how.**

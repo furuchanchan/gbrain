@@ -104,7 +104,9 @@ export const visibilityRepair: RepairHandler = {
     const fresh = (await planVisibilityRepair(ctx.engine, [item.source_id], snapshot.page.id)).changes.find(c => c.id === snapshot.page.id);
     if (!fresh || fresh.from !== item.change.from || fresh.to !== item.change.to) return false;
     const page = { ...snapshot.page, frontmatter: { ...snapshot.page.frontmatter, visibility: item.change.to } };
-    await submitPageMutation(ctx, { operation: 'put_page', params: { slug: item.slug, source_id: item.source_id,
+    // #6042: a visibility-only rewrite — same prose, new frontmatter flag, so
+    // the write carries maintenance_rewrite and queues no paid facts-absorb job.
+    await submitPageMutation(ctx, { operation: 'put_page', maintenanceWrite: true, params: { slug: item.slug, source_id: item.source_id,
       content: serializePageToMarkdown(page, snapshot.tags), expected_revision: snapshot.revision,
       request_id: await repairRequestId(ctx, 'visibility', item, snapshot.revision) } });
     return true;

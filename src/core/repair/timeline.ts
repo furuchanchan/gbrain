@@ -82,7 +82,9 @@ export const timelineRepair: RepairHandler = {
     if (!snapshot) return false;
     const counts = await pendingTimelineRows(ctx.engine, { ...snapshot.page, timeline: snapshot.page.timeline ?? '' }, await removedRowIds(ctx.engine, snapshot.page));
     if (!counts.materializable) return false;
-    await submitPageMutation(ctx, { operation: 'put_page', params: { slug: item.slug, source_id: item.source_id,
+    // #6042: a materialization rewrite — the page's prose is unchanged, so the
+    // write carries maintenance_rewrite and queues no paid facts-absorb job.
+    await submitPageMutation(ctx, { operation: 'put_page', maintenanceWrite: true, params: { slug: item.slug, source_id: item.source_id,
       content: serializePageToMarkdown(snapshot.page, snapshot.tags), expected_revision: snapshot.revision,
       request_id: await repairRequestId(ctx, 'timeline', item, snapshot.revision) } });
     return true;

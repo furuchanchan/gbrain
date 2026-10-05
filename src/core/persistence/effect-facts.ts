@@ -37,6 +37,9 @@ export async function authorizeFactsBackstop(engine: BrainEngine, row: WriteRequ
 
 /** Provider availability belongs to the durable job's execution process. */
 export async function prepareFactsBackstop(engine: BrainEngine, row: WriteRequest, page: ParsedPage): Promise<FactsBackstopStatus> {
+  // #6042: a maintenance rewrite publishes rows the database already holds —
+  // the page's prose did not change, so paid extraction has nothing new to find.
+  if (row.intent?.maintenance_rewrite === true) return { skipped: 'maintenance_rewrite' };
   const confined = derivedExtractionSkip(row.authority);
   if (confined) return { skipped: confined };
   if (!(await isFactsExtractionEnabled(engine))) return { skipped: 'extraction_disabled' };
@@ -76,6 +79,7 @@ export async function dispatchFactsBackstopEffect(engine: BrainEngine, effect: P
     const [row] = await tx.executeRaw<WriteRequest>('SELECT * FROM persistence_requests WHERE id=$1::uuid', [effect.request_id]);
     let skipped: string | undefined;
     if (!row || row.state !== 'committed') skipped = 'invalid_write_request';
+    if (!skipped && row?.intent?.maintenance_rewrite === true) skipped = 'maintenance_rewrite';
     if (row && !skipped) {
       try { await authorizeFactsBackstop(tx, row, true); }
       catch (error) {

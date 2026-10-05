@@ -100,6 +100,28 @@ describe('gbrain repair timeline', () => {
     });
   }, 120_000);
 
+  test('#6042 an applied materialization rewrite queues no facts-absorb job', async () => {
+    await brain(async (engine, [source]) => {
+      const slug = 'notes/fact-eligible';
+      await submitPageMutation(ctxFor(engine, source), { operation: 'put_page', params: {
+        slug, content: page(`Body of ${slug}. ${'fact-worthy prose '.repeat(12)}`), request_id: randomUUID() } });
+      await engine.transaction(tx => withCoordinatedWrite(tx, [source], () => tx.executeRaw(
+        `INSERT INTO timeline_entries(page_id,date,source,summary,detail) SELECT id,'2026-07-01','legacy',$3,'' FROM pages WHERE source_id=$1 AND slug=$2`,
+        [source, slug, `History of ${slug}`]), TEST_WRITE_ATTRIBUTION));
+      const scope = await resolveRepairScope(engine);
+      const applied = await runRepair(ctxFor(engine, source), timelineRepair, scope, { apply: true });
+      expect(applied).toMatchObject({ applied: 1, complete: true });
+      const requests = await engine.executeRaw<{ id: string; intent: Record<string, unknown> | null }>(
+        'SELECT id,intent FROM persistence_requests WHERE slug=$1 AND source_id=$2 ORDER BY created_at', [slug, source]);
+      expect(requests).toHaveLength(2);
+      const kinds = async (id: string) => (await engine.executeRaw<{ kind: string }>(
+        'SELECT kind FROM persistence_effects WHERE request_id=$1::uuid', [id])).map(r => r.kind);
+      expect(await kinds(requests[0].id)).toContain('facts-backstop');
+      expect(requests[1].intent?.maintenance_rewrite).toBe(true);
+      expect(await kinds(requests[1].id)).not.toContain('facts-backstop');
+    });
+  }, 120_000);
+
   test('--limit stops after n items and a rerun resumes from the scope-bound checkpoint', async () => {
     await brain(async (engine, [source]) => {
       for (const slug of ['notes/a', 'notes/b', 'notes/c']) await pageWithHistory(engine, source, slug);
