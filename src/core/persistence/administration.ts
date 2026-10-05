@@ -202,7 +202,7 @@ export async function runPersistenceAdministration(engine: BrainEngine, operatio
     const expectedState = await requireWriterAdminIntent(engine, operation, params);
     if (params.shared_skills === true) {
       const { activateSharedSkillPersistence } = await import('./skill-activation.ts');
-      return { ...await activateSharedSkillPersistence(engine, { confirmQuiesced: true, dryRun: params.dry_run === true, expectedState }),
+      return { ...await activateSharedSkillPersistence(engine, { confirmQuiesced: true, dryRun: params.dry_run === true, expectedState, cleanupDeadLocalLocks: params.cleanup_dead_local_locks === true }),
         ...(params.dry_run ? { dry_run: true, action: operation } : {}) };
     }
     const { activatePersistence } = await import('./activation.ts');

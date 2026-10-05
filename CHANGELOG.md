@@ -10,6 +10,20 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.52.1] - 2026-10-05
+
+**`gbrain sources writer activate --shared-skills --cleanup-dead-local-locks` now honors the flag it already accepted, so a dead lock can no longer block shared skills forever.**
+
+Enabling shared skills runs a stricter quiescence check than a normal
+activation: every `gbrain_cycle_locks` row — even one left behind by a process
+that died long ago — refused with `writer_not_quiesced`, and the flag that
+cleans provably dead local holders was silently dropped on this path. The
+shared-skills activation now applies the same rule as base activation: only an
+explicit `--cleanup-dead-local-locks` removes exact dead same-host holders
+inside the activation transaction; live, young or foreign holders still
+refuse. `--dry-run` reports the rows it inspected under `legacy_locks` without
+deleting anything. Fixes [#6029](https://github.com/garrytan/gbrain/issues/6029).
+
 ## [0.60.52.0] - 2026-10-04
 
 **A PGLite brain that has saved memory can now move to Postgres with nothing lost: one command shows the plan, one confirmation moves it, and the move proves the copy matches before it switches.**

@@ -9,9 +9,11 @@ import { managedFilesystemDatastorePath, refreshManagedFilesystemRoots } from '.
 import { assertWriterAdminState, WRITER_INSPECTION_HINT } from './admin-intent.ts';
 import { assertWriterAdminUnlocked } from './admin-lock.ts';
 import { notQuiescedError } from './blocking-effects.ts';
+import { inspectLegacyWriterLocks } from './legacy-locks.ts';
+import { deleteLockRowExact } from '../db-lock.ts';
 
 export async function activateSharedSkillPersistence(engine: BrainEngine,
-  options: { confirmQuiesced?: boolean; dryRun?: boolean; expectedState?: string } = {}): Promise<{ activated: boolean; protocol_version: 2; filesystem_sources: number; drift_audit?: ActivationReport['drift_audit'] }> {
+  options: { confirmQuiesced?: boolean; dryRun?: boolean; expectedState?: string; cleanupDeadLocalLocks?: boolean } = {}): Promise<{ activated: boolean; protocol_version: 2; filesystem_sources: number; drift_audit?: ActivationReport['drift_audit']; legacy_locks?: Awaited<ReturnType<typeof inspectLegacyWriterLocks>> }> {
   const quiescence = () => new OperationError('writer_not_quiesced',
     'Stop and exclude older canonical writers and direct-file skill servers before enabling shared skill publication.',
     'Run this activation on every canonical owner only after verifying process shutdown and canonical-root write access.');
@@ -35,7 +37,7 @@ export async function activateSharedSkillPersistence(engine: BrainEngine,
   };
   const initial = await loadBindings(engine);
   const base = await activatePersistence(engine, { confirmQuiesced: true,
-    dryRun: options.expectedState !== undefined || options.dryRun, expectedState: options.expectedState });
+    dryRun: options.expectedState !== undefined || options.dryRun, expectedState: options.expectedState, cleanupDeadLocalLocks: options.cleanupDeadLocalLocks });
   if (options.expectedState !== undefined && !base.enabled) throw new OperationError('writer_registration_required',
     'Activate managed persistence first, then review fresh writer status before enabling shared skills.', WRITER_INSPECTION_HINT);
   const locks: NativeLockHandle[] = [];
@@ -57,21 +59,27 @@ export async function activateSharedSkillPersistence(engine: BrainEngine,
       const current = await loadBindings(tx);
       const identity = (rows: WorktreeBinding[]) => JSON.stringify(rows.map(row => [row.source_id, row.source_incarnation, row.worktree_id,
         row.owner_host_id, String(row.owner_epoch), String(row.topology_generation), row.relative_path, row.local_path, row.coordination_path]));
+      // Same rule as base activation: only an explicitly requested,
+      // provably dead local holder may be cleaned; every other row refuses.
+      const legacyLocks = await inspectLegacyWriterLocks(tx);
       if (identity(current) !== identity(initial)
-        || (await tx.executeRaw('SELECT id FROM gbrain_cycle_locks LIMIT 1')).length) throw quiescence();
+        || legacyLocks.some(row => !options.cleanupDeadLocalLocks || row.liveness !== 'dead_eligible')) throw quiescence();
       if ((await tx.executeRaw("SELECT id FROM persistence_requests WHERE state IN ('queued','running','recovering') OR recovery IS NOT NULL LIMIT 1")).length
         || (await tx.executeRaw("SELECT id FROM persistence_effects WHERE state IN ('queued','running') OR recovery IS NOT NULL LIMIT 1")).length) {
         throw await notQuiescedError(tx, quiescence().message, { queuedEffects: true });
       }
       if (options.dryRun) return { activated: false, protocol_version: 2, filesystem_sources: current.length,
-        ...(base.drift_audit ? { drift_audit: base.drift_audit } : {}) };
+        ...(base.drift_audit ? { drift_audit: base.drift_audit } : {}), legacy_locks: legacyLocks };
+      for (const row of legacyLocks) {
+        if (!(await deleteLockRowExact(tx, row.id, row.holder_pid, row.acquisition_token)).deleted) throw quiescence();
+      }
       for (const binding of current) await tx.executeRaw(`INSERT INTO persistence_writer_protocols(worktree_id,host_id,owner_epoch,protocol_version)
         VALUES($1::uuid,$2::uuid,$3,2) ON CONFLICT(worktree_id,host_id) DO UPDATE SET
         owner_epoch=excluded.owner_epoch,protocol_version=2,registered_at=now()`, [binding.worktree_id, hostId, binding.owner_epoch]);
       await tx.executeRaw("SELECT set_config('gbrain.writer_quiesced','true',true)");
       await tx.executeRaw('UPDATE persistence_brain SET writer_protocol_floor=2,skill_bundles_enabled=true WHERE singleton=1');
       await refreshManagedFilesystemRoots(tx, managedFilesystemDatastorePath(engine));
-      return { activated: true, protocol_version: 2, filesystem_sources: current.length };
+      return { activated: true, protocol_version: 2, filesystem_sources: current.length, legacy_locks: legacyLocks };
     });
   } finally { for (const lock of locks.reverse()) await lock.release(); }
 }
