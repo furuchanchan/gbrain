@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.52.5] - 2026-10-05
+
+**Fixed: a code-file import that committed correctly can no longer be failed by a concurrent writer's later commit.**
+
+`importCodeFile` ran its post-write read-back verification AFTER the write transaction committed; the markdown path had already moved it in-transaction with an explicit comment, leaving the code path with the race the markdown path eliminated. On a multi-writer brain (dream cycle, autopilot, MCP `put_page`, a concurrent `gbrain sync`), a second commit to the same (slug, source_id) between the first writer's commit and its read-back produced a hard `post-write read-back failed: stale content_hash ... silent desync` error that misdiagnosed a last-write-wins race as DB corruption. The read-back now shares the page commit, exactly like `importFromContent`. Thanks to the reporter for the precise parity diagnosis (issue #6011).
+
 ## [0.60.52.0] - 2026-10-04
 
 **A PGLite brain that has saved memory can now move to Postgres with nothing lost: one command shows the plan, one confirmation moves it, and the move proves the copy matches before it switches.**

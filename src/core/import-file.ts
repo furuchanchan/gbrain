@@ -1484,17 +1484,16 @@ export async function importCodeFile(
       [MARKDOWN_CHUNKER_VERSION, txOpts.sourceId, slug]);
     await sealPageTextProjection(tx, slug, txOpts.sourceId);
     if (opts.prepare) await installCodeChunkEdges(tx, slug, txOpts.sourceId, code);
+    // Readback shares the page commit, mirroring the markdown path. A later
+    // writer can no longer turn a successful import into a postcommit
+    // verification error (#6011).
+    await verifyPageReadable(tx, slug, hash, sourceId, 'importCodeFile');
   };
   if (opts.prepare) {
     const result: ImportResult = { slug, status: 'imported', chunks: chunks.length };
     return opts.prepare({ slug, parsedPage, observedRevision: existing?.knowledge_revision ?? null, noop: false, result, validate: async () => {}, apply });
   }
   await maintenanceTransaction(engine, apply);
-
-  // Post-write read-back verification.
-  // Same guard as the markdown path: a code page write is not "done" until
-  // it is readable back via getPage.
-  await verifyPageReadable(engine, slug, hash, sourceId, 'importCodeFile');
 
   // v0.20.0 Cathedral II Layer 5 (A1): extracted call-site edges persist
   // in code_edges_symbol (unresolved — we don't attempt within-file target
