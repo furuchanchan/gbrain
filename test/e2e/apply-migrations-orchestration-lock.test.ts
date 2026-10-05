@@ -63,6 +63,19 @@ describeE2E('apply-migrations orchestration lock (Postgres)', () => {
     }
   }, 120_000);
 
+  test('a rewritten self-owned lease row re-binds instead of self-refusing (#6028)', async () => {
+    await getConn().unsafe('DELETE FROM gbrain_cycle_locks WHERE id = $1', [MIGRATION_ORCHESTRATION_LOCK_ID]);
+    const home = makeHome({ engine: 'postgres', database_url: process.env.DATABASE_URL! });
+    try {
+      const run = await collect(spawnDriver(home, writeDriver(home, { holdMs: 0, openDatastore: false, rewriteSelf: true })));
+      expect(run.code, run.stderr + run.stdout).toBe(0);
+      expect(logHas(home, 'end')).toBe(true);
+    } finally {
+      await getConn().unsafe('DELETE FROM gbrain_cycle_locks WHERE id = $1', [MIGRATION_ORCHESTRATION_LOCK_ID]);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test('a runner that lost its lease stops before the next migration and reports the new holder', async () => {
     await getConn().unsafe('DELETE FROM gbrain_cycle_locks WHERE id = $1', [MIGRATION_ORCHESTRATION_LOCK_ID]);
     const home = makeHome({ engine: 'postgres', database_url: process.env.DATABASE_URL! });

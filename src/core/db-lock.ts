@@ -254,16 +254,13 @@ export async function tryAcquireDbLock(
     if (rows.length === 0) return null;
     // Epoch text avoids per-session TimeZone/DateStyle differences. The
     // UUID distinguishes acquisitions sharing one transaction-stable NOW().
-    const fence = rows[0].fence;
-    const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
-      await sql`
-        DELETE FROM gbrain_cycle_locks
-        WHERE id = ${lockId} AND holder_pid = ${pid} AND extract(epoch from acquired_at)::text = ${fence} AND acquisition_token = ${acquisitionToken}::uuid
-      `;
-    });
-    return {
+    // refresh/release/cleanup read the handle's CURRENT fields rather than
+    // the acquire-time locals so a holder that re-verifies the row is its own
+    // can rebind in place (#6028).
+    let deregister: () => void = () => {};
+    const handle: DbLockHandle = {
       id: lockId,
-      acquiredAt: fence,
+      acquiredAt: rows[0].fence,
       acquisitionToken,
       refresh: async (refreshOpts?: { signal?: AbortSignal }) => {
         // v0.41.13.0: bump BOTH ttl_expires_at AND last_refreshed_at.
@@ -276,7 +273,7 @@ export async function tryAcquireDbLock(
                   last_refreshed_at = NOW()
             WHERE id = $2 AND holder_pid = $3 AND extract(epoch from acquired_at)::text = $4 AND acquisition_token = $5::uuid
             RETURNING id`,
-          [ttl, lockId, pid, fence, acquisitionToken],
+          [ttl, lockId, pid, handle.acquiredAt, handle.acquisitionToken],
           refreshOpts,
         );
         return updated.length > 0;
@@ -285,10 +282,17 @@ export async function tryAcquireDbLock(
         deregister();
         await sql`
           DELETE FROM gbrain_cycle_locks
-          WHERE id = ${lockId} AND holder_pid = ${pid} AND extract(epoch from acquired_at)::text = ${fence} AND acquisition_token = ${acquisitionToken}::uuid
+          WHERE id = ${lockId} AND holder_pid = ${pid} AND extract(epoch from acquired_at)::text = ${handle.acquiredAt} AND acquisition_token = ${handle.acquisitionToken}::uuid
         `;
       },
     };
+    deregister = registerCleanup(`db-lock:${lockId}`, async () => {
+      await sql`
+        DELETE FROM gbrain_cycle_locks
+        WHERE id = ${lockId} AND holder_pid = ${pid} AND extract(epoch from acquired_at)::text = ${handle.acquiredAt} AND acquisition_token = ${handle.acquisitionToken}::uuid
+      `;
+    });
+    return handle;
   }
 
   if (engine.kind === 'pglite' && maybePGLite.db) {
@@ -494,6 +498,12 @@ export interface LockSnapshot {
   last_refreshed_at: Date | null;
   /** ms since the most recent refresh, or null when last_refreshed_at is null. */
   ms_since_last_refresh: number | null;
+  /**
+   * `extract(epoch from acquired_at)::text` — the handle's fencing identity.
+   * Needed by a holder re-binding to its own row (#6028): acquired_at's
+   * Date form loses the microsecond precision the fenced WHERE compares.
+   */
+  fence?: string;
 }
 
 /**
@@ -508,10 +518,11 @@ interface RawLockRow {
   acquired_at?: Date | string;
   ttl_expires_at?: Date | string;
   last_refreshed_at?: Date | string | null;
+  fence?: string;
 }
 
 /** Canonical column list for every lock SELECT — keep in lockstep with `RawLockRow`. */
-const LOCK_SELECT_COLS = 'id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token';
+const LOCK_SELECT_COLS = 'id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token, extract(epoch from acquired_at)::text AS fence';
 
 /**
  * Row → `LockSnapshot` mapper. Coerces postgres.js Date|string columns to Date
@@ -537,6 +548,7 @@ function rowToLockSnapshot(row: RawLockRow, now: number): LockSnapshot | null {
     ttl_expired: ttlExpires.getTime() < now,
     last_refreshed_at: lastRefreshed,
     ms_since_last_refresh: lastRefreshed ? now - lastRefreshed.getTime() : null,
+    fence: row.fence === undefined ? undefined : String(row.fence),
   };
 }
 
@@ -564,11 +576,11 @@ async function selectLockRows(engine: BrainEngine, opts: SelectLockRowsOpts = {}
   if (engine.kind === 'postgres' && maybePG.sql) {
     const sql = maybePG.sql as any;
     if (opts.lockId !== undefined) {
-      rows = await sql`SELECT id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token FROM gbrain_cycle_locks WHERE id = ${opts.lockId}`;
+      rows = await sql`SELECT id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token, extract(epoch from acquired_at)::text AS fence FROM gbrain_cycle_locks WHERE id = ${opts.lockId}`;
     } else if (opts.staleOnly) {
-      rows = await sql`SELECT id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token FROM gbrain_cycle_locks WHERE ttl_expires_at < NOW() ORDER BY acquired_at`;
+      rows = await sql`SELECT id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token, extract(epoch from acquired_at)::text AS fence FROM gbrain_cycle_locks WHERE ttl_expires_at < NOW() ORDER BY acquired_at`;
     } else {
-      rows = await sql`SELECT id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token FROM gbrain_cycle_locks ORDER BY acquired_at`;
+      rows = await sql`SELECT id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, acquisition_token, extract(epoch from acquired_at)::text AS fence FROM gbrain_cycle_locks ORDER BY acquired_at`;
     }
   } else if (engine.kind === 'pglite' && maybePGLite.db) {
     if (opts.lockId !== undefined) {

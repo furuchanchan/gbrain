@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.52.3] - 2026-10-05
+
+**`gbrain apply-migrations` can no longer refuse itself on Postgres when its own lease row stops matching the handle it holds.** The orchestration lease's `assertHeld` re-check reported `migrations_running` naming the runner's own pid whenever the `gbrain_cycle_locks` row was rewritten underneath it (observed on macOS + Postgres 17 after acquisition). A live row bearing the process's own pid+host can only have been written by that process, so the lease was never lost: the holder now re-binds its fence/acquisition-token from the row snapshot and proves ownership with a fenced refresh, only throwing when the row shows a different holder. Reported by community issue [#6028](https://github.com/garrytan/gbrain/issues/6028).
+
 ## [0.60.52.0] - 2026-10-04
 
 **A PGLite brain that has saved memory can now move to Postgres with nothing lost: one command shows the plan, one confirmation moves it, and the move proves the copy matches before it switches.**

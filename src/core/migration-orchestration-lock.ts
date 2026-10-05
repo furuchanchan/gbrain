@@ -130,6 +130,20 @@ async function acquirePostgres(config: GBrainConfig): Promise<MigrationOrchestra
     assertHeld: async () => {
       if (await handle.refresh()) return;
       const snapshot = await inspectLock(engine, MIGRATION_ORCHESTRATION_LOCK_ID).catch(() => null);
+      // #6028: a row bearing THIS process's pid+host can only have been
+      // written by this process — the lease was never lost to another
+      // runner; the handle's fence/token merely stopped matching the row.
+      // Rebind from the snapshot and let the refresh be the arbiter: if the
+      // row changed under us again, refresh fails and we throw naming the
+      // holder the row reports at that point.
+      if (
+        snapshot?.fence !== undefined && snapshot.acquisition_token !== ''
+        && snapshot.holder_pid === process.pid && snapshot.holder_host === hostname()
+      ) {
+        handle.acquiredAt = snapshot.fence;
+        handle.acquisitionToken = snapshot.acquisition_token;
+        if (await handle.refresh().catch(() => false)) return;
+      }
       throw new MigrationsRunningError({ host: snapshot?.holder_host ?? null, pid: snapshot?.holder_pid ?? null });
     },
     release: async () => {

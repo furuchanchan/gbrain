@@ -18,7 +18,8 @@ export function makeHome(engine: LockTestEngine): string {
 
 /** A runner whose single pending migration logs start/end and holds for `holdMs`. */
 /** `stealLease` adds an earlier migration that hands the Postgres lease to another holder; the probe migration then must not run. */
-export function writeDriver(home: string, opts: { holdMs: number; openDatastore: boolean; fail?: boolean; stealLease?: boolean }): string {
+/** `rewriteSelf` adds an earlier migration that rewrites the lease row's fence/token under the SAME pid+host (#6028); the probe migration's assertHeld must rebind, not self-refuse. */
+export function writeDriver(home: string, opts: { holdMs: number; openDatastore: boolean; fail?: boolean; stealLease?: boolean; rewriteSelf?: boolean }): string {
   const driver = join(home, `driver-${Math.random().toString(36).slice(2)}.ts`);
   writeFileSync(driver, `import { mock } from 'bun:test';
 import { appendFileSync, readFileSync } from 'node:fs';
@@ -51,6 +52,18 @@ mock.module(${JSON.stringify(join(REPO, 'src/commands/migrations/index.ts'))}, (
         const engine = await createEngine(cfg);
         await engine.connect(cfg);
         await engine.executeRaw("UPDATE gbrain_cycle_locks SET holder_pid=4242, holder_host='host-b', acquisition_token=gen_random_uuid() WHERE id='gbrain-apply-migrations'");
+        await engine.disconnect();
+      return { version: '0.0.1', status: 'complete', phases: [] };
+    },
+  }] : ${opts.rewriteSelf === true} ? [{
+    version: '0.0.1',
+    featurePitch: { headline: 'rewrites the lease fence/token under the same pid' },
+    orchestrator: async () => {
+        const cfg = JSON.parse(readFileSync(${JSON.stringify(join(home, '.gbrain', 'config.json'))}, 'utf8'));
+        const { createEngine } = await import(${JSON.stringify(join(REPO, 'src/core/engine-factory.ts'))});
+        const engine = await createEngine(cfg);
+        await engine.connect(cfg);
+        await engine.executeRaw("UPDATE gbrain_cycle_locks SET acquired_at=clock_timestamp(), acquisition_token=gen_random_uuid() WHERE id='gbrain-apply-migrations'");
         await engine.disconnect();
       return { version: '0.0.1', status: 'complete', phases: [] };
     },
