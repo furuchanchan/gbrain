@@ -41,6 +41,12 @@ describe('native lock distribution integrity', () => {
     expect(result.stdout).toContain('Verified 8 native lock prebuilds');
   });
 
+  test('the prebuild directory carries a private package boundary (#6026)', () => {
+    const boundary = JSON.parse(readFileSync(join(repo, 'native/locks/prebuilds/package.json'), 'utf8')) as { name?: string; private?: boolean };
+    expect(typeof boundary.name).toBe('string');
+    expect(boundary.private).toBe(true);
+  });
+
   test.each(['win32-x64', 'win32-arm64'])('%s binds Node-API to its host without loading another runtime', target => {
     const imports = windowsImports(readFileSync(join(repo, `native/locks/prebuilds/${target}.node`)));
     expect(imports.length).toBeGreaterThan(0);

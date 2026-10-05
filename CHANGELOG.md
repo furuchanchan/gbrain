@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.52.4] - 2026-10-05
+
+**Fixed: on OpenClaw 2026.9.7+, loading the context-engine plugin from a gbrain checkout no longer takes minutes — the vendored native addons now live behind their own package boundary.**
+
+OpenClaw 2026.9.7+ derives a native namespace from the nearest `package.json` above a `.node` binary. With none in `native/locks/prebuilds`, the whole gbrain root became one namespace and plugin capture scaled with the whole tree (measured upstream: ~5 minutes vs ~40 s for a slim root). `native/locks/prebuilds/package.json` is a private, unpublished boundary marker: the addons keep loading by literal relative `require()` paths, and `scripts/native/verify.ts` still enforces the exact directory listing. Thanks to the reporter for the measured mitigation (issue #6026); the underlying OpenClaw-side cost is filed upstream as openclaw/openclaw#165195.
+
 ## [0.60.52.0] - 2026-10-04
 
 **A PGLite brain that has saved memory can now move to Postgres with nothing lost: one command shows the plan, one confirmation moves it, and the move proves the copy matches before it switches.**

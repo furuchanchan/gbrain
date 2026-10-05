@@ -1,0 +1,6 @@
+{
+  "name": "gbrain-native-locks-prebuilds",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Package boundary marker: gives the vendored .node addons their own OpenClaw native namespace instead of the gbrain checkout root (#6026). Never published."
+}

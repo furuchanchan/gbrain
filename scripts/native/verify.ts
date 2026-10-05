@@ -11,7 +11,10 @@ if (manifest.version !== 1 || manifest.napi !== 3 || manifest.zig !== '0.14.1') 
 if (manifest.input_sha256 !== inputDigest()) throw new Error('Native lock source changed: rebuild all prebuilds and their manifest');
 const expected = Object.keys(targets).sort();
 if (JSON.stringify(Object.keys(manifest.artifacts).sort()) !== JSON.stringify(expected)) throw new Error('Native artifact target set is incomplete');
-if (JSON.stringify(readdirSync(root).sort()) !== JSON.stringify(expected.map(target => `${target}.node`).sort())) throw new Error('Native prebuild directory must contain exactly the eight declared addons');
+const expectedListing = [...expected.map(target => `${target}.node`), 'package.json'].sort();
+if (JSON.stringify(readdirSync(root).sort()) !== JSON.stringify(expectedListing)) throw new Error('Native prebuild directory must contain exactly the eight declared addons plus its package-boundary package.json');
+const boundary = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { private?: boolean };
+if (boundary.private !== true) throw new Error('Native prebuild package boundary must stay a private, unpublished package');
 for (const target of expected) {
   const bytes = readFileSync(join(root, `${target}.node`));
   const record = manifest.artifacts[target as keyof typeof manifest.artifacts];

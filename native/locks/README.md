@@ -39,7 +39,11 @@ that an arbitrary filesystem entry may be removed.
 ## Distribution and reproducible builds
 
 All eight addons are checked in, so source installs work with
-`bun install --frozen-lockfile --ignore-scripts`. They support x64 and arm64
+`bun install --frozen-lockfile --ignore-scripts`. The directory carries a
+private `package.json` boundary so OpenClaw derives a narrow native namespace
+for the addons instead of the gbrain checkout root; it is never published and
+the addons are still loaded by literal relative `require()` paths. They
+support x64 and arm64
 on Linux glibc (2.17 ABI baseline), Linux musl, macOS (13.0 deployment
 target), and Windows. The required CI matrix covers the repository's minimum
 Bun 1.4.0 and the release compiler, Bun 1.4.2. OS compatibility
