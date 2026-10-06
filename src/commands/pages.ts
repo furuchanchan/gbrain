@@ -26,7 +26,18 @@ function parseOlderThanHours(args: string[]): number {
   process.exit(2);
 }
 
+const PURGE_DELETED_FLAGS = new Set(['--older-than', '--dry-run', '--json']);
+
 async function runPurgeDeleted(engine: BrainEngine, args: string[]): Promise<void> {
+  // #6114: a help-shaped invocation must never reach the destructive path,
+  // and unknown options fail closed before a hard purge runs.
+  if (args.includes('--help') || args.includes('-h')) { printHelp(); return; }
+  const unknown = args.filter(arg => arg.startsWith('-') && !PURGE_DELETED_FLAGS.has(arg));
+  if (unknown.length) {
+    console.error(`Unknown purge-deleted option(s): ${unknown.join(', ')}`);
+    printHelp();
+    process.exit(2);
+  }
   const olderThanHours = parseOlderThanHours(args);
   const dryRun = args.includes('--dry-run');
   const json = args.includes('--json');

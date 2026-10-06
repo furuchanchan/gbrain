@@ -21,7 +21,7 @@
  * earlier tests), matching the original one-engine-per-describe semantics.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { installFixtureChunks } from './helpers/page-projection.ts';
@@ -407,5 +407,47 @@ describe('search visibility (soft-deleted pages hidden from searchKeyword)', () 
     );
     const after = await engine.searchKeyword('gbrainsemaphore');
     expect(after.length).toBe(0);
+  });
+});
+
+describe('pages purge-deleted CLI guards (#6114)', () => {
+  beforeAll(async () => {
+    await resetPgliteState(engine);
+    await seedPage(engine, 'people/help-victim');
+    await engine.softDeletePage('people/help-victim');
+    await engine.executeRaw(
+      `UPDATE pages SET deleted_at = now() - INTERVAL '73 hours' WHERE slug = 'people/help-victim'`,
+      [],
+    );
+  });
+
+  const stillThere = async (): Promise<boolean> =>
+    (await engine.executeRaw(`SELECT slug FROM pages WHERE slug = 'people/help-victim'`, [])).length === 1;
+
+  test('--help and -h print help and make zero writes', async () => {
+    const { runPages } = await import('../src/commands/pages.ts');
+    for (const flag of ['--help', '-h']) {
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        await runPages(engine, ['purge-deleted', flag]);
+        expect(logSpy.mock.calls.flat().join('\n')).toContain('purge-deleted');
+      } finally {
+        logSpy.mockRestore();
+      }
+      expect(await stillThere()).toBe(true);
+    }
+  });
+
+  test('an unrecognized flag exits 2 without mutating', async () => {
+    const { runPages } = await import('../src/commands/pages.ts');
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw { exitCode: code };
+    }) as never);
+    try {
+      await expect(runPages(engine, ['purge-deleted', '--bogus'])).rejects.toEqual({ exitCode: 2 });
+    } finally {
+      exitSpy.mockRestore();
+    }
+    expect(await stillThere()).toBe(true);
   });
 });
