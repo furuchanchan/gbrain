@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.86.4] - 2026-10-06
+
+**The cycle's lint phase now honors `cycle.lint_exclude`, a comma-separated list of directory and file basenames with the same semantics as `gbrain lint --exclude`.**
+
+`--exclude` (#2649) only reached the CLI: the nightly cycle linted every markdown file under the brain directory, so repos that keep non-page markdown next to their pages (an attachments folder, generated docs) saw the same findings in every cycle summary, and `cycle.lint_fix` autofix rewrote those files. Setting `cycle.lint_exclude` to the same basenames skips them in the cycle too. `gbrain lint` is unchanged. (#6134)
+
+### For contributors
+
+- `cycleLintExcludes(engine)` in `src/core/cycle/lint-exclude-setting.ts` reads the key and splits it the same way the CLI splits `--exclude`; a read failure keeps the default (no extra exclusions).
+- The `cycle.` config prefix is already registered, so `gbrain config set cycle.lint_exclude attachments,generated` works without a key registry change.
+
 ## [0.60.85.0] - 2026-10-06
 
 **The Gmail attachment-repair command test no longer fails when its second seeded thread page is still publishing as the test hands the database to the command.**

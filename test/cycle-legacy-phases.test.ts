@@ -109,6 +109,33 @@ describe('runPhaseLint — result-mapping', () => {
     // contains it. If this assertion ever flips, every cycle that hits a
     // lint failure would abort instead of carrying on with the next phase.
   });
+
+  test('#6134 cycle.lint_exclude skips excluded basenames in the cycle lint phase', async () => {
+    try {
+      mkdirSync(join(brainDir, 'attachments'), { recursive: true });
+      writeFileSync(join(brainDir, 'attachments', 'README.md'), 'Not a knowledge page.\n');
+      await engine.setConfig('cycle.lint_exclude', 'attachments');
+      const result = await runPhaseLint(brainDir, false, engine);
+      expect(result.phase).toBe('lint');
+      expect(result.details).toMatchObject({ issues: 0 });
+      expect(result.status).toBe('ok');
+    } finally {
+      await engine.setConfig('cycle.lint_exclude', '').catch(() => {});
+      cleanupBrain();
+    }
+  });
+
+  test('#6134 without cycle.lint_exclude the same non-page markdown is linted', async () => {
+    try {
+      mkdirSync(join(brainDir, 'attachments'), { recursive: true });
+      writeFileSync(join(brainDir, 'attachments', 'README.md'), 'Not a knowledge page.\n');
+      const result = await runPhaseLint(brainDir, false, engine);
+      expect(result.phase).toBe('lint');
+      expect(Number(result.details.issues ?? 0)).toBeGreaterThan(0);
+    } finally {
+      cleanupBrain();
+    }
+  });
 });
 
 describe('runPhaseBacklinks — result-mapping', () => {
