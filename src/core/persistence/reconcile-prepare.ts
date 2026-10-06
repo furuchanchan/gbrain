@@ -35,13 +35,24 @@ function preservePrivateFacts(incoming: string, stored: string): string {
   if (next.warnings.length || prior.warnings.length) throw opError('invalid_params', 'Fact fences must parse losslessly before reconciliation.',
     'The ## Facts table of the file or of the stored page has rows that do not parse cleanly, so reconciliation cannot prove its private facts are kept; nothing was written. Repair the malformed rows in the file, then generate a fresh preview and apply it.');
   for (const fact of prior.facts.filter(f => f.visibility !== 'world')) {
-    if (next.facts.some(f => f.claim === fact.claim && (f.visibility !== fact.visibility || f.rowNum === fact.rowNum && digest(f) !== digest(fact)))) {
+    const match = next.facts.find(f => f.claim === fact.claim);
+    if (match && (match.visibility !== fact.visibility || match.rowNum !== fact.rowNum)) {
       throw opError('permission_denied', 'Reconciliation cannot modify protected private facts; use the scoped fact workflow.',
         'The reconciled page would edit, renumber or change the visibility of a private fact, which reconcile never does; nothing was written. Keep those fact rows as stored, generate a fresh preview, and change private facts through the fact tools (remember, forget) instead.');
     }
   }
+  const hiddenPrior = prior.facts.filter(f => f.visibility !== 'world');
   const merged = restoreHiddenFactRows(next, prior);
-  return merged ? replaceOrInsertFactsFence(incoming, renderFactsTable(merged.merged)) : incoming;
+  if (!merged && !hiddenPrior.length) return incoming;
+  // #6137: a claim-equal row at a hidden row's number carries whatever field
+  // values the file side happened to have — possibly stale ones written
+  // before the stored row last moved (restoreHiddenFactRows returns null
+  // there, since nothing needs restoring). Reconcile never changes private
+  // facts, so the stored row always wins over the file's copy; only an
+  // identity change (visibility or row number) above still refuses.
+  const storedHidden = new Map(hiddenPrior.map(f => [`${f.rowNum}${f.claim}`, f]));
+  const mergedFacts = (merged?.merged ?? next.facts).map(f => storedHidden.get(`${f.rowNum}${f.claim}`) ?? f);
+  return replaceOrInsertFactsFence(incoming, renderFactsTable(mergedFacts));
 }
 export async function prepareReconcileResult(engine: BrainEngine, state: ReconcileState, decisions: ReconcileDecision[]) {
   const merged = mergeReconcile(state.file, reconcileCanonical(state.snapshot.page, state.snapshot.tags), decisions);

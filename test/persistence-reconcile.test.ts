@@ -234,6 +234,52 @@ test('private and withdrawn timeline facts survive file choices without resurrec
   });
 }), 120_000);
 
+test('#6137 a body-only file edit publishes while stored private rows win over stale file rows', async () => isolated(async engine => {
+  const privateBody = upsertFactRow('Private biography.', { claim: 'Prefers a private example venue', kind: 'fact', visibility: 'private', confidence: 1, notability: 'medium', context: 'file-authored context' }).body;
+  const f = await fixture(engine, false, privateBody);
+  // The stored row moved after the file was written (a fact tool stamped it);
+  // the file still carries the older field values — an untouched drift, not an edit.
+  const drifted = f.snapshot.page.compiled_truth!.replace('file-authored context', 'fact-tool stamped context');
+  await engine.executeRaw(
+    'UPDATE pages SET compiled_truth=$1 WHERE source_id=$2 AND slug=$3', [drifted, f.id, f.slug]);
+  writeFileSync(f.file, `${readFileSync(f.file)}\n\nOne ordinary body line outside the facts fence.\n`);
+  await local(engine, f.registration, async () => {
+    const initial = await runReconcilePreview(engine, { source_id: f.id, slug: f.slug });
+    const resolved = await runReconcilePreview(engine, {
+      source_id: f.id, slug: f.slug, from: initial.preview,
+      decisions: [{ path: '/compiled_truth', action: 'take_file' }],
+    });
+    expect(resolved.status).toBe('ready');
+    const row = parseFactsFence(resolved.preview.result.compiled_truth).facts[0];
+    expect(row).toMatchObject({ visibility: 'private', context: 'fact-tool stamped context' });
+    expect(resolved.preview.result.compiled_truth).toContain('One ordinary body line outside the facts fence.');
+    expect((await runReconcileApply(engine, { source_id: f.id, slug: f.slug, preview: resolved.preview, request_id: randomUUID() })).state).toBe('committed');
+    const current = (await engine.readPageSnapshot(f.slug, { sourceId: f.id }))!;
+    expect(parseFactsFence(current.page.compiled_truth).facts[0].context).toBe('fact-tool stamped context');
+    expect(current.page.compiled_truth).toContain('One ordinary body line outside the facts fence.');
+  });
+}), 120_000);
+
+test('#6137 a private fact renumber or visibility change in the file still refuses', async () => isolated(async engine => {
+  const privateBody = upsertFactRow('Private biography.', { claim: 'Prefers a private example venue', kind: 'fact', visibility: 'private', confidence: 1, notability: 'medium', context: 'same context' }).body;
+  const f = await fixture(engine, false, privateBody);
+  const worldFile = serializePageToMarkdown({ ...f.snapshot.page, compiled_truth: privateBody.replace('| private |', '| world |') }, []);
+  writeFileSync(f.file, worldFile);
+  await local(engine, f.registration, async () => {
+    const initial = await runReconcilePreview(engine, { source_id: f.id, slug: f.slug });
+    await expect(runReconcilePreview(engine, {
+      source_id: f.id, slug: f.slug, from: initial.preview,
+      decisions: [{ path: '/compiled_truth', action: 'take_file' }],
+    })).rejects.toMatchObject({ code: 'permission_denied' });
+    writeFileSync(f.file, serializePageToMarkdown({ ...f.snapshot.page, compiled_truth: privateBody.replace('| 1 |', '| 9 |') }, []));
+    const second = await runReconcilePreview(engine, { source_id: f.id, slug: f.slug });
+    await expect(runReconcilePreview(engine, {
+      source_id: f.id, slug: f.slug, from: second.preview,
+      decisions: [{ path: '/compiled_truth', action: 'take_file' }],
+    })).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+}), 120_000);
+
 test('matching legacy scan state migrates only during canonical publication', async () => isolated(async engine => {
   const f = await fixture(engine);
   const marker = f.snapshot.page.content_hash!.slice(0, 16);

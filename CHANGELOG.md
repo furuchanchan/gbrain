@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.86.0] - 2026-10-06
+
+**Reconcile no longer refuses an unrelated body edit when the file's copy of a private fact row is stale, so a drifted fence stops blocking every publish.**
+
+`gbrain sources reconcile` guarded private facts by refusing any incoming row that matched a stored private claim with a different digest — but the file's copy of a private row drifts in its other fields whenever the stored row moves after the file was written (a fact tool stamps `context`, `source` or `valid_until`). One such drift made every reconcile of the page exit 1 with `permission_denied`, leaving no supported way to publish an ordinary body line (#6137). A stored private row at its own row number with the same claim and visibility is now always taken from the stored side — reconcile never changes private facts — while a file that renumbers a private fact or flips its visibility still refuses. The same-claim-different-rowNum case that previously slipped through and duplicated the claim now refuses too.
+
+### For contributors
+
+- `preservePrivateFacts` in `src/core/persistence/reconcile-prepare.ts` matches stored hidden rows by claim and refuses only visibility changes and renumbers; the merged fence substitutes the stored parsed row for any claim-equal row at a hidden rowNum, covering the `restoreHiddenFactRows` null case where nothing needed restoring.
+- `test/persistence-reconcile.test.ts` adds a drift fixture (stored row stamped after the file write, plus one unrelated body line) asserting the preview resolves ready, publishes the line and keeps the stored context, plus a refusal regression for file-side visibility flips and renumbers.
+
 ## [0.60.85.0] - 2026-10-06
 
 **The Gmail attachment-repair command test no longer fails when its second seeded thread page is still publishing as the test hands the database to the command.**
