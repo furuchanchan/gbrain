@@ -10,6 +10,20 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.97.1] - 2026-10-06
+
+**Link extraction stops filing `works_at` edges to pages that cannot employ anyone.**
+
+A link sitting near employment phrasing — "met its VP of Sales at [Q1 review](meetings/q1)", "discussed the Head of Platform role with [Bob](people/bob)" — used to mint a `works_at` edge to the meeting or person, because the verb regex checked the context window but never the target. The same phrase near a real company link is correct, so the fix asks the target's type: a known non-organization type (`person`, `meeting`, anything outside company/organization/fund) downgrades the edge to `mentions`; an unknown type keeps the verb, preserving the long-standing convention for unresolved targets (#6191).
+
+### Itemized changes
+
+- **`works_at` gains a target-type gate (#6191).** Both inference paths in `inferLinkType` — the per-edge attached verb and the precedence fallback — now require an organization-like target (company/organization/org/fund) when the target's type is known. Callers that resolve page types (the managed-sync and `extract` paths already pass them) stop minting person→meeting and person→person `works_at` edges; pack-declared `target_type` inference was already constrained and is unchanged.
+
+## To take advantage of v0.60.97.1
+
+Nothing to do. New and re-extracted pages file correct edges after `gbrain upgrade`. Pages already carrying bogus `works_at` edges to meetings or people keep them until the page is re-extracted — `gbrain extract --stale` refreshes the affected pages.
+
 ## [0.60.96.0] - 2026-10-06
 
 **A lane catch-up that stops on a failed page now settles every later page before it reports, and two flaky test families are fixed.**

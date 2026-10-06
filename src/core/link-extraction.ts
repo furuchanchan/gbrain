@@ -1281,6 +1281,20 @@ function attachedVerb(context: string, targetSlug?: string, anchor?: number): st
 }
 
 /**
+ * #6191: works_at is a person→organization edge. The verb regex matches on
+ * context alone ("met its VP of Sales at [Q1 call](meetings/q1)"), so a
+ * target whose type is KNOWN to be a person/meeting/etc. can never be the
+ * employer — the verb belongs to another noun in the window. Unknown types
+ * keep the verb: callers without a type resolver historically emit
+ * person→person works_at ("[Alice] is the CEO of Acme"), and a bare slug
+ * dir cannot disprove the type either.
+ */
+const ORG_LIKE_TARGET_TYPES = new Set(['company', 'organization', 'org', 'fund']);
+function worksAtTargetOk(targetType?: string | null): boolean {
+  return !targetType || ORG_LIKE_TARGET_TYPES.has(targetType);
+}
+
+/**
  * Infer link_type from page context. Deterministic regex heuristics, no LLM.
  *
  * Two layers of inference:
@@ -1313,8 +1327,8 @@ export function inferLinkType(pageType: PageType, context: string, globalContext
   // (then the Chinese rules), over the verbs that belong to this link: in
   // "works at [A] and also advises [B]", A is works_at and B advises.
   const attached = attachedVerb(context, targetSlug, anchor);
-  if (attached) return attached;
-  if (attached === undefined) for (const [re, verb] of VERB_RULES) if (re.test(context)) return verb;
+  if (attached) return attached === 'works_at' && !worksAtTargetOk(targetType) ? 'mentions' : attached;
+  if (attached === undefined) for (const [re, verb] of VERB_RULES) if (re.test(context)) return verb === 'works_at' && !worksAtTargetOk(targetType) ? 'mentions' : verb;
   // Page-role prior: only fires for person -> company links. Concept pages
   // about VC topics naturally contain "venture capital" in their text, but
   // their company refs are mentions, not investments. Partner pages mentioning

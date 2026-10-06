@@ -914,6 +914,37 @@ describe('inferLinkType', () => {
     const perEdgeContext = 'Jane has worked with Acme.';
     expect(inferLinkType('person', perEdgeContext, globalContext, 'companies/acme')).toBe('invested_in');
   });
+
+  // ─── #6191: works_at requires an organization-like target ───
+
+  test('#6191 works_at: employment words near a meeting/person target stay mentions', () => {
+    // The verb regex sees "VP of Sales" / "Head of Platform" in the window and
+    // claims works_at — but a meeting or person can never be the employer.
+    expect(inferLinkType('person',
+      'Acme client call with its VP of Sales: [Quarterly](meetings/q1)',
+      undefined, 'meetings/q1', 'meeting')).toBe('mentions');
+    expect(inferLinkType('person',
+      'Discussed Head of Platform role with [Bob](people/bob)',
+      undefined, 'people/bob', 'person')).toBe('mentions');
+  });
+
+  test('#6191 works_at: a company/organization target still gets the verb', () => {
+    expect(inferLinkType('person', 'Alice is engineer at [Acme](companies/acme)',
+      undefined, 'companies/acme', 'company')).toBe('works_at');
+    expect(inferLinkType('person', 'Alice is engineer at [Acme](companies/acme)',
+      undefined, 'companies/acme', 'organization')).toBe('works_at');
+  });
+
+  test('#6191 works_at: unknown target type keeps the verb (cannot disprove)', () => {
+    // Callers without a type resolver (or a slug whose page is untyped) keep
+    // the long-standing convention — including person→person works_at on
+    // "[Alice] is the CEO of Acme".
+    expect(inferLinkType('person', 'Alice is CEO of Acme.')).toBe('works_at');
+    expect(inferLinkType('person', '[Alice](people/alice) is the CEO of Acme.',
+      undefined, 'people/alice')).toBe('works_at');
+    expect(inferLinkType('person', 'Alice is engineer at [Acme](companies/acme)',
+      undefined, 'companies/acme', null)).toBe('works_at');
+  });
 });
 
 // ─── parseTimelineEntries ──────────────────────────────────────
