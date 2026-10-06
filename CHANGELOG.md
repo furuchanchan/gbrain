@@ -10,6 +10,20 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.97.0] - 2026-10-06
+
+**`gbrain lint --fix` stops deleting legitimate lines that merely sound like an LLM preamble.**
+
+A page containing "Sure, here are the agreed actions:" (or any other preamble-shaped phrase) in its body lost that line to `--fix`: the preamble patterns carry `/m` and match anywhere in the file, and the fixer deleted every match. The fixer now only removes preamble-shaped text inside the page's leading prefix — at byte 0 or immediately after the frontmatter block, where an actual preamble sits. A matching phrase mid-page is still reported as an issue, but it is marked non-fixable and is never deleted (#6190).
+
+### Itemized changes
+
+- **Preamble removal is anchored to the page prefix (#6190).** New `anchoredPreambleSpans` walks the page prefix: leading blank lines, a leading frontmatter block, and preamble-pattern matches, in any order. Only spans inside that region are deleted by `fixContent` and counted as fixable by `lintContent`; the detection patterns are unchanged, so a mid-page match still reports `llm-preamble` — now with `fixable: false` so tooling can tell a real preamble from a phrase that merely resembles one.
+
+## To take advantage of v0.60.97.0
+
+Nothing to do. `gbrain lint --fix` protects mid-page content after `gbrain upgrade`. If `--fix` already removed lines from your pages, restore them from the worktree or re-publish the page.
+
 ## [0.60.96.0] - 2026-10-06
 
 **A lane catch-up that stops on a failed page now settles every later page before it reports, and two flaky test families are fixed.**

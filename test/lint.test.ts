@@ -26,6 +26,25 @@ describe('lintContent', () => {
     expect(issues.filter(i => i.rule === 'llm-preamble')).toHaveLength(0);
   });
 
+  test('mid-page preamble-like line reports non-fixable, never a deletion candidate (#6190)', () => {
+    const content =
+      '---\ntitle: Example\ntype: note\n---\n\n# Example\n\nFirst paragraph.\n\n' +
+      'Sure, here are the agreed actions:\n- keep this line\n';
+    const issues = lintContent(content, 'test.md');
+    const preamble = issues.filter(i => i.rule === 'llm-preamble');
+    expect(preamble.length).toBeGreaterThan(0);
+    expect(preamble.every(i => i.fixable === false)).toBe(true);
+  });
+
+  test('preamble before or after frontmatter stays fixable (#6190)', () => {
+    const before = "Sure! Here is the page.\n---\ntitle: T\ntype: note\n---\n\n# T\n\nBody.\n";
+    const after = "---\ntitle: T\ntype: note\n---\nCertainly. Here is the brain page.\n\n# T\n\nBody.\n";
+    for (const content of [before, after]) {
+      const issues = lintContent(content, 'test.md');
+      expect(issues.some(i => i.rule === 'llm-preamble' && i.fixable === true)).toBe(true);
+    }
+  });
+
   test('detects wrapping code fences', () => {
     const content = '```markdown\n---\ntitle: Test\n---\n\n# Test\n\nContent.\n```';
     const issues = lintContent(content, 'test.md');
@@ -124,6 +143,23 @@ describe('fixContent', () => {
     const input = 'Of course. Here is the brain page.\n\n\n\n# Title\n\nContent.';
     const fixed = fixContent(input);
     expect(fixed).not.toMatch(/\n{3,}/);
+  });
+
+  test('preserves a mid-page preamble-like line; only the prefix is stripped (#6190)', () => {
+    const input =
+      '---\ntitle: Example\ntype: note\n---\n\n# Example\n\nFirst paragraph.\n\n' +
+      'Sure, here are the agreed actions:\n- keep this line\n';
+    const fixed = fixContent(input);
+    expect(fixed).toContain('Sure, here are the agreed actions:');
+    expect(fixed).toContain('- keep this line');
+  });
+
+  test('strips a preamble sitting between frontmatter and body (#6190)', () => {
+    const input = "---\ntitle: T\ntype: note\n---\nCertainly. Here is the brain page.\n\n# T\n\nBody.\n";
+    const fixed = fixContent(input);
+    expect(fixed).not.toContain('Certainly');
+    expect(fixed).toContain('# T');
+    expect(fixed).toContain('Body.');
   });
 
   test('preserves content that needs no fixing', () => {

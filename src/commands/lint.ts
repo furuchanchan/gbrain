@@ -93,6 +93,41 @@ const LLM_PREAMBLES = [
   /^Absolutely\.?\s*Here[^.\n]*\.?\s*\n*/gim,
 ];
 
+/**
+ * #6190: an LLM preamble is a tightly bounded PREFIX — it may sit at byte 0
+ * (before the frontmatter) or immediately after a leading frontmatter block,
+ * stacked with sibling preambles. The patterns carry /m so they also match
+ * mid-page prose ("Sure, here are the agreed actions:"); only spans inside
+ * this prefix region are safe to delete. Anything later is content.
+ */
+function anchoredPreambleSpans(content: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let pos = 0;
+  for (;;) {
+    const rest = content.slice(pos);
+    // Blank lines around a preamble or a frontmatter block stay in the prefix
+    // region; they are whitespace, never deleted content.
+    const ws = /^[ \t]*\n+/.exec(rest);
+    if (ws) { pos += ws[0].length; continue; }
+    let hit: RegExpExecArray | null = null;
+    for (const pattern of LLM_PREAMBLES) {
+      pattern.lastIndex = 0;
+      const m = pattern.exec(rest);
+      if (m && m.index === 0) { hit = m; break; }
+    }
+    if (hit) {
+      spans.push([pos, pos + hit[0].length]);
+      pos += hit[0].length;
+      continue;
+    }
+    // Skip one leading frontmatter block once — a preamble may follow it.
+    const fm = /^---[ \t]*\n[\s\S]*?\n---[ \t]*\n?/.exec(rest);
+    if (fm && fm.index === 0) { pos += fm[0].length; continue; }
+    break;
+  }
+  return spans;
+}
+
 // ── Rules ──────────────────────────────────────────────────────────
 
 /**
@@ -152,14 +187,18 @@ export function lintContent(content: string, filePath: string, opts: LintContent
     issues.push({ file: filePath, line: d.line, rule: 'line-grammar', message: `${d.message} (${d.reason})`, fixable: false });
   }
 
-  // Rule: LLM preamble artifacts
+  // Rule: LLM preamble artifacts — the patterns carry /m and match any line,
+  // so an occurrence is only auto-fixable inside the page's prefix region
+  // (#6190). Mid-page matches are still reported but never deleted.
+  let preambleFixable: boolean | undefined;
   for (const pattern of LLM_PREAMBLES) {
     pattern.lastIndex = 0;
     if (pattern.test(content)) {
+      preambleFixable ??= anchoredPreambleSpans(content).length > 0;
       issues.push({
         file: filePath, line: 1, rule: 'llm-preamble',
         message: 'LLM preamble artifact detected (e.g., "Of course! Here is...")',
-        fixable: true,
+        fixable: preambleFixable,
       });
     }
   }
@@ -378,10 +417,9 @@ export function promoteCreatedFromCapture(content: string): string {
 export function fixContent(content: string): string {
   let fixed = content;
 
-  // Fix LLM preambles
-  for (const pattern of LLM_PREAMBLES) {
-    pattern.lastIndex = 0;
-    fixed = fixed.replace(pattern, '');
+  // Fix LLM preambles — only spans anchored in the page prefix (#6190).
+  for (const [start, end] of anchoredPreambleSpans(fixed).reverse()) {
+    fixed = fixed.slice(0, start) + fixed.slice(end);
   }
 
   // Fix wrapping code fences
