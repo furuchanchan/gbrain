@@ -37,6 +37,7 @@ import {
   CLAUDE_HOOK_EVENTS,
   CLAUDE_HOOK_SUBCOMMAND,
   CLAUDE_SETTINGS_FILE_RELPATH,
+  GBRAIN_HARNESS_MARKER_VALUE,
   GBRAIN_HOOK_MARKER_KEY,
   GBRAIN_HOOK_MARKER_VALUE,
   type ClaudeHookEvent,
@@ -298,11 +299,18 @@ export function committedHookEvents(workspaceDir: string): Set<ClaudeHookEvent> 
 }
 
 function isOurs(entry: unknown, marker: string = GBRAIN_HOOK_MARKER_VALUE): boolean {
-  return (
-    typeof entry === 'object' &&
-    entry !== null &&
-    (entry as Record<string, unknown>)[GBRAIN_HOOK_MARKER_KEY] === marker
-  );
+  if (typeof entry !== 'object' || entry === null) return false;
+  if ((entry as Record<string, unknown>)[GBRAIN_HOOK_MARKER_KEY] === marker) return true;
+  // #6092: harness installs predating the marker key (or orphaned by a
+  // superseded receipt) still self-identify in the command string — the
+  // workspace lane never writes GBRAIN_HOOK_LANE, so the lane assignment
+  // uniquely marks this lane's entries. Only the harness marker widens to
+  // command matching; other callers keep marker-key-only ownership.
+  if (marker === GBRAIN_HARNESS_MARKER_VALUE) {
+    const command = (entry as Record<string, unknown>).command;
+    return typeof command === 'string' && /GBRAIN_HOOK_LANE=harness(?:\s|$)/.test(command);
+  }
+  return false;
 }
 
 /** True when the entry carries the gbrain marker KEY with any OTHER value. */

@@ -362,3 +362,65 @@ describe('claudeProjectsDir honors CLAUDE_CONFIG_DIR', () => {
     });
   });
 });
+
+describe('lane-identified removal (#6092)', () => {
+  const LANE_CMD = `env GBRAIN_SOURCE=default GBRAIN_HOOK_LANE=harness ${BIN} hook session-start`;
+
+  test('entries whose command self-identifies the harness lane are removed without the marker key', () => {
+    const dir = tmp();
+    const path = join(dir, 'settings.json');
+    // Reporter's on-disk state: five events whose commands carry
+    // GBRAIN_HOOK_LANE=harness but no _gbrain marker key (legacy install
+    // orphaned by a superseded receipt) — the receipt-matched removal
+    // reported "counted as removed" while the hooks kept firing.
+    const settings = {
+      hooks: Object.fromEntries(CLAUDE_HOOK_EVENTS.map((e) => [e, [
+        { hooks: [{ type: 'command', command: `env GBRAIN_HOOK_LANE=harness ${BIN} hook ${e}`, timeout: 60 }] },
+      ]])),
+      preserve: 'me',
+    };
+    writeFileSync(path, JSON.stringify(settings));
+    const r = removeClaudeHooksAt(path, GBRAIN_HARNESS_MARKER_VALUE);
+    expect(r.removed).toBe(CLAUDE_HOOK_EVENTS.length);
+    const after = readJson(path);
+    expect(after.hooks).toBeUndefined();
+    expect(after.preserve).toBe('me');
+    expect(LANE_CMD).toContain('GBRAIN_HOOK_LANE=harness'); // shape check on the fixture command
+  });
+
+  test('a foreign entry that only mentions gbrain survives harness removal', () => {
+    const dir = tmp();
+    const path = join(dir, 'settings.json');
+    const settings = {
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: `env GBRAIN_HOOK_LANE=harness ${BIN} hook session-start`, timeout: 60 }] },
+          { hooks: [{ type: 'command', command: `my-other-tool --gbrain-compat run`, timeout: 60 }] },
+        ],
+      },
+    };
+    writeFileSync(path, JSON.stringify(settings));
+    const r = removeClaudeHooksAt(path, GBRAIN_HARNESS_MARKER_VALUE);
+    expect(r.removed).toBe(1);
+    const after = readJson(path) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    expect(after.hooks.SessionStart.length).toBe(1);
+    expect(after.hooks.SessionStart[0].hooks[0].command).toContain('my-other-tool');
+  });
+
+  test('workspace-marker removal does not strip lane-identified harness entries', () => {
+    const dir = tmp();
+    const path = join(dir, 'settings.json');
+    const settings = {
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: `env GBRAIN_HOOK_LANE=harness ${BIN} hook session-start`, timeout: 60 }] },
+        ],
+      },
+    };
+    writeFileSync(path, JSON.stringify(settings));
+    const r = removeClaudeHooksAt(path); // workspace lane: default marker, no lane widening
+    expect(r.removed).toBe(0);
+    const after = readJson(path) as { hooks: Record<string, unknown[]> };
+    expect(after.hooks.SessionStart.length).toBe(1);
+  });
+});
