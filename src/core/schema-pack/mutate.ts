@@ -523,7 +523,8 @@ function checkNoReferences(manifest: SchemaPackManifest, typeName: string): void
 export interface AddTypeOpts {
   name: string;
   primitive: PackPrimitive;
-  prefix: string;
+  /** #6135: optional — a type set by frontmatter only has `path_prefixes: []`. */
+  prefix?: string;
   extractable?: boolean;
   expertRouting?: boolean;
   aliases?: string[];
@@ -539,7 +540,18 @@ export interface AddTypeOpts {
 function buildAddTypeMutator(opts: AddTypeOpts): (m: SchemaPackManifest) => SchemaPackManifest {
   validateTypeName(opts.name);
   validatePrimitive(opts.primitive);
-  validatePrefix(opts.prefix);
+  // #6135: a type may declare no path prefix (frontmatter-set only); an
+  // explicitly passed prefix is still shape-validated. Expert routing
+  // without a prefix is the pack linter's expert_routing_without_prefix
+  // violation, so the mutator refuses to write it.
+  if (opts.prefix !== undefined) validatePrefix(opts.prefix);
+  if (opts.expertRouting && opts.prefix === undefined) {
+    throw new SchemaPackMutationError(
+      'INVALID_RESULT',
+      `type '${opts.name}' is expert_routing:true but has no path prefix; pass --prefix`,
+      { type: opts.name },
+    );
+  }
   return (m) => {
     if (m.page_types.some((pt) => pt.name === opts.name)) {
       throw new SchemaPackMutationError(
@@ -551,7 +563,7 @@ function buildAddTypeMutator(opts: AddTypeOpts): (m: SchemaPackManifest) => Sche
     const newType: PackPageType = {
       name: opts.name,
       primitive: opts.primitive,
-      path_prefixes: [opts.prefix],
+      path_prefixes: opts.prefix !== undefined ? [opts.prefix] : [],
       aliases: opts.aliases ?? [],
       extractable: opts.extractable ?? false,
       expert_routing: opts.expertRouting ?? false,

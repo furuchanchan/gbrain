@@ -152,12 +152,34 @@ describe('addTypeToPack', () => {
     });
   });
 
-  it('rejects missing prefix', async () => {
+  it('rejects an explicitly empty prefix', async () => {
     await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_AUDIT_DIR: auditDir }, async () => {
       seedPack('mine', 'json');
       await expect(addTypeToPack('mine', {
         name: 'bad', primitive: 'entity', prefix: '',
       } as never, { lockDir })).rejects.toMatchObject({ code: 'INVALID_RESULT' });
+    });
+  });
+
+  it('#6135 accepts an omitted prefix and writes path_prefixes: []', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_AUDIT_DIR: auditDir }, async () => {
+      const path = seedPack('mine', 'json');
+      const result = await addTypeToPack('mine', {
+        name: 'archive', primitive: 'entity',
+      } as never, { lockDir });
+      const added = loadPackFromFile(path).page_types.find((t) => t.name === 'archive');
+      expect(added).toMatchObject({ name: 'archive', primitive: 'entity', path_prefixes: [] });
+      expect(result.new_sha8).not.toBe(result.prev_sha8);
+    });
+  });
+
+  it('#6135 still rejects expert routing without a prefix (lint-invalid manifest)', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_AUDIT_DIR: auditDir }, async () => {
+      const path = seedPack('mine', 'json');
+      await expect(addTypeToPack('mine', {
+        name: 'expertless', primitive: 'entity', expertRouting: true,
+      } as never, { lockDir })).rejects.toMatchObject({ code: 'INVALID_RESULT' });
+      expect(loadPackFromFile(path).page_types.find((t) => t.name === 'expertless')).toBeUndefined();
     });
   });
 

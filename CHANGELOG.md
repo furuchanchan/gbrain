@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.86.0] - 2026-10-06
+
+**`gbrain schema add-type` no longer demands `--prefix`, so a pack can declare a type that lives under many folders without editing the manifest by hand.**
+
+The command exited 2 unless `--prefix` was passed, yet the manifest format treats `path_prefixes: []` as a valid declaration — only `expert_routing` and `extractable` types require a prefix in the linter, and `inferTypeFromPack` simply never infers a prefixless type, which is correct for types set in frontmatter (an `archive` type for rolled-off timeline pages, a `redirect` type for renamed pages). Omitting `--prefix` now writes `path_prefixes: []` and prints a one-line note that the type is frontmatter-set only. An explicitly empty `--prefix` still fails, and `--expert` without a prefix fails in the mutator so the command can never write a manifest the pack linter rejects.
+
+### For contributors
+
+- `AddTypeOpts.prefix` is optional; `buildAddTypeMutator` validates a passed prefix, refuses `expertRouting` without one, and writes `path_prefixes: []` otherwise.
+- `test/schema-pack-mutate.test.ts` covers the omitted-prefix write, the still-rejected empty prefix, and expert routing without a prefix.
+
 ## [0.60.85.0] - 2026-10-06
 
 **The Gmail attachment-repair command test no longer fails when its second seeded thread page is still publishing as the test hands the database to the command.**

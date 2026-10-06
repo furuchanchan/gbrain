@@ -134,7 +134,7 @@ Authoring (v0.40.6.0):
   edit <name>             Print the on-disk pack file path
   diff <a> <b>            Compare page_type sets across two packs
 
-  add-type <name> --primitive <p> --prefix <dir/>
+  add-type <name> --primitive <p> [--prefix <dir/>]
                           [--extractable] [--expert] [--alias <a>]* [--pack <name>]
   remove-type <name>      [--pack <name>]
   update-type <name>      [--extractable BOOL] [--expert BOOL] [--primitive P] [--pack <name>]
@@ -1126,7 +1126,7 @@ async function runAddTypeCmd(args: string[]): Promise<void> {
   const packName = pickPackName({}, args);
   const positional = args.filter((a) => !a.startsWith('--'));
   const name = positional[0];
-  if (!name) { console.error('Usage: gbrain schema add-type <name> --primitive <p> --prefix <dir/>'); process.exit(2); }
+  if (!name) { console.error('Usage: gbrain schema add-type <name> --primitive <p> [--prefix <dir/>]'); process.exit(2); }
   let primitive: string | undefined;
   let prefix: string | undefined;
   let extractable = false;
@@ -1147,13 +1147,18 @@ async function runAddTypeCmd(args: string[]): Promise<void> {
     console.error(`--primitive must be one of ${PACK_PRIMITIVES.join('|')}`);
     process.exit(2);
   }
-  if (!prefix) { console.error('--prefix is required (e.g. --prefix people/researchers/)'); process.exit(2); }
   try {
     const result = await addTypeToPack(packName, {
       name, primitive: primitive as PackPrimitive, prefix,
       extractable, expertRouting: expert, aliases,
     });
     emitMutateResult(result, json);
+    // #6135: a prefixless type is legal (path_prefixes: []) but never
+    // inferred from a page path — say so once so the author knows the
+    // type only takes effect via frontmatter.
+    if (prefix === undefined && !json) {
+      console.log(`Note: type '${name}' has no path prefix; it is set by frontmatter only and is never inferred from a path.`);
+    }
   } catch (e) { handleMutationError(e); }
 }
 
