@@ -57,9 +57,14 @@ export function parseInlineCitationTimelineEntries(
 ): InlineCitationTimelineCandidate[] {
   const result: InlineCitationTimelineCandidate[] = [];
   for (const paragraph of citationParagraphs(content, opts)) {
-    const matches = [...paragraph.text.matchAll(CITATION_TIMELINE_RE)];
+    // #6184: HTML comments are markup, not summary text — a machine section's
+    // END marker joined to the citation paragraph used to file the marker as
+    // the entry's summary (and later materialized a copy into the page).
+    // Stripping before matching also keeps a commented-out citation out.
+    const text = paragraph.text.replace(/<!--[\s\S]*?-->/g, ' ');
+    const matches = [...text.matchAll(CITATION_TIMELINE_RE)];
     if (matches.length === 0) continue;
-    const summary = paragraph.text
+    const summary = text
       .replace(/\[Source:[^\]]*\](?:\((?:[^()]|\([^()]*\))*\))?/g, '')
       .replace(/^[-*>#\s]+/, '')
       .replace(/\s+/g, ' ')

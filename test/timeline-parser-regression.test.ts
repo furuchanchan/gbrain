@@ -176,6 +176,43 @@ describe('inline citation timeline dates', () => {
   test('a calendar-invalid citation date is still dropped', () => {
     expect(parseInlineCitationTimelineEntries('Event happened. [Source: chronicle, 2026-02-30]\n')).toEqual([]);
   });
+
+  // #6184: HTML comments are markup, never summary text — a machine
+  // section's END marker must not file (or be appended to) a timeline row.
+  test('a comment-only line after the citation files no row (#6184)', () => {
+    const content = [
+      '<!-- AUTO:slack -->',
+      '- Talked with alice-example about the launch.',
+      '',
+      '[Source: Slack import, 2026-01-02]',
+      '<!-- AUTO:slack END -->',
+      '',
+    ].join('\n');
+    expect(parseInlineCitationTimelineEntries(content)).toEqual([]);
+    expect(parseTimelineEntries(content)).toEqual([]);
+    expect(extractTimelineFromContent(content, 'notes/example')).toEqual([]);
+  });
+
+  test('a trailing comment marker is not appended to the summary (#6184)', () => {
+    const content = [
+      '<!-- AUTO:slack -->',
+      '- Talked with alice-example about the launch.',
+      '[Source: Slack import, 2026-01-02]',
+      '<!-- AUTO:slack END -->',
+      '',
+    ].join('\n');
+    expect(parseInlineCitationTimelineEntries(content)).toEqual([
+      { date: '2026-01-02', source: 'Slack import', summary: 'Talked with alice-example about the launch.' },
+    ]);
+  });
+
+  test('a commented-out citation files no row (#6184)', () => {
+    expect(parseInlineCitationTimelineEntries(
+      'Done. <!-- [Source: draft, 2026-01-02] --> [Source: memo, 2026-01-03]',
+    )).toEqual([
+      { date: '2026-01-03', source: 'memo', summary: 'Done.' },
+    ]);
+  });
 });
 
 describe('inline citation link targets (#5483)', () => {

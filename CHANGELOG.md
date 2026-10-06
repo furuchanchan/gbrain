@@ -10,6 +10,20 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.97.2] - 2026-10-06
+
+**Timeline rows stop quoting HTML comments as their summary.**
+
+A `[Source: X, date]` citation followed by a comment line — typically the `<!-- AUTO:name END -->` marker closing a machine-maintained section — filed a timeline entry whose summary was the comment itself. Those junk rows then materialized back into the page file as real bullets, duplicating the section's end marker where writers could splice the wrong range. The parser now strips HTML comments before it reads a paragraph, so the marker is invisible both to summary text and to citation matching: a commented-out citation files no row either (#6184).
+
+### Itemized changes
+
+- **Comment spans are stripped in the citation pass (#6184).** `parseInlineCitationTimelineEntries` removes `<!-- ... -->` spans from each paragraph before matching `[Source:]` citations and before computing the summary. A paragraph left with no real text files no entry — the already-existing empty-summary skip — and a bullet beside the citation keeps its real summary instead of the marker. Both extract paths (fs and db source) share this parser, so the fix applies everywhere.
+
+## To take advantage of v0.60.97.2
+
+Nothing to do for new pages. Rows already filed with a comment summary are not retracted by the parser change alone (retraction compares old and new text with the current parser — neither produces the row now); remove stale rows with `gbrain timeline repair` / a re-extract of the affected pages, and delete duplicated marker bullets from page files by hand or via `put_page`.
+
 ## [0.60.96.0] - 2026-10-06
 
 **A lane catch-up that stops on a failed page now settles every later page before it reports, and two flaky test families are fixed.**
