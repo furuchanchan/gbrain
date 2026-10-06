@@ -182,3 +182,25 @@ describe('#3958 total_fixable + the --fix hint gate', () => {
     expect(logged2.join('\n')).toContain('Run with --fix');
   });
 });
+
+describe('#6133 placeholder-date skips inline code spans', () => {
+  test('YYYY-MM-DD inside inline code in a bullet and a table cell is not a placeholder', () => {
+    const content =
+      '---\ntitle: Formats\ntype: note\ncreated: 2026-01-05\n---\n\n' +
+      '- The timeline bullet is `- **YYYY-MM-DD** | <source> — <what happened>`.\n\n' +
+      '| field | format |\n|---|---|\n| `created` | `YYYY-MM-DD` |\n';
+    const issues = lintContent(content, 'test.md', { contentSanity: SANITY_OFF });
+    expect(issues.filter(i => i.rule === 'placeholder-date')).toHaveLength(0);
+  });
+
+  test('XX-XX and 2026-XX-XX inside backticks are skipped; bare matches still fire', () => {
+    const content =
+      '---\ntitle: T\ntype: note\ncreated: 2026-01-05\n---\n\n' +
+      'format doc: `XX-XX` and `2026-XX-XX` are templates.\n' +
+      '- 2026-XX-XX | real unfilled entry\n';
+    const issues = lintContent(content, 'test.md', { contentSanity: SANITY_OFF });
+    const hits = issues.filter(i => i.rule === 'placeholder-date');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].line).toBe(8);
+  });
+});

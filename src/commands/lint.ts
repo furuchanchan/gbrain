@@ -22,6 +22,7 @@ import { readdirSync, statSync, lstatSync, existsSync } from 'fs';
 import { join, relative, dirname } from 'path';
 import { isAborted } from '../core/abort-check.ts';
 import { parseMarkdown, type ParseValidationCode } from '../core/markdown.ts';
+import { stripCodeBlocks } from '../core/markdown-code.ts';
 import {
   assessContentSanity,
   type OperatorLiteral,
@@ -171,17 +172,14 @@ export function lintContent(content: string, filePath: string, opts: LintContent
     });
   }
 
-  // Rule: Placeholder dates. #3958: skip lines inside fenced code blocks —
-  // a page DOCUMENTING date formats (```\ncreated: YYYY-MM-DD\n```) is not a
-  // page with an unfilled placeholder. Both ``` and ~~~ fences toggle.
-  let inFence = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s{0,3}(```|~~~)/.test(lines[i])) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
-    if (lines[i].match(/\bYYYY-MM-DD\b/) || lines[i].match(/\bXX-XX\b/) || lines[i].match(/\b\d{4}-XX-XX\b/)) {
+  // Rule: Placeholder dates. #3958: fenced code blocks are skipped; #6133:
+  // inline code spans too (`stripCodeBlocks` blanks both, offset-preserving)
+  // — a page DOCUMENTING a date format (`YYYY-MM-DD` in a sentence or table
+  // cell) is not a page with an unfilled placeholder.
+  const placeholderScanLines = stripCodeBlocks(content).split('\n');
+  for (let i = 0; i < placeholderScanLines.length && i < lines.length; i++) {
+    const scan = placeholderScanLines[i];
+    if (scan.match(/\bYYYY-MM-DD\b/) || scan.match(/\bXX-XX\b/) || scan.match(/\b\d{4}-XX-XX\b/)) {
       issues.push({
         file: filePath, line: i + 1, rule: 'placeholder-date',
         message: `Placeholder date found: ${lines[i].trim().slice(0, 60)}`,

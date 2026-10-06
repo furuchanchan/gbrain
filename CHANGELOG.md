@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.86.0] - 2026-10-06
+
+**`gbrain lint` stops flagging placeholder dates that are inside inline code spans, so pages documenting a date format stay clean.**
+
+The `placeholder-date` rule skipped lines inside fenced code blocks (since #3958) but still matched `YYYY-MM-DD`, `XX-XX`, and `2026-XX-XX` inside single-backtick code spans — a convention page that writes `` `- **YYYY-MM-DD** | <source>` `` in a bullet or `` `YYYY-MM-DD` `` in a table cell was flagged on every such line (#6133). The rule now scans the output of `stripCodeBlocks`, which blanks both fenced blocks and inline code while preserving line numbers, so a date literal is reported only where it would actually appear as an unfilled placeholder.
+
+### For contributors
+
+- `src/commands/lint.ts` runs the `placeholder-date` match over `stripCodeBlocks(content)` lines instead of tracking the fence state itself; the reported message still quotes the original line.
+- `test/lint-3958.test.ts` adds the reporter's cases: inline code in a bullet and a table cell skip, while a bare `2026-XX-XX` line still fires on the correct line.
+
 ## [0.60.85.0] - 2026-10-06
 
 **The Gmail attachment-repair command test no longer fails when its second seeded thread page is still publishing as the test hands the database to the command.**
