@@ -16,6 +16,7 @@ import { acquireShared, yieldLease } from './worktree-lease.ts';
 import { managedFilesystemDatastorePath, refreshManagedFilesystemRoots } from './filesystem-guard.ts';
 import { assertPhysicalRoot, claimPhysicalRoot, isPhysicalRootMetadata, preparePhysicalRootTransfer, readPhysicalRootReservation, restampPhysicalRoot } from './physical-root.ts';
 import { readPhysicalRootStamp } from './physical-root-record.ts';
+import { collectGitVisiblePaths } from '../git-visible-files.ts';
 import { canonicalFilesystemPath, nativeFilesystemPath } from './root-registry.ts';
 import { assertWriterAdminState } from './admin-intent.ts';
 import { assertWriterAdminUnlocked } from './admin-lock.ts';
@@ -206,20 +207,43 @@ export const MANIFEST_PROGRESS_MIN_FILES = 5000;
  * The per-file hash map stays local; stored manifests carry only its digest
  * and file count, so their size does not grow with the worktree.
  */
+/** Rel-path predicate for the git-enumerated manifest set: mirrors the raw
+ * walk's per-name skips (.gbrain-managed dirs and physical-root metadata at
+ * any depth). `.git` needs no entry — ls-files never lists it. */
+function isManifestVisibleRel(rel: string): boolean {
+  return !rel.split('/').some((seg) => seg === '.gbrain-managed' || isPhysicalRootMetadata(seg));
+}
+
 export function worktreeManifest(root: string, opts: { progress?: ProgressOptions } = {}): WorktreeManifest {
   const canonical = realpathSync(root);
   const paths: string[] = [];
-  const visit = (dir: string) => {
-    for (const name of readdirSync(dir).sort()) {
-      if (name === '.git' || name === '.gbrain-managed' || isPhysicalRootMetadata(name)) continue;
-      const path = join(dir, name), info = lstatSync(path);
-      if (info.isSymbolicLink()) throw opError('writer_manifest_unsafe', 'Canonical worktree transfer requires a symlink-free manifest.',
-        `${relative(canonical, path).split(sep).join('/')} in the checkout is a symlink, so no manifest was recorded. Ask the user to replace it with a real file or directory (or remove it), then run the transfer step again.`);
-      if (info.isDirectory()) visit(path);
+  const unsafeSymlink = (path: string) => opError('writer_manifest_unsafe', 'Canonical worktree transfer requires a symlink-free manifest.',
+    `${relative(canonical, path).split(sep).join('/')} in the checkout is a symlink, so no manifest was recorded. Ask the user to replace it with a real file or directory (or remove it), then run the transfer step again.`);
+  // #6099: inside a git work tree the manifest enumerates the same file set
+  // gbrain ingests (tracked + untracked-non-ignored) instead of the raw
+  // filesystem — so dependency/build trees and gitignored secrets like
+  // .env.local are never read or hashed, and an exact-copy rebind no longer
+  // requires duplicating them. Non-git roots keep the raw walk.
+  const gitPaths = collectGitVisiblePaths(canonical, isManifestVisibleRel);
+  if (gitPaths !== null) {
+    for (const path of gitPaths) {
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) throw unsafeSymlink(path);
+      // Gitlinks (submodule dirs) are not files gbrain ingests — skip.
       else if (info.isFile()) paths.push(path);
     }
-  };
-  visit(canonical);
+  } else {
+    const visit = (dir: string) => {
+      for (const name of readdirSync(dir).sort()) {
+        if (name === '.git' || name === '.gbrain-managed' || isPhysicalRootMetadata(name)) continue;
+        const path = join(dir, name), info = lstatSync(path);
+        if (info.isSymbolicLink()) throw unsafeSymlink(path);
+        if (info.isDirectory()) visit(path);
+        else if (info.isFile()) paths.push(path);
+      }
+    };
+    visit(canonical);
+  }
   const progress = opts.progress && paths.length > MANIFEST_PROGRESS_MIN_FILES ? createProgress(opts.progress) : undefined;
   progress?.start('sources.manifest_hash', paths.length);
   const files: Record<string, string> = {};

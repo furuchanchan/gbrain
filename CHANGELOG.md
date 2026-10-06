@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.73.3] - 2026-10-06
+
+### Fixed
+
+- Canonical worktree manifests enumerate the git-visible file set (tracked + untracked-non-ignored) inside git work trees instead of every file on disk, so `sources set-path` rebinding no longer requires byte-copying `node_modules`, build output, or gitignored secrets, which are never read or hashed (#6099).
+
 ## [0.60.73.0] - 2026-10-05
 
 **A managed Postgres brain far from its database now catches up a sync backlog at about 150 pages a minute: a 10,000-file backlog takes about 1.2 hours instead of 5.4 (#5984).**

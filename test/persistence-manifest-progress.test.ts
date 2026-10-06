@@ -1,6 +1,7 @@
 /** #5790 / DX-O10: manifest hashing progress and digest compatibility. */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
@@ -60,5 +61,49 @@ describe('worktree manifest hashing', () => {
     const legacy = { digest: 'd'.repeat(64), files: { 'a.md': 'f'.repeat(64), 'b.md': 'e'.repeat(64) }, canonical_stamp: 'stamp', self_transfer: { hostId: 'h' } };
     expect(compactStoredManifest(legacy)).toEqual({ digest: 'd'.repeat(64), file_count: 2, canonical_stamp: 'stamp', self_transfer: { hostId: 'h' } });
     expect(compactStoredManifest({ digest: 'd'.repeat(64), file_count: 7 })).toEqual({ digest: 'd'.repeat(64), file_count: 7 });
+  });
+});
+
+describe('git-visible manifest set (#6099)', () => {
+  function gitWorktree(): string {
+    const root = mkdtempSync(join(tmpdir(), 'gbrain-manifest-git-'));
+    const git = (args: string[]) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd: root, stdio: 'ignore' });
+    git(['init', '--quiet']);
+    mkdirSync(join(root, 'notes'), { recursive: true });
+    writeFileSync(join(root, 'notes', 'tracked.md'), 'tracked\n');
+    writeFileSync(join(root, '.gitignore'), '.env.local\nnode_modules/\n');
+    mkdirSync(join(root, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(root, 'node_modules', 'dep', 'index.js'), 'module\n');
+    writeFileSync(join(root, '.env.local'), 'SECRET=one\n');
+    git(['add', 'notes/tracked.md', '.gitignore']);
+    git(['commit', '--quiet', '-m', 'seed']);
+    return root;
+  }
+
+  test('a git worktree manifests only the git-visible set — ignored secrets and deps are never hashed', () => {
+    const root = gitWorktree();
+    try {
+      // Untracked-but-not-ignored is ingested by sync (ls-files --others), so it manifests.
+      writeFileSync(join(root, 'notes', 'untracked.md'), 'untracked\n');
+      const before = worktreeManifest(root);
+      expect(before.file_count).toBe(3); // .gitignore + tracked.md + untracked.md
+      // The reporter's incident shape: editing gitignored credentials or
+      // dependency output must not move the digest or be read at all.
+      writeFileSync(join(root, '.env.local'), 'SECRET=two\n');
+      writeFileSync(join(root, 'node_modules', 'dep', 'index.js'), 'changed\n');
+      expect(worktreeManifest(root)).toEqual(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a symlink inside a git worktree still refuses the manifest', () => {
+    const root = gitWorktree();
+    try {
+      symlinkSync('notes/tracked.md', join(root, 'link.md'));
+      expect(() => worktreeManifest(root)).toThrow(/symlink/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
