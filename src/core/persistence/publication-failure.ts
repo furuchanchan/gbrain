@@ -6,12 +6,16 @@ import type { FenceFailureDetail } from '../fence-repair/refusal.ts';
  * #5974: a database refusal during preparation or publication becomes a
  * structured, bounded diagnostic instead of an opaque storage_error. Only
  * fixed identifiers are kept: trigger function, table, operation, guard
- * branch and the source relationship. Page text, SQL and row values never are.
+ * branch and the source relationship. Page text, SQL and row values never are —
+ * the one exception is `cause` (#6075), a bounded owner-only copy of an otherwise
+ * codeless error's name and message, stripped from the public receipt.
  */
 export type PublicationStage = 'preparation' | 'publication' | 'after_file_publication';
 export interface PublicationFailureDetail {
-  origin: 'database_guard' | 'database_trigger' | 'database';
-  sqlstate: string;
+  origin: 'database_guard' | 'database_trigger' | 'database' | 'unexpected';
+  sqlstate?: string;
+  /** Owner-only: the original error's name and bounded message for an otherwise codeless failure (#6075). */
+  cause?: { name: string; message: string };
   raiser?: string;
   table?: string;
   op?: string;
@@ -87,7 +91,7 @@ export function withAttempt(failure: PublicationFailure, stage: PublicationStage
  */
 export function publicFailureDetail(detail: unknown): Record<string, unknown> | undefined {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
-  const { sources: _sources, attempt: _attempt, ...rest } = detail as PublicationFailureDetail;
+  const { sources: _sources, attempt: _attempt, cause: _cause, ...rest } = detail as PublicationFailureDetail;
   if ((rest as { origin?: unknown }).origin === 'fence') {
     const { rows: _rows, issues, ...fence } = ((rest as unknown as FenceFailureDetail).fence ?? {}) as FenceFailureDetail['fence'];
     const publicIssues = Array.isArray(issues) ? issues.map(({ row: _row, ...issue }) => issue) : undefined;

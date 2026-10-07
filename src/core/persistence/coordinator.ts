@@ -117,7 +117,21 @@ function publishFile(file: PageMutationFile, stagingPath?: string, afterStagingF
 // Effect recovery uses the same confined durable publication primitive, under
 // its own recovery record and native root capability.
 export { fileHash as persistenceFileHash, publishFile as publishPersistenceFile };
-function requestError(error: unknown): PublicationFailure {
+/**
+ * #6075: an otherwise codeless failure keeps the original error's name and a
+ * bounded message as an owner-only `cause` in the persisted detail, so
+ * "inspect owner diagnostics" has something to inspect. Stringified non-Error
+ * throws carry their JSON; free text stays bounded at 400 chars.
+ */
+function originalCause(error: unknown): PublicationFailureDetail | undefined {
+  if (error === null || error === undefined) return undefined;
+  const name = (error instanceof Error ? error.name : typeof error).slice(0, 80);
+  let raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (!raw && !(error instanceof Error)) { try { raw = JSON.stringify(error) ?? ''; } catch { raw = ''; } }
+  if (!raw && !name) return undefined;
+  return { origin: 'unexpected', cause: { name, message: raw.length > 400 ? `${raw.slice(0, 400)}…` : raw } };
+}
+export function requestError(error: unknown): PublicationFailure {
   if (error instanceof OperationError) {
     // #6188: a typed fence refusal keeps its location in the bounded detail, which outlives receipt compaction.
     const fence = fenceFailureDetail(error);
@@ -131,7 +145,9 @@ function requestError(error: unknown): PublicationFailure {
   }
   // #5216: the row still awaits its revision backfill; the error names the resume command.
   if (code === 'revision_backfill_pending' && error instanceof Error) return { code, message: error.message };
-  return { code: 'storage_error', message: `Publication failed${code ? ` (${code})` : ''}. Inspect owner diagnostics.` };
+  const cause = originalCause(error);
+  return { code: 'storage_error', message: `Publication failed${code ? ` (${code})` : ''}. Inspect owner diagnostics.`,
+    ...(cause ? { detail: cause } : {}) };
 }
 function conflictCode(code: string): boolean { return ['revision_required','revision_conflict','revision_backfill_pending','source_changed','page_identity_changed'].includes(code); }
 export function transientDatabaseFailure(error: unknown): boolean {
