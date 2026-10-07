@@ -106,6 +106,7 @@ Don't just capture facts. Capture texture:
 | Opinions, beliefs | What They Believe section |
 | Current projects, features shipped | What They're Building section |
 | Ambition, career arc, motivation | What Motivates Them section |
+| How they communicate, disagree, prefer outreach | Communication Style section |
 | Topics they return to obsessively | Hobby Horses section |
 | Who they amplify, argue with, respect | Network / Relationships |
 | Ascending, plateauing, pivoting? | Trajectory section |
@@ -212,6 +213,11 @@ Current projects, recent launches, what they're focused on.
 
 ## What Motivates Them
 Ambition, career arc, what drives them.
+
+## Communication Style
+How they prefer to communicate, how they handle disagreement, what energizes
+them in conversation. Direct observation only (meeting behavior, language in
+emails/posts) — never generalize from one data point. Mark confidence.
 
 ## Hobby Horses
 Topics they return to obsessively. Recurring themes in their work/posts.
@@ -333,7 +339,7 @@ An enriched person page contains:
 - **Frontmatter** with type, tags, company, relationship, and contact fields
 - **Executive summary** (1 paragraph: how you know them, why they matter, relationship state)
 - **State** section with hard facts and inline `[Source: ...]` citations
-- **Texture sections** (What They Believe, What They're Building, What Motivates Them, Hobby Horses)
+- **Texture sections** (What They Believe, What They're Building, What Motivates Them, Communication Style, Hobby Horses)
 - **Assessment** with trajectory read
 - **Relationship** history and contact info
 - **Network** connections and mutual contacts

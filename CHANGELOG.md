@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.110.0] - 2026-10-08
+
+**The enrich skill's person-page template matches the recommended schema again.**
+
+The enrich skill carries its own inline Person page template, and it had drifted from `docs/GBRAIN_RECOMMENDED_SCHEMA.md`: the `## Communication Style` section the schema doc names one of its highest-value context sections was missing, so an agent following enrich never wrote it. The skill's template now carries the section in the same position (between What Motivates Them and Hobby Horses), its signal-extraction table routes communication observations to it, and a new drift-guard test fails if the skill's Person template ever drops a section the schema doc defines.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
