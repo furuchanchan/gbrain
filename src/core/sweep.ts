@@ -621,7 +621,20 @@ async function runCorpusIngestPass(
   // OFF retires banked turns even when the brain cannot extract — otherwise
   // the files linger eligible and a later re-enable would extract turns the
   // operator already revoked (codex re-review, this wave).
-  const { parseWbFileName, writebackOffSidecarJson, selfCaptureSidecarJson, corpusFileSessionId, corpusTextForExtraction } = await import('./context/corpus-segments.ts');
+  const { parseWbFileName, parseSegmentFileName, readSegmentLedger, writebackOffSidecarJson, selfCaptureSidecarJson, corpusFileSessionId, corpusTextForExtraction } = await import('./context/corpus-segments.ts');
+  // #6159: the session's own time for facts' valid_from — a `seg-*` file's
+  // ledger `ts` (its bank time at compaction) when recorded, else the corpus
+  // file's mtime; a wb turn file's mtime is its turn time. A backlog drained
+  // days late keeps session ordering instead of entering as new facts.
+  const corpusValidFrom = (name: string, mtime?: Date): Date | undefined => {
+    const seg = parseSegmentFileName(name);
+    if (seg) {
+      const ts = readSegmentLedger(dir, seg.sessionId).find(e => e.hash === seg.hash)?.ts;
+      const d = ts ? new Date(ts) : undefined;
+      if (d && !Number.isNaN(d.getTime())) return d;
+    }
+    return mtime;
+  };
   const { resolveWritebackConfig } = await import('./facts/writeback-config.ts');
   const { loadConfig: loadFileCfg } = await import('./config.ts');
   const { isValidSourceId } = await import('./source-id.ts');
@@ -733,7 +746,9 @@ async function runCorpusIngestPass(
         continue;
       }
 
-      const fileStat = windows.corpusFileStat(await stat(full));
+      const st = await stat(full);
+      const fileStat = windows.corpusFileStat(st);
+      const mtime = st.mtime;
       const raw = await readFile(full, 'utf-8');
 
       // Anti-loop: never ingest dream-generated outputs. Marking them
@@ -770,7 +785,10 @@ async function runCorpusIngestPass(
         remote: false,
         abortSignal: signal,
         // #5888: the file's write time anchors the capture dedup window, not the (possibly late) sweep.
-        turnAt: await stat(full).then(st => st.mtime, () => undefined),
+        turnAt: mtime,
+        // #6159: the session's own time for facts' valid_from — a drained
+        // backlog enters with session ordering, not the sweep's clock.
+        validFrom: corpusValidFrom(name, mtime),
         reAdmitFileRefusals: true,
         ...(wbMeta && wbCfg.mode === 'salient' ? { notabilityFilter: 'medium-and-up' as const } : {}),
         // visibility deliberately unset → resolveDefaultVisibility [ENG-8]
@@ -816,32 +834,7 @@ async function runCorpusIngestPass(
       // the guaranteed lane (receipt retry); here a publish failure is
       // fail-open and `.ingested` is written regardless (facts are durable;
       // re-extracting just to retry a link append is the worse trade).
-      let linksBanked = 0;
-      if (r.entity_slugs.length) {
-        try {
-          const segs = await import('./context/corpus-segments.ts');
-          const parsed = segs.parseSegmentFileName(name);
-          if (parsed) {
-            const verified: Array<{ slug: string; title: string }> = [];
-            for (const slug of r.entity_slugs) {
-              try {
-                const page = await engine.getPage(slug, { sourceId });
-                if (page) verified.push({ slug, title: page.title || slug });
-              } catch { /* a non-resolvable link is never banked */ }
-            }
-            if (verified.length) {
-              const ss = await import('./context/session-state.ts');
-              const ledger = segs.readSegmentLedger(dir, parsed.sessionId);
-              const n = Math.max(1, ledger.findIndex((e) => e.hash === parsed.hash) + 1);
-              const ok = await ss.appendCheckpointManifest(
-                engine, sourceId, null, parsed.sessionId, verified,
-                { seg: parsed.hash, n },
-              );
-              if (ok) linksBanked = verified.length;
-            }
-          }
-        } catch { /* link publish is best-effort on the backstop lane */ }
-      }
+      const linksBanked = await bankCheckpointSegmentLinks(engine, sourceId, dir, name, r.entity_slugs);
 
       // Sidecar AFTER success — a crash before this line re-processes the
       // file next sweep (dedup absorbs the repeats), never loses it.
@@ -874,6 +867,43 @@ async function runCorpusIngestPass(
     }
     if (abortLoop) break;
   }
+}
+
+/**
+ * Best-effort brain:// link publish for a compaction segment the backstop
+ * ingested. Only resolvable entity pages are banked; any failure returns 0
+ * (the harvest FIFO receipt remains the guaranteed retry lane).
+ */
+async function bankCheckpointSegmentLinks(
+  engine: BrainEngine,
+  sourceId: string,
+  dir: string,
+  name: string,
+  entitySlugs: string[],
+): Promise<number> {
+  if (!entitySlugs.length) return 0;
+  try {
+    const segs = await import('./context/corpus-segments.ts');
+    const parsed = segs.parseSegmentFileName(name);
+    if (!parsed) return 0;
+    const verified: Array<{ slug: string; title: string }> = [];
+    for (const slug of entitySlugs) {
+      try {
+        const page = await engine.getPage(slug, { sourceId });
+        if (page) verified.push({ slug, title: page.title || slug });
+      } catch { /* a non-resolvable link is never banked */ }
+    }
+    if (!verified.length) return 0;
+    const ss = await import('./context/session-state.ts');
+    const ledger = segs.readSegmentLedger(dir, parsed.sessionId);
+    const n = Math.max(1, ledger.findIndex((e) => e.hash === parsed.hash) + 1);
+    const ok = await ss.appendCheckpointManifest(
+      engine, sourceId, null, parsed.sessionId, verified,
+      { seg: parsed.hash, n },
+    );
+    return ok ? verified.length : 0;
+  } catch { /* link publish is best-effort on the backstop lane */ }
+  return 0;
 }
 
 /**
