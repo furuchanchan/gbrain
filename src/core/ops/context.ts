@@ -17,6 +17,7 @@ import type { AuthInfo, Operation, OperationContext } from './contract.ts';
 import type { Action } from '../agent-output.ts';
 import { hostFix, invalidParam, paramUse, readFix } from './op-fix.ts';
 import { CJK_SLUG_CHARS, SLUG_WORD_CHARS } from '../cjk.ts';
+import { validateSlug } from '../utils.ts';
 import { ALL_SOURCES, NO_SOURCES, isValidSourceId } from '../source-id.ts';
 import { encodeDeepResearchId } from '../deep-research-id.ts';
 import { isSearchMode } from '../search/mode.ts';
@@ -226,6 +227,30 @@ export function validatePageSlug(slug: string): void {
   if (!new RegExp(`^${OP_PAGE_SLUG_SEG}(\\/${OP_PAGE_SLUG_SEG})*$`, 'iu').test(slug)) {
     throw opError('invalid_params', `Invalid page_slug: ${slug} (allowed: letters/numbers in any script, with '.', '_', '-' after the first character of a part, optional colon-separated namespace parts, and forward-slash separated segments)`,
       'Use a slug shaped like people/alice-example or notes/v1.0.0: no spaces, backslashes, percent-encoding or dot-led segments.');
+  }
+}
+
+/**
+ * Lookup-key check for ops that target an EXISTING row (delete_page,
+ * restore_page). The full grammar is a create-time gate: rows minted under
+ * older, looser grammars (e.g. slugs containing spaces) must stay
+ * reachable or they can never be deleted or restored (#6212). Only the
+ * path-safety invariants still apply — a stored slug may still reach the
+ * filesystem during artifact removal, so traversal, control/RTL bytes,
+ * backslashes and percent-encoded separators keep refusing.
+ */
+export function validateExistingPageSlug(slug: string): void {
+  if (typeof slug !== 'string' || slug.length === 0) {
+    throw opError('invalid_params', 'page_slug must be a non-empty string', 'Pass the stored slug of the page.');
+  }
+  if (slug.length > 255) {
+    throw opError('invalid_params', 'page_slug exceeds 255 characters', 'A stored slug is at most 255 characters.');
+  }
+  try {
+    validateSlug(slug);
+  } catch (e) {
+    throw opError('invalid_params', `Invalid page_slug: ${slug} — the stored slug is not path-safe.`,
+      e instanceof Error ? e.message : String(e));
   }
 }
 

@@ -161,3 +161,48 @@ test('restore and repeated delete preserve unexpected tombstone-path bytes, incl
     } finally { for (const fixture of fixtures) await disposePersistenceConsumer(fixture.engine); }
   });
 }, 120_000);
+
+test('a legacy slug outside the current grammar stays deletable and restorable (#6212)', async () => {
+  await withEnv({ GBRAIN_HOME: home }, async () => {
+    try {
+      for (const { engine, root, context } of fixtures) {
+        const staged = 'people/jane-doe-legacy';
+        const legacy = 'people/jane doe';
+        const submit = (name: string, params: Record<string, unknown>) => submitPageMutation(context,
+          { operation: name, params: { request_id: randomUUID(), ...params }, waitMs: 30_000 });
+        await submit('put_page', { slug: staged, content: '---\ntitle: Legacy duplicate\ntype: note\n---\nCanonical body.' });
+        // Mint the row the way pre-grammar versions did: a slug the current
+        // create-time grammar refuses. Managed-persistence fixture writes go
+        // through the guarded path, so seed under the replica role (the repo's
+        // reset-helper convention).
+        await engine.transaction(async tx => {
+          await tx.executeRaw(`SELECT set_config('session_replication_role','replica',true)`, []);
+          await tx.executeRaw('UPDATE pages SET slug=$1 WHERE slug=$2 AND source_id=$3', [legacy, staged, sourceId]);
+        });
+        // The reporter's rows are DB-only duplicates: the file at the legacy
+        // slug path never existed, and no uncoordinated tree change precedes
+        // the delete. The staged file left behind is inert to the renamed row.
+        expect(existsSync(join(root, `${legacy}.md`))).toBe(false);
+
+        const before = (await engine.readPageSnapshot(legacy, { sourceId }))!;
+        expect((await submit('delete_page', { slug: legacy, expected_revision: before.revision })).state).toBe('committed');
+        const tombstone = (await engine.readPageSnapshot(legacy, { sourceId, includeDeleted: true }))!;
+        expect(tombstone.page.deleted_at).not.toBeNull();
+        expect(await engine.readPageSnapshot(legacy, { sourceId })).toBeNull();
+
+        // restore_page names the same existing row — grammar must not gate it either.
+        expect((await submit('restore_page', { slug: legacy, expected_revision: tombstone.revision })).state).toBe('committed');
+        expect(await engine.readPageSnapshot(legacy, { sourceId })).not.toBeNull();
+        await submit('delete_page', { slug: legacy, expected_revision: (await engine.readPageSnapshot(legacy, { sourceId }))!.revision });
+        await engine.transaction(async tx => {
+          await tx.executeRaw(`SELECT set_config('session_replication_role','replica',true)`, []);
+          await tx.executeRaw('DELETE FROM pages WHERE slug=$1 AND source_id=$2', [legacy, sourceId]);
+        });
+
+        // The grammar still gates creates: a space slug refuses on the write path.
+        await expect(submit('put_page', { slug: 'people/other bad', content: 'x' }))
+          .rejects.toMatchObject({ code: 'invalid_params' });
+      }
+    } finally { for (const fixture of fixtures) await disposePersistenceConsumer(fixture.engine); }
+  });
+}, 120_000);

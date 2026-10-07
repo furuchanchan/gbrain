@@ -38,7 +38,7 @@ import {
   normalizeSlugPrefix,
   parseSourceIdParam,
   readPolicyOpts,
-  validatePageSlug, pageNotFoundError,
+  validatePageSlug, validateExistingPageSlug, pageNotFoundError,
 } from './context.ts';
 
 // --- Page CRUD ---
@@ -386,7 +386,7 @@ const delete_page: Operation = {
     assertPurgeParams(p, ctx.remote);
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {
-        validatePageSlug(p.slug);
+        validateExistingPageSlug(p.slug);
         enforceClientSlugFence(ctx, p.slug, 'delete_page');
         enforceSubagentSlugFence(ctx, p.slug, 'delete_page');
       }
@@ -413,7 +413,7 @@ const restore_page: Operation = {
     pageMutationSource(ctx, p, 'restore_page');
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {
-        validatePageSlug(p.slug);
+        validateExistingPageSlug(p.slug);
         enforceClientSlugFence(ctx, p.slug, 'restore_page');
         enforceSubagentSlugFence(ctx, p.slug, 'restore_page');
       }

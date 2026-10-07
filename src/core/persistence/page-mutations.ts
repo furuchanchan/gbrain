@@ -5,7 +5,7 @@ import { realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { OperationContext } from '../ops/contract.ts';
 import { OperationError } from '../ops/contract.ts';
-import { enforceClientSlugFence, enforceSubagentSlugFence, normalizeSlugPrefix, parseSourceIdParam, requireWritablePage, validatePageSlug } from '../ops/context.ts';
+import { enforceClientSlugFence, enforceSubagentSlugFence, normalizeSlugPrefix, parseSourceIdParam, requireWritablePage, validateExistingPageSlug, validatePageSlug } from '../ops/context.ts';
 import { suffixedSlugAdmission } from './suffixed-slug.ts';
 import { defaultSlug, detectBinaryNullByte, explicitCaptureType, mergeCaptureFrontmatter, normalizeForHash } from '../capture-content.ts';
 import { computeContentHash } from '../ingestion/types.ts';
@@ -242,7 +242,11 @@ export async function preparePageAdmission(ctx: OperationContext,
     }
     if (typeof intent.capture_path === 'string') intent.capture_file_hash = sha256(p.content);
   }
-  validatePageSlug(slug);
+  // #6212: delete_page/restore_page name an existing row — the grammar is a
+  // create-time gate, so legacy slugs (spaces, older shapes) stay reachable;
+  // only path safety still applies. Every other op validates fully.
+  if (input.operation === 'delete_page' || input.operation === 'restore_page') validateExistingPageSlug(slug);
+  else validatePageSlug(slug);
   enforceClientSlugFence(ctx, slug, input.operation);
   enforceSubagentSlugFence(ctx, slug, input.operation);
   // Preserve same-source diagnostics for new timeline writes without making
