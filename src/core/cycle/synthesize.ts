@@ -61,6 +61,7 @@ import { normalizeModelId, splitProviderModelId } from '../model-id.ts';
 import { hasAnthropicKey } from '../ai/anthropic-key.ts';
 import { basename, join, dirname, isAbsolute, resolve } from 'node:path';
 import { parseLlmJson } from '../llm-json.ts';
+import { isUnreliableVerdictMarker, buildUnreliableMarkerVerdict, unreliableMarkerReport } from './triage-unreliable.ts';
 import type { BrainEngine, DreamVerdict, TriageSegment } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { DEFAULT_PRIVATE_QUEUE_LEASE_MS, MinionQueue } from '../minions/queue.ts';
@@ -1985,8 +1986,8 @@ export interface TriageResult {
    *                   could be parsed out of the response. Out-of-range scores
    *                   land here deliberately — clamping would cache a
    *                   fabricated verdict.
-   * runTriagePass skips putDreamVerdict for these so the next cycle re-judges
-   * the transcript instead of permanently trusting a degenerate rejection.
+   * runTriagePass records these as marker rows (#6069) that suppress the paid
+   * re-judge for 24h — never trusting a degenerate rejection.
    */
   unreliable?: 'truncated' | 'refusal' | 'unparseable';
   /**
@@ -1995,6 +1996,8 @@ export interface TriageResult {
    * the call was paid whether or not the verdict parsed.
    */
   tokens?: { in: number; out: number };
+  /** #6069: first 1500 chars of the raw judge response, set on unreliable verdicts for the log line. */
+  rawPreview?: string;
   /**
    * The model that answered when it is not the verdict model (a
    * chat_fallback_chain hop). Its score is not comparable within the cache
@@ -2127,7 +2130,7 @@ Quote verbatim; never paraphrase inside "quote".`;
     : undefined;
   const answeredBy = (msg as { answered_by?: string }).answered_by;
   const withTokens = (r: TriageResult): TriageResult =>
-    ({ ...r, ...(callTokens ? { tokens: callTokens } : {}), ...(answeredBy ? { answeredBy } : {}) });
+    ({ ...r, ...(callTokens ? { tokens: callTokens } : {}), ...(answeredBy ? { answeredBy } : {}), ...(r.unreliable ? { rawPreview } : {}) });
   const refused = stopReasonRaw === 'refusal';
   const abnormalStop: TriageResult['unreliable'] | undefined =
     truncated ? 'truncated' : refused ? 'refusal' : undefined;
@@ -2136,6 +2139,8 @@ Quote verbatim; never paraphrase inside "quote".`;
     .map(b => (b.type === 'text' ? b.text : ''))
     .join('')
     .trim();
+  // #6069: kept for the log line on the unreliable path.
+  const rawPreview = text.slice(0, 1500);
   const parsed = parseLlmJson<{
     score?: unknown;
     content_type?: unknown;
@@ -2462,6 +2467,13 @@ export async function runTriagePass(
     // Cache lookup is always free — never deferred by the time budget.
     const cached = cfg.force ? null : await engine.getDreamVerdict(t.filePath, t.contentHash);
     const cacheValid = cached !== null && isTriageCacheValid(cached, cfg.model, cfg.staleBefore);
+    if (cached && !cacheValid && isUnreliableVerdictMarker(cached, cfg.model, TRIAGE_VERSION, cfg.staleBefore, now())) {
+      // #6069 marker row: suppress the paid re-judge within the backoff.
+      cacheHits++;
+      unreliableCount++;
+      reports[idx] = unreliableMarkerReport(t.filePath, cached);
+      return;
+    }
     if (cached && cacheValid) {
       cacheHits++;
       byPath.set(t.filePath, cached);
@@ -2527,16 +2539,14 @@ export async function runTriagePass(
         tokensOut += triage.tokens.out;
       }
       if (triage.unreliable) {
-        // Degenerate judgement — do NOT write it to dream_verdicts: a cached
-        // rejection is permanent for this content hash, and a triage model
-        // that reliably truncates would silently reject every transcript
-        // forever. Log + skip so the next cycle re-judges.
+        // #6069: record a marker row (never a verdict) that suppresses the
+        // paid re-judge for 24h; the raw response head rides the log line.
         unreliableCount++;
-        process.stderr.write(
-          `[dream] triage for ${t.basename} was ${triage.unreliable} ` +
-          `(${triage.reasons.join('; ')}); not caching in dream_verdicts — ` +
-          `next cycle will re-judge ${t.filePath}\n`,
-        );
+        process.stderr.write(`[dream] triage for ${t.basename} was ${triage.unreliable} ` +
+          `(${triage.reasons.join('; ')}); caching an unreliable marker — re-judge suppressed for 24h ` +
+          `${t.filePath}${triage.rawPreview ? ` — raw response: ${triage.rawPreview}` : ''}\n`);
+        await engine.putDreamVerdict(t.filePath, t.contentHash,
+          buildUnreliableMarkerVerdict(triage.unreliable, triage.reasons, cfg.model, TRIAGE_VERSION));
         reports[idx] = {
           filePath: t.filePath,
           worth: false,

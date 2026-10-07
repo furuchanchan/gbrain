@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.115.0] - 2026-10-08
+
+**A judge verdict that fails to parse no longer costs a paid re-judge every cycle.** When the dream synthesize triage judge returns a degenerate verdict (unparseable, truncated, or refused), the run now records a marker row in `dream_verdicts` — never a real verdict — that suppresses the paid re-judge for 24 hours per content hash, then expires so the transcript is re-judged fresh. The log line carries the first 1500 characters of the raw judge response so a persistently failing judge is diagnosable without re-running. Model or prompt-version changes still re-judge immediately, and `gbrain dream retriage --force` bypasses the marker as before.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

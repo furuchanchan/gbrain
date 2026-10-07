@@ -481,7 +481,7 @@ export const DREAM_VERDICT_TTL_SECONDS = 30 * 86400;
 export interface DreamVerdictInput {
   worth_processing: boolean;
   reasons: string[];
-  score: number;
+  score: number | null; // NULL for #6069 unreliable markers — never a valid cache hit
   content_type: string | null;
   segments: TriageSegment[];
   entities: string[];

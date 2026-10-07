@@ -411,7 +411,7 @@ describe('runTriagePass — degrade + failure contracts', () => {
     await expect(runTriagePass(engine, ts, baseCfg(judge, { concurrency: 1 }))).rejects.toThrow('database on fire');
   });
 
-  test('unreliable judgments are reported but never cached', async () => {
+  test('unreliable judgments are reported and cached as marker rows, never verdicts', async () => {
     const { engine, rows } = makeFakeEngine();
     const t = makeTranscript('trunc');
     const judge: JudgeClient = {
@@ -423,7 +423,11 @@ describe('runTriagePass — degrade + failure contracts', () => {
     const r = await runTriagePass(engine, [t], baseCfg(judge));
     expect(r.unreliable).toBe(1);
     expect(r.reports[0].unreliable).toBe('truncated');
-    expect(rows.size).toBe(0);
+    // #6069: a marker row (score null, unreliable:<kind> prefix) bounds the
+    // re-spend — it is never a real cache hit and expires from the skip path.
+    const row = rows.get(`${t.filePath}|${t.contentHash}`)!;
+    expect(row.score).toBeNull();
+    expect(row.reasons[0]).toBe('unreliable:truncated');
     expect(r.byPath.has(t.filePath)).toBe(false);
   });
 });
