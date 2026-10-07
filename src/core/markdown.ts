@@ -649,6 +649,24 @@ function collectValidationErrors(
     });
   }
 
+  const looksLikeFrontmatter = hasFrontmatterFieldSyntax(fmBody);
+
+  // Parse the fenced block once. The NESTED_QUOTES line heuristic below
+  // exists to flag breakage a strict parser rejects — so it runs ONLY when
+  // the block as a whole fails to parse (#6157): a continuation line of a
+  // folded or plain multi-line scalar (`Alex: "Why not you?", then ...`
+  // inside a `>-` value) merely LOOKS like a `key: "..."` line, and any
+  // genuinely broken key line would have failed this same parse anyway.
+  // Check 6 (YAML_PARSE) consumes the same result.
+  let detectedYamlParseError = looksLikeFrontmatter ? ctx.yamlParseError : null;
+  if (!detectedYamlParseError && looksLikeFrontmatter) {
+    try {
+      yamlLoad(fmBody);
+    } catch (e) {
+      detectedYamlParseError = e as Error;
+    }
+  }
+
   // 5. NESTED_QUOTES — common breakage pattern: `title: "Name "Nick" Last"`.
   //    The heuristic: a frontmatter `key: value` line with 3+ unescaped
   //    double-quote characters is suspicious. But raw quote-counting is
@@ -658,7 +676,9 @@ function collectValidationErrors(
   //    Disambiguate by running js-yaml on just the value; only flag
   //    lines that genuinely fail to parse. The full-frontmatter YAML
   //    parse error is caught separately by check 6 (YAML_PARSE) below.
-  for (let i = firstNonEmpty + 1; i < closeLine; i++) {
+  const scalarLines = frontmatterScalarContinuationLines(lines, firstNonEmpty + 1, closeLine);
+  for (let i = detectedYamlParseError ? firstNonEmpty + 1 : closeLine; i < closeLine; i++) {
+    if (scalarLines.has(i)) continue;
     const line = lines[i];
     const m = line.match(/^\s*[A-Za-z_][\w-]*\s*:\s*(.*)$/);
     if (!m) continue;
@@ -689,21 +709,11 @@ function collectValidationErrors(
     }
   }
 
-  const looksLikeFrontmatter = hasFrontmatterFieldSyntax(fmBody);
-
-  // 6. YAML_PARSE — validate the fenced YAML directly. gray-matter normally
-  // throws for malformed frontmatter, but it can also return the whole file as
-  // body with empty data, so the validation surface must not depend only on
-  // gray-matter's parse path. Gate this on frontmatter-shaped fields so a
-  // leading Markdown thematic break / epigraph is preserved as body content.
-  let detectedYamlParseError = looksLikeFrontmatter ? ctx.yamlParseError : null;
-  if (!detectedYamlParseError && looksLikeFrontmatter) {
-    try {
-      yamlLoad(fmBody);
-    } catch (e) {
-      detectedYamlParseError = e as Error;
-    }
-  }
+  // 6. YAML_PARSE — the fenced-block parse already ran above (it also gates
+  // the NESTED_QUOTES line heuristic): surface its error. gray-matter
+  // normally throws for malformed frontmatter, but it can also return the
+  // whole file as body with empty data, so the validation surface must
+  // not depend only on gray-matter's parse path.
   if (detectedYamlParseError) {
     // #5988: location only. js-yaml's own message quotes the document, and
     // this text reaches receipts, sync results and remote callers.
@@ -748,6 +758,33 @@ function collectValidationErrors(
       });
     }
   }
+}
+
+/**
+ * #6157: line indices inside `>`/`|` block scalar values — a `key: >`-style
+ * opener (a leading `- ` list marker allowed) plus every following line
+ * indented deeper than the opener (blank lines continue the scalar). These
+ * lines are string content, not key lines, so line-level heuristics must
+ * not treat `Alex: "Why not you?", ...` inside a `>-` value as a
+ * `key: value` line.
+ */
+export function frontmatterScalarContinuationLines(lines: string[], start: number, end: number): Set<number> {
+  const inside = new Set<number>();
+  let scalarIndent = -1;
+  for (let i = start; i < end; i++) {
+    const line = lines[i]!;
+    const indent = line.length - line.trimStart().length;
+    if (line.trim().length === 0) {
+      if (scalarIndent >= 0) inside.add(i);
+      continue;
+    }
+    if (scalarIndent >= 0 && indent > scalarIndent) {
+      inside.add(i);
+      continue;
+    }
+    scalarIndent = /^\s*(?:-\s*)?[A-Za-z_][\w-]*\s*:\s*[>|][+-]?\s*(?:#.*)?$/.test(line) ? indent : -1;
+  }
+  return inside;
 }
 
 /** Where js-yaml refuses a raw block: its reason phrase and the file line and column. */

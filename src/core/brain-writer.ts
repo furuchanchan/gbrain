@@ -18,6 +18,7 @@ import { assertManagedFilesystemWrite } from './persistence/filesystem-guard.ts'
  */
 
 import { createHash } from 'crypto';
+import { load as yamlLoad } from 'js-yaml';
 import { existsSync, readFileSync, readdirSync, copyFileSync, writeFileSync, mkdirSync, lstatSync } from 'fs';
 import { join, relative, resolve, dirname, basename, isAbsolute } from 'path';
 import type { BrainEngine } from './engine.ts';
@@ -26,6 +27,7 @@ import { gbrainPath } from './config.ts';
 import { collectGitVisibleFiles } from './git-visible-files.ts';
 import {
   classifyImportHold,
+  frontmatterScalarContinuationLines,
   parseMarkdown,
   type ParseValidationCode,
   type ParseValidationError,
@@ -228,6 +230,36 @@ export function autoFixFrontmatter(
     }
   }
 
+  // #6157: a continuation line of a folded or plain multi-line scalar can
+  // look like a `key: "..."` line (`      Alex: "Why not you?", then "Let
+  // us keep it` inside a `>-` value). Every genuinely broken key line fails
+  // the whole fenced block's parse, so gate both quote passes on one
+  // block-level parse: the tags/aliases normalizer (a style pass that only
+  // makes sense on real key lines) runs when the block parses, and the
+  // nested-quotes rewrite (a repair for unparseable content) runs when it
+  // does not. No fenced block or no closer leaves fmBlockParses false — the
+  // step-3 scan then keeps its own open/close checks.
+  let fmBlockParses = false;
+  {
+    const lines = working.split('\n');
+    let firstNonEmpty = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().length > 0) { firstNonEmpty = i; break; }
+    }
+    if (firstNonEmpty >= 0 && lines[firstNonEmpty].trim() === '---') {
+      let closeIdx = -1;
+      for (let i = firstNonEmpty + 1; i < lines.length; i++) {
+        if (lines[i].trim() === '---') { closeIdx = i; break; }
+      }
+      if (closeIdx >= 0) {
+        try {
+          yamlLoad(lines.slice(firstNonEmpty + 1, closeIdx).join('\n'));
+          fmBlockParses = true;
+        } catch { /* unparseable block — the line heuristics below may apply */ }
+      }
+    }
+  }
+
   // Both step 3a and step 3 produce NESTED_QUOTES fix records on different
   // patterns. When both fire on the same file, push ONE merged record rather
   // than two — keeps the audit count honest about distinct files affected.
@@ -241,6 +273,8 @@ export function autoFixFrontmatter(
   //     v0.37.9.0 serializer. Allow-list keys deliberately scoped to
   //     `tags` / `aliases` — extending to arbitrary keys would rewrite typed
   //     arrays (e.g. `scores: ["1", "2"]` would lose numeric intent).
+  //    #6157: scalar continuation lines are skipped below — a `tags:` inside
+  //    a `>-` value is string content, not a key line.
   {
     const lines = working.split('\n');
     let firstNonEmpty = -1;
@@ -253,7 +287,9 @@ export function autoFixFrontmatter(
         if (lines[i].trim() === '---') { closeIdx = i; break; }
       }
       let fixedAny = false;
+      const scalarLines = frontmatterScalarContinuationLines(lines, firstNonEmpty + 1, closeIdx);
       for (let i = firstNonEmpty + 1; i < closeIdx; i++) {
+        if (scalarLines.has(i)) continue;
         // Allow-list: only `tags` and `aliases` (the keys this wave targets).
         const arrMatch = lines[i].match(/^(\s*(?:tags|aliases)\s*:\s*)\[(.*)\]\s*$/);
         if (!arrMatch || !arrMatch[2].includes('"')) continue;
@@ -300,7 +336,9 @@ export function autoFixFrontmatter(
   // 3. NESTED_QUOTES — rewrite `key: "...inner..."` lines that have 3+ unescaped
   //    double-quotes by switching the outer wrapper to single quotes and
   //    leaving inner quotes alone.
-  {
+  //    #6157: gated on an UNPARSEABLE block — on content that already parses,
+  //    a matching line is scalar continuation text and must not be rewritten.
+  if (!fmBlockParses) {
     const lines = working.split('\n');
     let firstNonEmpty = -1;
     for (let i = 0; i < lines.length; i++) {
@@ -312,7 +350,9 @@ export function autoFixFrontmatter(
         if (lines[i].trim() === '---') { closeIdx = i; break; }
       }
       let fixedAny = false;
+      const scalarLines = frontmatterScalarContinuationLines(lines, firstNonEmpty + 1, closeIdx);
       for (let i = firstNonEmpty + 1; i < closeIdx; i++) {
+        if (scalarLines.has(i)) continue;
         const m = lines[i].match(/^(\s*[A-Za-z_][\w-]*\s*:\s*)"(.*)"\s*(.*)$/);
         if (!m) continue;
         const [, prefix, inner, trailing] = m;

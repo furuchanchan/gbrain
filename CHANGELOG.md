@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.109.0] - 2026-10-08
+
+**Folded frontmatter values no longer read as nested-quote breakage.** `gbrain doctor`'s `frontmatter_integrity` and `gbrain lint` flagged `NESTED_QUOTES` on valid pages whose folded (`>-`) scalars quote someone (`Alex: "Why not you?", ...`) — a line inside a block scalar looks like a `key: "..."` line but is string content. The fenced block now parses first and the per-line quote heuristic runs only when it fails, and both it and the `tags`/`aliases` normalizer skip block-scalar continuation lines — including in `frontmatter validate --fix`, which previously rewrote the same lines. (#6157)
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
