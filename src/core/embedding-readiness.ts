@@ -88,5 +88,12 @@ export async function prepareEmbeddingProjections(engine: BrainEngine, opts: { s
     blocked = await countBlocked();
     if (blocked >= previousBlocked) break;
   }
-  return { rebuilt, blocked };
+  // #6223: callers that continue past a non-zero blocked count report the
+  // pages they are skipping (bounded sample; `blocked` stays the full count).
+  // Absent when nothing is blocked so existing shape assertions hold.
+  const blockedPages = blocked > 0
+    ? { blockedPages: await engine.executeRaw<{ slug: string; source_id: string }>(`SELECT p.slug,p.source_id FROM pages p
+        JOIN sources s ON s.id=p.source_id WHERE ${where} ORDER BY p.id LIMIT 25`, params) }
+    : {};
+  return { rebuilt, blocked, ...blockedPages };
 }

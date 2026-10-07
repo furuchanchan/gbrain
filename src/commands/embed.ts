@@ -293,6 +293,13 @@ export interface EmbedResult {
    */
   failure_samples: string[];
   /**
+   * #6223: pages skipped because their text projection could not be rebuilt
+   * (e.g. binary attachments with no text). They are excluded from the stale
+   * sweep instead of aborting the run. Bounded sample of the blocked set
+   * (failures counts all of them). Additive field.
+   */
+  blocked_pages?: Array<{ slug: string; source_id: string }>;
+  /**
    * SUP-3874 heals performed this run (oversized chunks split in place).
    * Also feeds the stall watchdog's progress key: a mass-heal prelude is
    * real forward progress, so it must not read as a stall. Additive field.
@@ -1646,10 +1653,14 @@ async function embedAllStale(
     readiness = await prepareEmbeddingProjections(engine, { ...readinessOptions, repair: true, assertOwned: staleOpts?.assertOwned });
     if (isAborted(externalSignal) || Date.now() >= (readinessOptions.deadline ?? Infinity)) return await noteBudgetStop();
   }
-  if (readiness.blocked && !dryRun) {
+  // #6223: pages whose projection recovery remains blocked must not starve
+  // the stale set — they are skipped (requireFreshProjection in the stale
+  // selectors below), counted in failures and listed in blocked_pages.
+  const requireFreshProjection = readiness.blocked > 0 && !dryRun;
+  if (requireFreshProjection) {
     result.failures += readiness.blocked;
-    result.failure_samples.push('Projection recovery remains blocked; rerun embed --stale for bounded recovery or restore unsupported media with its source importer.');
-    return;
+    result.blocked_pages = readiness.blockedPages;
+    result.failure_samples.push(`Projection recovery remains blocked for ${readiness.blocked} page(s) — skipped so the rest of the stale set can embed (see blocked_pages). Restore unsupported media with its source importer or set frontmatter embed_skip.`);
   }
 
   // Chunkless-page safety net: pre-flight count mirrors the countStaleChunks
@@ -1768,8 +1779,8 @@ async function embedAllStale(
     try {
       const drifted = staleOpts?.assertOwned ? await engine.transaction(async tx => {
         await staleOpts?.assertOwned?.(tx);
-        return tx.invalidateContentDriftEmbeddings(sourceId ? { sourceId } : undefined);
-      }) : await engine.invalidateContentDriftEmbeddings(sourceId ? { sourceId } : undefined);
+        return tx.invalidateContentDriftEmbeddings(sourceId ? { sourceId, ...(requireFreshProjection && { requireFreshProjection: true }) } : (requireFreshProjection ? { requireFreshProjection: true } : undefined));
+      }) : await engine.invalidateContentDriftEmbeddings(sourceId ? { sourceId, ...(requireFreshProjection && { requireFreshProjection: true }) } : (requireFreshProjection ? { requireFreshProjection: true } : undefined));
       if (drifted > 0 && !staleOpts?.quiet) {
         slog(`[embed] invalidated ${drifted} chunk(s) whose text changed after embedding (content drift)`);
       }
@@ -1780,10 +1791,11 @@ async function embedAllStale(
 
   // Pre-flight: 0 stale chunks → nothing to do, no further DB reads.
   // dry-run includes signature-drift in the count without mutating.
+  const freshOpts = requireFreshProjection ? { ...sourceOpt, requireFreshProjection: true } : sourceOpt;
   const staleCount = await engine.countStaleChunks(
     dryRun && signature
-      ? { ...sourceOpt, signature, ...(includeNullSig && { includeNullSignature: true }) }
-      : sourceOpt,
+      ? { ...sourceOpt, signature, ...(includeNullSig && { includeNullSignature: true }), ...(requireFreshProjection && { requireFreshProjection: true }) }
+      : freshOpts,
   );
   if (staleCount === 0) {
     await reportArchived();
@@ -1910,7 +1922,7 @@ async function embedAllStale(
     if (!pacer.snapshot().enabled) return false;
     if (effectiveSignal.aborted) return false;
     if (reentries >= MAX_REENTRIES) return false;
-    const remaining = await engine.countStaleChunks(sourceOpt);
+    const remaining = await engine.countStaleChunks(freshOpts);
     if (remaining === 0) return false;
     if (result.embedded === lastReentryEmbedded) return false; // no forward progress
     lastReentryEmbedded = result.embedded;
@@ -1947,6 +1959,7 @@ async function embedAllStale(
             afterUpdatedAt,
           }),
           ...(sourceId && { sourceId }),
+          ...(requireFreshProjection && { requireFreshProjection: true }),
         }),
       );
       if (batch.length === 0) {

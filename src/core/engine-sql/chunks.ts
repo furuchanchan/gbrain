@@ -57,7 +57,7 @@ export interface ChunkPageGuards {
  */
 export type ChunkTransactionRunner = <T>(fn: (tx: Pick<BrainEngine, 'executeRaw'>) => Promise<T>) => Promise<T>;
 
-type StaleChunkOpts = { sourceId?: string; signature?: string; includeNullSignature?: boolean };
+type StaleChunkOpts = { sourceId?: string; signature?: string; includeNullSignature?: boolean; requireFreshProjection?: boolean };
 
 export async function upsertChunksOnce(
   exec: SqlExecutor,
@@ -369,6 +369,12 @@ function staleChunkWhere(column: string, opts?: StaleChunkOpts): SqlFragment {
     conds.push(sqlFragment`${staleColRef} IS NULL`);
   }
   conds.push(sqlFragment`NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')`);
+  // #6223: a page whose text projection could not be rebuilt (e.g. a binary
+  // attachment with no text) must not starve the stale set — callers pass
+  // requireFreshProjection to skip it and keep embedding everything else.
+  if (opts?.requireFreshProjection) {
+    conds.push(sqlFragment`p.text_projection_revision IS NOT DISTINCT FROM p.knowledge_revision`);
+  }
   if (opts?.sourceId !== undefined) conds.push(sqlFragment`p.source_id = ${opts.sourceId}`);
   return joinFragments(conds, ' AND ');
 }
@@ -449,7 +455,7 @@ export async function invalidateStaleSignatureEmbeddings(
 export async function invalidateContentDriftEmbeddings(
   inTransaction: ChunkTransactionRunner,
   column: string,
-  opts?: { sourceId?: string },
+  opts?: { sourceId?: string; requireFreshProjection?: boolean },
 ): Promise<number> {
     // #4246: NULL embeddings whose stored embed-time hash no longer matches
     // md5(chunk_text) — the vector was computed from a PREVIOUS content
@@ -462,6 +468,11 @@ export async function invalidateContentDriftEmbeddings(
     // (the engine resolves it with the loud resolver).
     const colId = trustedSql(quoteIdentifier(column));
     const srcClause = opts?.sourceId !== undefined ? sqlFragment` AND p.source_id = ${opts.sourceId}` : sqlFragment``;
+    // #6223: same never-NULL-what-nothing-re-embeds rule — when blocked
+    // projections are being skipped this run, their stale-text vectors are
+    // preserved too (NULLing would strand them with no re-embed path).
+    const freshClause = opts?.requireFreshProjection
+      ? sqlFragment` AND p.text_projection_revision IS NOT DISTINCT FROM p.knowledge_revision` : sqlFragment``;
     return inTransaction(async tx => {
       const sources = await lockEmbeddingSources(tx, opts?.sourceId);
       const { text, params } = renderFragment(sqlFragment`UPDATE content_chunks cc
@@ -474,7 +485,7 @@ export async function invalidateContentDriftEmbeddings(
             AND cc.${colId} IS NOT NULL
             AND cc.embedded_text_hash IS NOT NULL
             AND cc.embedded_text_hash <> md5(cc.chunk_text)
-            AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')${srcClause}
+            AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')${srcClause}${freshClause}
           RETURNING cc.page_id`);
       return (await tx.executeRaw(text, params)).length;
     });
@@ -487,6 +498,7 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
   sourceId?: string;
   orderBy?: 'page_id' | 'updated_desc';
   afterUpdatedAt?: string | null;
+  requireFreshProjection?: boolean;
 }): Promise<StaleChunkRow[]> {
     const limit = opts?.batchSize ?? 2000;
     const afterPid = opts?.afterPageId ?? 0;
@@ -495,6 +507,10 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
     // S2: stale = NULL in the registry-ACTIVE column (resolved by the engine
     // BEFORE the scoped transaction, falling back to legacy on a broken registry).
     const staleColId = trustedSql(quoteIdentifier(column));
+    // #6223: same exclusion staleChunkWhere applies under requireFreshProjection.
+    const freshCond = opts?.requireFreshProjection
+      ? sqlFragment`AND p.text_projection_revision IS NOT DISTINCT FROM p.knowledge_revision`
+      : sqlFragment``;
     const read = async (fragment: SqlFragment) => (await exec.run(fragment)).rows as unknown as StaleChunkRow[];
 
       // v0.41.18.0 (A13, codex #9): --priority recent path. Composite cursor
@@ -512,6 +528,7 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
             JOIN pages p ON p.id = cc.page_id
             WHERE cc.${staleColId} IS NULL AND p.deleted_at IS NULL
               AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+              ${freshCond}
             ORDER BY p.updated_at DESC NULLS LAST, p.id ASC, cc.chunk_index ASC
             LIMIT ${limit}
           `) : read(sqlFragment`
@@ -521,7 +538,8 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
             FROM content_chunks cc
             JOIN pages p ON p.id = cc.page_id
             WHERE cc.${staleColId} IS NULL AND p.deleted_at IS NULL
-              AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+                AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+              ${freshCond}
               AND (
                 p.updated_at < ${afterUpdated}::timestamptz
                 OR (p.updated_at = ${afterUpdated}::timestamptz AND p.id > ${afterPid})
@@ -540,6 +558,7 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
           WHERE cc.${staleColId} IS NULL AND p.deleted_at IS NULL
             AND p.source_id = ${opts.sourceId}
             AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+            ${freshCond}
           ORDER BY p.updated_at DESC NULLS LAST, p.id ASC, cc.chunk_index ASC
           LIMIT ${limit}
         `) : read(sqlFragment`
@@ -551,6 +570,7 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
           WHERE cc.${staleColId} IS NULL AND p.deleted_at IS NULL
             AND p.source_id = ${opts.sourceId}
             AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+            ${freshCond}
             AND (
               p.updated_at < ${afterUpdated}::timestamptz
               OR (p.updated_at = ${afterUpdated}::timestamptz AND p.id > ${afterPid})
@@ -569,6 +589,7 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
           JOIN pages p ON p.id = cc.page_id
           WHERE cc.${staleColId} IS NULL AND p.deleted_at IS NULL
             AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+            ${freshCond}
             AND (cc.page_id, cc.chunk_index) > (${afterPid}, ${afterIdx})
           ORDER BY cc.page_id, cc.chunk_index
           LIMIT ${limit}
@@ -582,6 +603,7 @@ export async function listStaleChunks(exec: ScopedRead, column: string, opts?: {
         WHERE cc.${staleColId} IS NULL AND p.deleted_at IS NULL
           AND p.source_id = ${opts.sourceId}
           AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+          ${freshCond}
           AND (cc.page_id, cc.chunk_index) > (${afterPid}, ${afterIdx})
         ORDER BY cc.page_id, cc.chunk_index
         LIMIT ${limit}

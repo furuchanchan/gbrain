@@ -1382,7 +1382,7 @@ for (const kind of backends) {
       const result = await withEnv({ GBRAIN_EMBED_TIME_BUDGET_MS: '0' }, () => runEmbedCore(engine, { stale: true, quiet: true }));
       expect(result.embedded).toBe(0);
       expect(calls).toBe(0);
-      expect(await prepareEmbeddingProjections(engine, { repair: true, deadline: Date.now() - 1 })).toEqual({ rebuilt: 0, blocked: 1 });
+      expect(await prepareEmbeddingProjections(engine, { repair: true, deadline: Date.now() - 1 })).toEqual({ rebuilt: 0, blocked: 1, blockedPages: [{ slug: 'synthetic-expired-projection', source_id: 'default' }] });
       expect(await readProjectionSnapshot(engine, slug, 'default')).toBeNull();
       expect((await engine.getChunks(slug, { includeUnsealed: true }))[0].chunk_text).toBe('Synthetic obsolete projected body');
     });
@@ -1402,13 +1402,32 @@ for (const kind of backends) {
       } });
       expect(controller.signal.aborted).toBe(true);
       expect(installed).toBe(101);
-      expect(interrupted).toEqual({ rebuilt: 100, blocked: 3 });
+      expect(interrupted).toMatchObject({ rebuilt: 100, blocked: 3 });
+      expect(interrupted.blockedPages).toHaveLength(3);
       expect((await engine.executeRaw<{ n: number }>('SELECT count(*)::int AS n FROM content_chunks WHERE chunk_text LIKE $1', ['Synthetic obsolete%']))[0].n).toBe(3);
       const resumed = await runEmbedCore(engine, { stale: true, quiet: true, catchUp: true });
       expect(resumed.embedded).toBe(103);
       expect(resumed.failures).toBe(0);
       expect(await prepareEmbeddingProjections(engine)).toEqual({ rebuilt: 0, blocked: 0 });
     }, 60_000);
+    test('#6223: a permanently blocked projection does not starve the remaining stale set', async () => {
+      await engine.putPage('blocked-media', { type: 'note', title: 'Synthetic blocked media', compiled_truth: 'Synthetic blocked media body.' });
+      await installFixtureChunks(engine, 'blocked-media', [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Synthetic blocked media body.' }]);
+      await engine.executeRaw("UPDATE pages SET page_kind='image', text_projection_revision=NULL WHERE slug='blocked-media' AND source_id='default'");
+      await engine.putPage('ordinary-stale', { type: 'note', title: 'Synthetic ordinary page', compiled_truth: 'Synthetic ordinary stale payload.' });
+      await installFixtureChunks(engine, 'ordinary-stale', [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: 'Synthetic ordinary stale payload.' }]);
+      const inputs: string[] = [];
+      __setEmbedTransportForTests(async ({ values }: { values: string[] }) => {
+        inputs.push(...values);
+        return { values, warnings: [], embeddings: values.map(() => Array(dimensions).fill(0.1)), usage: { tokens: 8 } };
+      });
+      expect((await prepareEmbeddingProjections(engine)).blocked).toBe(1);
+      const result = await runEmbedCore(engine, { stale: true, quiet: true });
+      expect(result.embedded).toBe(1);
+      expect(result.failures).toBe(1);
+      expect(result.blocked_pages).toEqual([{ slug: 'blocked-media', source_id: 'default' }]);
+      expect(inputs.filter(t => t !== 'gbrain embedder preflight probe')).toEqual(['Synthetic ordinary stale payload.']);
+    });
     test.skipIf(kind !== 'postgres')('file publication holds the lease against a second PostgreSQL owner through the real publisher', async () => {
       const other = new PostgresEngine();
       await other.connect({ database_url: process.env.DATABASE_URL! });

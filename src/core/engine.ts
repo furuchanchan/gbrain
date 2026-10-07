@@ -1198,7 +1198,7 @@ export interface BrainEngine {
    * grandfathered). Provider-migration paths set this so pre-stamp pages
    * aren't silently left in the old embedding space.
    */
-  countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number>;
+  countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean; requireFreshProjection?: boolean }): Promise<number>;
   /**
    * Sum of LENGTH(chunk_text) over stale chunks — the character-count
    * backlog the embed phase / embed-backfill will process. Sibling of
@@ -1251,7 +1251,7 @@ export interface BrainEngine {
    * embed_skip pages are excluded (listStaleChunks can't re-embed them, so
    * NULLing would strand them). Returns the chunk count invalidated.
    */
-  invalidateContentDriftEmbeddings(opts?: { sourceId?: string }): Promise<number>;
+  invalidateContentDriftEmbeddings(opts?: { sourceId?: string; requireFreshProjection?: boolean }): Promise<number>;
   /**
    * Return every chunk whose registry-ACTIVE embedding column IS NULL (S2),
    * with the metadata needed for embedBatch + upsertChunks. Vector columns
@@ -1283,6 +1283,8 @@ export interface BrainEngine {
     // both round-trip TIMESTAMPTZ as Date | string; ISO string is the
     // common denominator on the wire).
     afterUpdatedAt?: string | null;
+    // #6223: skip pages whose text projection could not be rebuilt.
+    requireFreshProjection?: boolean;
   }): Promise<StaleChunkRow[]>;
   /**
    * Pre-flight count for the chunkless-page safety net: pages with

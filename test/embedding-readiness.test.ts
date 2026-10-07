@@ -35,12 +35,12 @@ test('projection recovery stops after a batch makes no progress', async () => {
     executeRaw: async (sql: string) => {
       if (sql.startsWith('SELECT count(')) return [{ n: 1 }];
       if (sql.startsWith('SELECT p.slug,p.source_id')) {
-        batches++;
+        if (!sql.includes('LIMIT 25')) batches++;
         return [{ slug: 'synthetic-unavailable', source_id: 'default' }];
       }
       return [];
     },
   });
-  expect(await prepareEmbeddingProjections(engine, { repair: true })).toEqual({ rebuilt: 0, blocked: 1 });
+  expect(await prepareEmbeddingProjections(engine, { repair: true })).toEqual({ rebuilt: 0, blocked: 1, blockedPages: [{ slug: 'synthetic-unavailable', source_id: 'default' }] });
   expect(batches).toBe(1);
 });

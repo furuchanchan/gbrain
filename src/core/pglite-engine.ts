@@ -1791,7 +1791,7 @@ export class PGLiteEngine implements BrainEngine {
     return quoteIdentifier(col.name);
   }
 
-  async countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number> {
+  async countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean; requireFreshProjection?: boolean }): Promise<number> {
     const column = (await resolveActiveEmbeddingColumnFromEngine(this, { fallbackToLegacy: true })).name;
     return chunksImpl.countStaleChunks(scopedRead(this.engineSql), column, opts);
   }
@@ -1810,7 +1810,7 @@ export class PGLiteEngine implements BrainEngine {
     return chunksImpl.invalidateStaleSignatureEmbeddings(fn => this.transaction(fn), column, opts);
   }
 
-  async invalidateContentDriftEmbeddings(opts?: { sourceId?: string }): Promise<number> {
+  async invalidateContentDriftEmbeddings(opts?: { sourceId?: string; requireFreshProjection?: boolean }): Promise<number> {
     const column = (await resolveActiveEmbeddingColumnFromEngine(this)).name;
     return chunksImpl.invalidateContentDriftEmbeddings(fn => this.transaction(fn), column, opts);
   }
@@ -1822,6 +1822,7 @@ export class PGLiteEngine implements BrainEngine {
     sourceId?: string;
     orderBy?: 'page_id' | 'updated_desc';
     afterUpdatedAt?: string | null;
+    requireFreshProjection?: boolean;
   }): Promise<StaleChunkRow[]> {
     const column = (await resolveActiveEmbeddingColumnFromEngine(this, { fallbackToLegacy: true })).name;
     return chunksImpl.listStaleChunks(scopedRead(this.engineSql), column, opts);
