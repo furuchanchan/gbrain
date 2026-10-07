@@ -32,6 +32,7 @@
 import type { BrainEngine } from '../engine.ts';
 import type { OperationContext } from '../ops/contract.ts';
 import { loadConfig } from '../config.ts';
+import { currentCliWriteWait } from '../persistence/write-wait.ts';
 import { REPAIR_KINDS, runRepair, type RepairHandler, type RepairKind, type RepairResult, type RepairScope } from './core.ts';
 import { timelineRepair } from './timeline.ts';
 import { visibilityRepair } from './visibility.ts';
@@ -286,7 +287,11 @@ export async function repairRunner(engine: BrainEngine, opts: { apply: boolean; 
      */
     async run(kind: RepairKind, scope: RepairScope, run: { limit?: number; sourceFlag?: string; explicit?: boolean; expect?: string; includeAmbiguous?: boolean; only?: string[]; skip?: string[];
       slugs?: string[]; noLlm?: boolean; maxLlmUsd?: number; deadline?: number } = {}): Promise<RepairResult> {
-      const ctx = { engine, config, logger, dryRun: !opts.apply, remote: false, sourceId: scope.source_ids[0] } as OperationContext;
+      // #6185: every other CLI write path carries the resolved CLI write wait
+      // (--wait > GBRAIN_WRITE_WAIT_MS > persistence.write_wait_ms > 30 s).
+      // Without it each admitted repair write waited the 5 s agent default and
+      // the run stopped on the first write_pending — one item per run.
+      const ctx = { engine, config, logger, dryRun: !opts.apply, remote: false, sourceId: scope.source_ids[0], writeWaitMs: currentCliWriteWait().waitMs } as OperationContext;
       const spec = repairSpec(kind, opts.registry);
       return runRepair(ctx, spec.handler, scope, { apply: opts.apply, limit: run.limit, embeddingModel, sourceFlag: run.sourceFlag, spec,
         embed: !opts.noEmbed && embeddingModel !== undefined, applyArgs: opts.noEmbed && spec.embeds === 'inline' ? ['--no-embed'] : [],
