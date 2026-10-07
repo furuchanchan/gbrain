@@ -178,6 +178,43 @@ describe('inline citation timeline dates', () => {
   });
 });
 
+describe('multi-source citations and emphasis in summaries (#6226)', () => {
+  // Reporter's verbatim case: one bracket naming two sources minted ONE
+  // entry dated by the LAST segment with the first date left in the source.
+  test("each ';'-separated source keeps its own date", () => {
+    expect(parseInlineCitationTimelineEntries(
+      '# Alice Example\n\n- **Widget-co:** per Alice, builds widgets for small teams. [Source: meeting transcript, 2026-10-06; Gmail "Intro", 2026-09-28]\n',
+    )).toEqual([
+      { date: '2026-10-06', source: 'meeting transcript', summary: 'Widget-co: per Alice, builds widgets for small teams.' },
+      { date: '2026-09-28', source: 'Gmail "Intro"', summary: 'Widget-co: per Alice, builds widgets for small teams.' },
+    ]);
+  });
+
+  test('a segment without a date mints no entry', () => {
+    expect(parseInlineCitationTimelineEntries(
+      'Event. [Source: meeting transcript, 2026-10-06; field notes]\n',
+    )).toEqual([
+      { date: '2026-10-06', source: 'meeting transcript', summary: 'Event.' },
+    ]);
+  });
+
+  test('bold/italic/underline emphasis markers never reach the summary', () => {
+    expect(parseInlineCitationTimelineEntries(
+      '- **Deal:** signed. [Source: memo, 2026-10-06]\n- *Call:* recap. [Source: memo, 2026-10-07]\n- __Plan__: shipped. [Source: memo, 2026-10-08]\n',
+    )).toEqual([
+      { date: '2026-10-06', source: 'memo', summary: 'Deal: signed.' },
+      { date: '2026-10-07', source: 'memo', summary: 'Call: recap.' },
+      { date: '2026-10-08', source: 'memo', summary: 'Plan: shipped.' },
+    ]);
+    // Intra-word double underscores are not emphasis — kept verbatim.
+    expect(parseInlineCitationTimelineEntries(
+      'snake__case identifier noted. [Source: memo, 2026-10-06]\n',
+    )).toEqual([
+      { date: '2026-10-06', source: 'memo', summary: 'snake__case identifier noted.' },
+    ]);
+  });
+});
+
 describe('inline citation link targets (#5483)', () => {
   const cite = emailCitation({
     account: 'user@example.com',

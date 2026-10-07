@@ -1,6 +1,9 @@
 import { stripCodeBlocks } from './markdown-code.ts';
 
-const CITATION_TIMELINE_RE = /\[Source:\s*([^\]]+?),\s*(\d{4}-\d{2}-\d{2})\s*\]/g;
+const CITATION_TIMELINE_RE = /\[Source:\s*([^\]]+?)\]/g;
+// #6226: one citation may name several sources separated by ';' — each
+// segment carries its own 'source, date' pair and yields its own entry.
+const CITATION_SEGMENT_RE = /^\s*(.+?),\s*(\d{4}-\d{2}-\d{2})\s*$/;
 
 export interface InlineCitationTimelineCandidate {
   date: string;
@@ -62,17 +65,29 @@ export function parseInlineCitationTimelineEntries(
     const summary = paragraph.text
       .replace(/\[Source:[^\]]*\](?:\((?:[^()]|\([^()]*\))*\))?/g, '')
       .replace(/^[-*>#\s]+/, '')
+      // #6226: drop emphasis markers a bullet lead like '- **Label:**' leaves
+      // behind — pairs first, then stray asterisks ('__' pairs only, so
+      // snake__case identifiers keep their underscores).
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/\*\*|\*/g, '')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 300);
     if (!summary) continue;
     for (const m of matches) {
-      if (!isValidDate(m[2])) continue;
-      result.push({
-        date: m[2],
-        source: m[1].trim().slice(0, 200),
-        summary,
-      });
+      // #6226: split a multi-source citation on ';' so each source keeps its
+      // own date instead of every segment collapsing onto the last date.
+      for (const segment of m[1].split(';')) {
+        const seg = segment.match(CITATION_SEGMENT_RE);
+        if (!seg || !isValidDate(seg[2])) continue;
+        result.push({
+          date: seg[2],
+          source: seg[1].trim().slice(0, 200),
+          summary,
+        });
+      }
     }
   }
   return result;

@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.111.0] - 2026-10-07
+
+**Multi-source citations keep each source's own date.**
+
+An inline citation naming several sources — `[Source: A, 2026-10-06; B,
+2026-09-28]` — minted a single timeline entry dated by the LAST segment,
+with the first date stranded inside the source string, so events were
+filed under the wrong day. Each `;`-separated source now yields its own
+dated entry (a segment without a date still mints none). The summary strip
+also removes `**`/`*`/`__` emphasis markers, so a `- **Label:**` bullet
+no longer leaves a stray `**` in every rendered timeline row. Intra-word
+double underscores (`snake__case`) are preserved.
+
+*Contributor: Devin (Cognition) — closes #6226.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
