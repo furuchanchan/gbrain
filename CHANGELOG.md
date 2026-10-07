@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.105.0] - 2026-10-08
+
+**`gbrain edge-proposals list --json` no longer crashes on a Postgres brain.** Postgres returns the proposals table's `BIGSERIAL` ids as JavaScript `bigint`, and the command's plain `JSON.stringify` threw `cannot serialize BigInt` — an `internal_error` that `doctor`'s `agent_contract` check then counted as a CLI dead-end. The JSON view now serializes through the shared `bigintToStringReplacer`, so ids come out as decimal strings (the same shape the routed path already returns) and every `--json` output of the command stays a single valid document.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

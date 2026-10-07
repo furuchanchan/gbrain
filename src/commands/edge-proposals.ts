@@ -17,11 +17,14 @@ import type { BrainEngine } from '../core/engine.ts';
 import { applyEdgeProposal, rejectEdgeProposal, undoEdgeProposal, DREAM_TIMELINE_SOURCE } from '../core/cycle/edge-contradictions.ts';
 import { isCalendarDate, dateKey } from '../core/link-validity.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
+import { bigintToStringReplacer } from '../core/utils.ts';
 
 const STATUSES = ['proposed', 'applied', 'rejected', 'undone', 'stale', 'reverted_by_user', 'undated_unresolved', 'ambiguous_same_date', 'compatible', 'error'];
 
 interface Row {
-  id: number; status: string; link_type: string; subject: string; a_target: string; b_target: string; ending: string | null;
+  // Postgres returns int8 columns as bigint; the --json view serializes
+  // through bigintToStringReplacer (the repo convention: decimal string).
+  id: number | bigint; status: string; link_type: string; subject: string; a_target: string; b_target: string; ending: string | null;
   close_date: unknown; born_closed: boolean; model: string | null; confidence: number | null; generated_line: string | null; created_at: unknown;
 }
 
@@ -61,7 +64,9 @@ export async function runEdgeProposals(engine: BrainEngine, args: string[]): Pro
   const json = rest.includes('--json');
   const flag = (name: string) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : undefined; };
   const id = Number(rest.find(a => /^\d+$/.test(a)));
-  const out = (value: unknown, text: string) => console.log(json ? JSON.stringify(value, null, 2) : text);
+  // #6193: --json must emit one valid document even when Postgres hands
+  // back bigint ids; the shared replacer stringifies them.
+  const out = (value: unknown, text: string) => console.log(json ? JSON.stringify(value, bigintToStringReplacer, 2) : text);
 
   if (!sub || sub === '--help' || sub === 'help') { console.log(usage()); return; }
   if (sub === 'list') {
