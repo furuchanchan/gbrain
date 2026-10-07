@@ -76,6 +76,17 @@ export const MAX_WEAK_CANDIDATES = 32;
 export const MAX_CJK_WEAK_CANDIDATES = 24;
 
 /**
+ * Max lowercase Latin 2–3-word n-gram candidates per turn (#6195). People
+ * reference multi-word names lowercase ("call alice example") — the single-
+ * token weak pass only emits `alice` and `example` separately, and neither
+ * resolves the `Alice Example` page. Grams ride their own budget so they can
+ * never starve single weak tokens; the resolver restricts them to the same
+ * exact-evidence arms (globally-unique alias, plus an entity-typed
+ * exact-title arm), so a junk gram costs only probe size.
+ */
+export const MAX_WEAK_NGRAM_CANDIDATES = 16;
+
+/**
  * HARD stopwords — function words that are never an entity, even capitalized
  * mid-sentence. Pronouns, articles/determiners, auxiliaries, conjunctions,
  * and the most common sentence openers. Compared in lowercase.
@@ -265,8 +276,9 @@ export function extractCandidates(text: string): EntityCandidate[] {
   // the alias table exists to disambiguate.
   const strongNorms = new Set(out.map((c) => normalizeAlias(c.query)).filter(Boolean));
   const weakSeen = new Set<string>();
+  const weakTokens = [...text.matchAll(WEAK_TOKEN_RE)];
   let weakCount = 0;
-  for (const m of text.matchAll(WEAK_TOKEN_RE)) {
+  for (const m of weakTokens) {
     if (weakCount >= MAX_WEAK_CANDIDATES) break;
     const raw = stripPossessive(m[0]);
     if (raw.length < 3) continue;
@@ -278,6 +290,41 @@ export function extractCandidates(text: string): EntityCandidate[] {
     weakSeen.add(norm);
     weakCount++;
     out.push({ display: raw, query: raw, weak: true });
+  }
+
+  // #6195 — lowercase Latin 2–3-word n-gram pass. Users type full names
+  // lowercase ("call alice example", "did alice sample reply"); the
+  // single-token pass above extracts `alice` and `example` separately, and
+  // neither is a registered alias. Runs = consecutive WEAK_TOKEN_RE matches
+  // separated ONLY by whitespace (punctuation breaks a run — `alice,
+  // example` is not a name). Grams keep their own budget so they cannot
+  // starve single weak tokens, and require at least one non-function word
+  // (a gram that is ALL stopwords/common words can never be an entity name).
+  // Resolver restrictions are what make junk grams safe: global-unique
+  // registered alias, or a globally-unique exact title on an entity-typed
+  // page — nothing else.
+  let ngramCount = 0;
+  for (let i = 0, runStart = 0; i <= weakTokens.length; i++) {
+    const m = weakTokens[i];
+    const continues = m !== undefined && i > runStart && /^\s+$/.test(text.slice(weakTokens[i - 1].index + weakTokens[i - 1][0].length, m.index));
+    if (m !== undefined && (i === runStart || continues)) continue;
+    const run = weakTokens.slice(runStart, i);
+    runStart = i;
+    if (run.length < 2) continue;
+    for (let s = 0; s + 2 <= run.length; s++) {
+      for (const n of [3, 2]) {
+        if (s + n > run.length || ngramCount >= MAX_WEAK_NGRAM_CANDIDATES) continue;
+        const toks = run.slice(s, s + n).map((t) => stripPossessive(t[0]));
+        if (toks.every((t) => STOPWORDS.has(t.toLowerCase()) || COMMON_WORDS.has(t.toLowerCase()))) continue;
+        const display = text.slice(run[s].index, run[s + n - 1].index + run[s + n - 1][0].length);
+        const norm = normalizeAlias(toks.join(' '));
+        if (!norm) continue;
+        if (strongNorms.has(norm) || weakSeen.has(norm)) continue;
+        weakSeen.add(norm);
+        ngramCount++;
+        out.push({ display, query: display, weak: true });
+      }
+    }
   }
 
   // 4. CJK weak n-gram pass (#3746). CJK scripts carry no capitalization and

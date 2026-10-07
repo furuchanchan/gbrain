@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.107.0] - 2026-10-08
+
+**Volunteer context resolves lowercase multi-word references.** Typing "call alice example" or "did alice sample reply" extracted only single-token weak candidates, which are restricted to the exact-alias arm and could never reach a multi-word alias or title — so a lowercase full name volunteered nothing while the capitalized form worked. The salience pass now emits bounded 2–3-word n-grams from whitespace-separated lowercase runs (own candidate budget, never starving single weak tokens); they probe the exact globally-unique alias fold, and after an unambiguous alias miss a new `weak-title` arm resolves a globally-unique exact title on person/company/organization/entity pages. Single lowercase words remain alias-only by design, the `lexicalArms` kill switch covers the new arms, and punctuation still breaks a name run.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

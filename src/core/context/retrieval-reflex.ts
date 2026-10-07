@@ -35,6 +35,7 @@ import { stripTakesFence } from '../takes-fence.ts';
 import { stripFactsFence } from '../facts-fence.ts';
 import { redactFindings } from '../secret-scan.ts';
 import { privatePagesFilterFragment } from '../search/private-visibility.ts';
+import { ALWAYS_LINKABLE_TYPES } from '../mentions/policy.ts';
 import type { EntityCandidate } from './entity-salience.ts';
 import { reflexPointerRationale } from './reflex-rationale.ts';
 import { logVolunteerEventsFireAndForget, volunteerEventRowsFrom } from './volunteer-events.ts';
@@ -54,7 +55,7 @@ const PURE_CJK_RE = new RegExp(`^[${CJK_SLUG_CHARS}]+$`, 'u');
 
 /** Which resolution arm produced a pointer (provenance → honest confidence). */
 /** `recall`: a System One S6 keyword-only retrieval fired by the know-to-ask slot (never produced by the resolver). */
-export type ResolveArm = 'alias' | 'title' | 'slug-suffix' | 'title-surname' | 'cjk-title' | 'recall';
+export type ResolveArm = 'alias' | 'title' | 'slug-suffix' | 'title-surname' | 'cjk-title' | 'weak-title' | 'recall';
 
 /**
  * v0.43 (#2095) — arm → confidence. Lives HERE, next to the arm definitions,
@@ -71,12 +72,19 @@ export type ResolveArm = 'alias' | 'title' | 'slug-suffix' | 'title-surname' | '
  * matches a unique page title/slug. Exact evidence, but the gram lacks the
  * capitalization signal a strong 'title' candidate carries — score it with
  * the surname class, above the volunteer gate.
+ *
+ * 'weak-title' (#6195) sits at 0.72 for the same reason: a lowercase Latin
+ * 2–3-word n-gram that exactly matches a globally-unique title on an
+ * entity-typed page. Single lowercase words never reach this arm — a
+ * one-word title match is deliberately alias-only (the maintainer's
+ * precision posture: register the one-word alias explicitly).
  */
 export const ARM_CONFIDENCE: Record<ResolveArm, number> = {
   alias: 0.9,
   title: 0.8,
   'title-surname': 0.72,
   'cjk-title': 0.72,
+  'weak-title': 0.72,
   'slug-suffix': 0.6,
   recall: 0.5,
 };
@@ -469,33 +477,31 @@ export async function resolveEntitiesToPointers(
     const armResolvedNorms = new Set(resolved.map((r) => r.matchedNorm).filter(Boolean));
     const cjkNorms = [...weakNorms].filter((n) => PURE_CJK_RE.test(n) && !armResolvedNorms.has(n));
     if (cjkNorms.length) {
-      try {
-        const cjkRows = await engine.executeRaw<PageRow>(
-          `SELECT p.slug, p.source_id, p.title, p.type, p.frontmatter, p.compiled_truth
-             FROM pages p
-            WHERE p.deleted_at IS NULL ${privacySql}
-              AND p.source_id = ANY($1::text[])
-              AND ( lower(p.title) = ANY($2::text[]) OR p.slug = ANY($3::text[]) )`,
-          [sourceIds, cjkNorms, cjkNorms],
-        );
-        const cjkHits = new Map<string, Array<{ slug: string; source_id: string }>>();
-        for (const r of cjkRows) {
-          rowByKey.set(keyOf(r.source_id, r.slug), r); // hydrate for synopsis
-          const titleLc = (r.title ?? '').toLowerCase();
-          for (const n of cjkNorms) {
-            if (titleLc === n || r.slug === n) {
-              const list = cjkHits.get(n) ?? [];
-              list.push({ slug: r.slug, source_id: r.source_id });
-              cjkHits.set(n, list);
-            }
-          }
-        }
-        for (const [n, hits] of cjkHits) {
-          if (hits.length === 1) push(hits[0].slug, hits[0].source_id, 'cjk-title', n);
-        }
-      } catch {
-        /* fail-open — the alias arm already ran */
-      }
+      const probe = await probeCjkTitleArm(engine, sourceIds, privacySql, cjkNorms);
+      for (const r of probe.rows) rowByKey.set(keyOf(r.source_id, r.slug), r); // hydrate for synopsis
+      for (const h of probe.hits) push(h.slug, h.source_id, 'cjk-title', h.matchedNorm);
+    }
+  }
+
+  // Arm 2.6 — lowercase Latin MULTI-WORD weak n-gram exact-title (#6195,
+  // 'weak-title'). "call alice example" emits `alice example` as a weak
+  // gram; when the alias fold missed it, a globally-unique exact title on an
+  // entity-typed page is still exact evidence — the same class as
+  // 'cjk-title'. Single-word weak norms NEVER probe titles (the maintainer's
+  // design question: register a one-word alias explicitly instead), and the
+  // type guard confines the arm to person/company/organization/entity pages
+  // so a prose-titled note can't fabricate a pointer. GLOBAL uniqueness
+  // across the considered sources mirrors the weak-alias fold; lexicalArms
+  // kill switch applies; fail-open like the CJK arm.
+  if (lexicalArms && weakNorms.size) {
+    const armResolvedNorms = new Set(resolved.map((r) => r.matchedNorm).filter(Boolean));
+    const multiNorms = [...weakNorms].filter(
+      (n) => n.includes(' ') && !PURE_CJK_RE.test(n) && !armResolvedNorms.has(n),
+    );
+    if (multiNorms.length) {
+      const probe = await probeWeakTitleArm(engine, sourceIds, privacySql, multiNorms);
+      for (const r of probe.rows) rowByKey.set(keyOf(r.source_id, r.slug), r); // hydrate for synopsis
+      for (const h of probe.hits) push(h.slug, h.source_id, 'weak-title', h.matchedNorm);
     }
   }
 
@@ -525,6 +531,93 @@ export async function resolveEntitiesToPointers(
 
   if (!pointers.length) return null;
   return { pointers, text: renderPointerBlock(pointers) };
+}
+
+/**
+ * Probe side of the 'cjk-title' arm (#3746): the SQL query and per-norm hit
+ * folding for pure-CJK weak n-grams against exact title/slug equality.
+ * Returns the fetched rows (the caller hydrates its row cache) plus the
+ * globally-unique hits. Fail-open: a query error leaves the alias arm's
+ * results standing.
+ */
+async function probeCjkTitleArm(
+  engine: BrainEngine,
+  sourceIds: string[],
+  privacySql: string,
+  norms: string[],
+): Promise<{ rows: PageRow[]; hits: Array<{ slug: string; source_id: string; matchedNorm: string }> }> {
+  try {
+    const rows = await engine.executeRaw<PageRow>(
+      `SELECT p.slug, p.source_id, p.title, p.type, p.frontmatter, p.compiled_truth
+         FROM pages p
+        WHERE p.deleted_at IS NULL ${privacySql}
+          AND p.source_id = ANY($1::text[])
+          AND ( lower(p.title) = ANY($2::text[]) OR p.slug = ANY($3::text[]) )`,
+      [sourceIds, norms, norms],
+    );
+    const cjkHits = new Map<string, Array<{ slug: string; source_id: string }>>();
+    for (const r of rows) {
+      const titleLc = (r.title ?? '').toLowerCase();
+      for (const n of norms) {
+        if (titleLc === n || r.slug === n) {
+          const list = cjkHits.get(n) ?? [];
+          list.push({ slug: r.slug, source_id: r.source_id });
+          cjkHits.set(n, list);
+        }
+      }
+    }
+    const hits: Array<{ slug: string; source_id: string; matchedNorm: string }> = [];
+    for (const [n, list] of cjkHits) {
+      if (list.length === 1) hits.push({ slug: list[0].slug, source_id: list[0].source_id, matchedNorm: n });
+    }
+    return { rows, hits };
+  } catch {
+    return { rows: [], hits: [] };
+  }
+}
+
+/**
+ * #6195 — probe side of the 'weak-title' arm: the SQL query and per-norm hit
+ * folding for lowercase multi-word weak n-grams against entity-typed titles.
+ * Returns the fetched rows (the caller hydrates its row cache) plus the
+ * globally-unique hits. Fail-open like the CJK arm: a query error leaves the
+ * alias arm's results standing.
+ */
+async function probeWeakTitleArm(
+  engine: BrainEngine,
+  sourceIds: string[],
+  privacySql: string,
+  norms: string[],
+): Promise<{ rows: PageRow[]; hits: Array<{ slug: string; source_id: string; matchedNorm: string }> }> {
+  try {
+    const rows = await engine.executeRaw<PageRow>(
+      `SELECT p.slug, p.source_id, p.title, p.type, p.frontmatter, p.compiled_truth
+         FROM pages p
+        WHERE p.deleted_at IS NULL ${privacySql}
+          AND p.source_id = ANY($1::text[])
+          AND lower(p.title) = ANY($2::text[])
+          AND p.type = ANY($3::text[])`,
+      [sourceIds, norms, [...ALWAYS_LINKABLE_TYPES]],
+    );
+    const titleHits = new Map<string, Array<{ slug: string; source_id: string }>>();
+    for (const r of rows) {
+      const titleLc = (r.title ?? '').toLowerCase();
+      for (const n of norms) {
+        if (titleLc === n) {
+          const list = titleHits.get(n) ?? [];
+          list.push({ slug: r.slug, source_id: r.source_id });
+          titleHits.set(n, list);
+        }
+      }
+    }
+    const hits: Array<{ slug: string; source_id: string; matchedNorm: string }> = [];
+    for (const [n, list] of titleHits) {
+      if (list.length === 1) hits.push({ slug: list[0].slug, source_id: list[0].source_id, matchedNorm: n });
+    }
+    return { rows, hits };
+  } catch {
+    return { rows: [], hits: [] };
+  }
 }
 
 /** Recover a display label: prefer the matched candidate surface, else the page title. */
