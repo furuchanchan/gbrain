@@ -204,6 +204,21 @@ describe('recordAnswer', () => {
     expect(weights.has('default:people/alice-example')).toBe(false);
   });
 
+  test('hint cadence is durable: it persists in engine config across calls (#6192)', async () => {
+    const pages = [{ slug: 'people/alice-example' }];
+    const first = await recordAnswer(localCtx(), { op: 'query', pages });
+    expect(first?.feedback.how_to_rate).toContain('rate_answer');
+    expect(await engine.getConfig('feedback.hint_count.local')).toBe('1');
+    const second = await recordAnswer(localCtx(), { op: 'query', pages });
+    expect(second?.feedback.how_to_rate).toBeUndefined();
+    expect(await engine.getConfig('feedback.hint_count.local')).toBe('2');
+    // A simulated restart (queue reset) does not reset the cadence.
+    _resetFeedbackRecordingForTests();
+    const third = await recordAnswer(localCtx(), { op: 'query', pages });
+    expect(third?.feedback.how_to_rate).toBeUndefined();
+    expect(await engine.getConfig('feedback.hint_count.local')).toBe('3');
+  });
+
   test('readers and disabled brains record nothing', async () => {
     const reader = { ...localCtx(), remote: true, transport: 'http', auth: { clientId: 'r', scopes: ['read'] } } as unknown as OperationContext;
     const meta = await recordAnswer(reader, { op: 'query', pages: [{ source_id: 'default', slug: 'people/alice-example' }] });

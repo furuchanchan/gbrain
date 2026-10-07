@@ -378,11 +378,22 @@ export function retrievalNoticeBlocks(result: unknown, retrieval: unknown): stri
   const empty = Array.isArray(result) && result.length === 0 ? buildEmptyRetrievalBlock(retrieval) : null;
   const r = retrieval as {
     type_filter_notice?: unknown;
+    answer_id?: unknown;
+    feedback?: { rateable?: unknown; how_to_rate?: unknown };
     other_names?: Array<{ name: string; alias: string; slug: string }>;
     saved_facts?: Array<{ fact: string; entity_slug: string | null; valid_from: string; source: string }>;
   };
   const blocks: string[] = empty ? [empty] : [];
   if (typeof r.type_filter_notice === 'string') blocks.push(r.type_filter_notice);
+  // #6192: answer_id/how_to_rate live under _meta.retrieval, which MCP hosts
+  // generally do not show the model — surface them as a text block so a
+  // rateable answer can actually be rated. The cadence-gated how_to_rate
+  // hint rides verbatim; without it the bare answer_id stays visible.
+  if (r.feedback?.rateable === true && typeof r.answer_id === 'string' && r.answer_id) {
+    blocks.push(typeof r.feedback.how_to_rate === 'string'
+      ? r.feedback.how_to_rate
+      : `answer_id ${r.answer_id} — rateable via rate_answer once you have used it.`);
+  }
   if (r.other_names?.length) {
     const { text, more } = wholeItemsWithin('Other names in these results (documents may use either; search the one you have not tried): ',
       r.other_names.map(n => `${n.alias} = ${n.name} (declared in ${n.slug})`), '; ', OTHER_NAMES_NOTICE_MAX_CHARS);

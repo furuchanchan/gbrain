@@ -91,7 +91,6 @@ interface QueueState {
 const queues = new Map<BrainEngine, QueueState>();
 const pendingEventIds = new Map<string, number>();
 let dropped = 0;
-let answersSinceHint = new Map<string, number>();
 
 function enqueue(engine: BrainEngine, job: Job): void {
   let q = queues.get(engine);
@@ -210,11 +209,14 @@ export async function recordAnswer(ctx: OperationContext, input: RecordAnswerInp
     }
     const meta: AnswerFeedbackMeta = { answer_id: id, feedback: { rateable: true } };
     if (settings.ratingPrompt) {
-      const n = answersSinceHint.get(clientId) ?? 0;
+      // Durable per-client cadence: an engine config row, so the hint period
+      // survives process restarts instead of being process-relative (#6192).
+      const key = `feedback.hint_count.${clientId}`;
+      const n = Number.parseInt((await ctx.engine.getConfig(key)) ?? '', 10) || 0;
       if (n % HINT_EVERY === 0) {
         meta.feedback.how_to_rate = `Rate this answer after you use it: rate_answer { answer_id: "${id}", rating: 1-5 } (or pages: [{ ref, rating }] for single pages). Ratings tune this brain's ranking.`;
       }
-      answersSinceHint.set(clientId, n + 1);
+      await ctx.engine.setConfig(key, String(n + 1));
     }
     return meta;
   } catch {
@@ -226,7 +228,6 @@ export function _resetFeedbackRecordingForTests(): void {
   queues.clear();
   pendingEventIds.clear();
   dropped = 0;
-  answersSinceHint = new Map();
 }
 
 /** Additive response-meta fields: present only on a rateable answer, so readers see no change. */

@@ -94,3 +94,24 @@ describe('other names notice: 400 characters, whole pairs', () => {
     expect(namesBlock([big, pair('Q', 2)])).toBe(`${NAMES_HEAD}${pairText(big)} (+1 more).`);
   });
 });
+
+describe('feedback notice block (#6192)', () => {
+  test('a rateable answer surfaces the cadence-gated how_to_rate verbatim', () => {
+    const hint = 'Rate this answer after you use it: rate_answer { answer_id: "ans_1", rating: 1-5 }';
+    const blocks = retrievalNoticeBlocks([{}], { answer_id: 'ans_1', feedback: { rateable: true, how_to_rate: hint } });
+    expect(blocks).toEqual([hint]);
+  });
+
+  test('a rateable answer without a hint still surfaces its answer_id', () => {
+    const blocks = retrievalNoticeBlocks([{}], { answer_id: 'ans_2', feedback: { rateable: true } });
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toContain('ans_2');
+    expect(blocks[0]).toContain('rate_answer');
+  });
+
+  test('non-rateable or id-less metas emit no block', () => {
+    expect(retrievalNoticeBlocks([{}], { answer_id: 'ans_3', feedback: { rateable: false, reason: 'empty' } })).toEqual([]);
+    expect(retrievalNoticeBlocks([{}], { feedback: { rateable: true } })).toEqual([]);
+    expect(retrievalNoticeBlocks([{}], {})).toEqual([]);
+  });
+});

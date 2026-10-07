@@ -28,6 +28,9 @@ async function runRetrievalFeedback(ctx: DoctorContext): Promise<Check[]> {
     } else if (status.top_client_share_7d !== null && status.top_client_share_7d > 0.8 && status.ratings_explicit > 10) {
       checks.push({ name: 'retrieval_feedback_health', status: 'warn', details,
         message: `One client made ${Math.round(status.top_client_share_7d * 100)}% of ratings in the last 7 days. If that is unexpected, review the learned pages with \`gbrain feedback status\`, reset with \`gbrain feedback reset\`, and check that client's write grant.` });
+    } else if (status.events >= 20 && status.ratings_explicit + status.ratings_cited === 0) {
+      checks.push({ name: 'retrieval_feedback_health', status: 'warn', details,
+        message: `${status.events} answers recorded but not a single rating has ever landed — the answer_ids models need for rate_answer may not be reaching them (they ride _meta.retrieval, which many MCP hosts hide). Inspect with \`gbrain feedback status\`.` });
     } else {
       checks.push({ name: 'retrieval_feedback_health', status: 'ok', details,
         message: `Retrieval feedback on (λ=${settings.influence}): ${status.events} answers recorded, ${status.ratings_explicit + status.ratings_cited} ratings, ${status.weights_off_neutral} pages/edges learned. Inspect with \`gbrain feedback status\`.` });
