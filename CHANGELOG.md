@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.108.0] - 2026-10-07
+
+**Enrich writes the Communication Style section the schema recommends.**
+
+The enrich skill's inline Person page template had drifted from
+`docs/GBRAIN_RECOMMENDED_SCHEMA.md`: the recommended template carries a
+`## Communication Style` section — one of the highest-value context
+sections in the schema's epistemic-discipline rules — and enrich did not,
+so agents following the skill never wrote it. The inline template now
+includes the section between "What Motivates Them" and "Hobby Horses",
+with its direct-observation sourcing rule (write only from observed
+behavior, never generalize from one data point, mark confidence).
+
+*Contributor: Devin (Cognition) — closes #6162.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
