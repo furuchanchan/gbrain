@@ -39,12 +39,12 @@ beforeEach(async () => {
 
 const KEY = 'dream:synth-v2:default:filename:loop.txt:0123456789abcdef';
 
-async function seedJob(opts: { key: string; status: string; queue: string; hoursAgo?: number; released?: boolean }, target: PGLiteEngine = engine): Promise<void> {
+async function seedJob(opts: { key: string | null; status: string; queue: string; hoursAgo?: number; released?: boolean; sourceId?: string }, target: PGLiteEngine = engine): Promise<void> {
   await target.executeRaw(
     `INSERT INTO minion_jobs (submission_authority, name, queue, status, data, idempotency_key, created_at, finished_at)
      VALUES ('{"version":1,"kind":"application"}'::jsonb, 'subagent', $1, $2, $3::text::jsonb, $4,
              now() - ($5 || ' hours')::interval, now() - ($5 || ' hours')::interval)`,
-    [opts.queue, opts.status, JSON.stringify(opts.released ? { source_id: 'default', __released_idempotency_key: opts.key } : { source_id: 'default' }),
+    [opts.queue, opts.status, JSON.stringify(opts.released ? { source_id: opts.sourceId ?? 'default', __released_idempotency_key: opts.key } : { source_id: opts.sourceId ?? 'default' }),
       opts.released ? null : opts.key, String(opts.hoursAgo ?? 1)],
   );
 }
@@ -99,10 +99,42 @@ describe('dead-submission counter', () => {
       await seedJob({ key, status: 'dead', queue: 'd1' });
       for (const queue of ['d2', 'd3']) await seedJob({ key, status: 'dead', queue, released: true });
     }
-    expect((await loadDreamBreaker(engine))!.tripped.size).toBe(2);
+    expect((await loadDreamBreaker(engine))!.tripped.size).toBe(3);
     await Promise.all([resetDreamBreakerKey(engine, KEY), resetDreamBreakerKey(engine, other)]);
     expect(Object.keys(JSON.parse((await engine.getConfig('dream.breaker.resets'))!)).sort()).toEqual([KEY, other].sort());
     expect((await loadDreamBreaker(engine))!.tripped.size).toBe(0);
+  });
+
+  test('#6236: deaths under churning content-hashed keys trip one dream:phase:<phase>:<source> key', async () => {
+    for (const [i, queue] of ['p1', 'p2', 'p3'].entries())
+      await seedJob({ key: `dream:patterns:fresh-digest-${i}`, status: 'dead', queue });
+    const rows = await countDeadDreamSubmissions(engine);
+    expect(rows.filter(r => r.base_key.startsWith('dream:patterns:'))).toHaveLength(3);
+    expect(rows).toContainEqual(expect.objectContaining({ base_key: 'dream:phase:patterns:default', dead_submissions: 3 }));
+    const breaker = (await loadDreamBreaker(engine))!;
+    expect(dreamBreakerRefusal(breaker, 'dream:patterns:next-fresh-key')).toBeNull();
+    expect(dreamBreakerRefusal(breaker, 'dream:phase:patterns:default')).toContain(`gbrain dream reset-key 'dream:phase:patterns:default'`);
+  });
+
+  test('#6236: sources aggregate separately and a per-key reset also clears its phase contribution', async () => {
+    for (const queue of ['a1', 'a2', 'a3']) await seedJob({ key: `dream:patterns:k-${queue}`, status: 'dead', queue, sourceId: 'alpha' });
+    for (const queue of ['b1', 'b2']) await seedJob({ key: `dream:patterns:k-${queue}`, status: 'dead', queue, sourceId: 'beta' });
+    const rows = await countDeadDreamSubmissions(engine);
+    expect(rows).toContainEqual(expect.objectContaining({ base_key: 'dream:phase:patterns:alpha', dead_submissions: 3 }));
+    expect(rows).toContainEqual(expect.objectContaining({ base_key: 'dream:phase:patterns:beta', dead_submissions: 2 }));
+    const breaker = (await loadDreamBreaker(engine))!;
+    expect(dreamBreakerRefusal(breaker, 'dream:phase:patterns:alpha')).not.toBeNull();
+    expect(dreamBreakerRefusal(breaker, 'dream:phase:patterns:beta')).toBeNull();
+    // Resetting one churned member key stops its deaths counting toward the
+    // phase key; alpha drops to 2 live deaths and untrips.
+    await resetDreamBreakerKey(engine, 'dream:patterns:k-a3');
+    expect((await loadDreamBreaker(engine))!.tripped.has('dream:phase:patterns:alpha')).toBe(false);
+  });
+
+  test('#6236: unkeyed or non-dream deaths never feed the phase count', async () => {
+    for (const queue of ['n1', 'n2', 'n3']) await seedJob({ key: null, status: 'dead', queue });
+    for (const queue of ['u1', 'u2', 'u3']) await seedJob({ key: 'unrelated:key', status: 'dead', queue, released: true });
+    expect(await countDeadDreamSubmissions(engine)).toEqual([]);
   });
 
   test('a failing count query leaves the breaker off for the run', async () => {

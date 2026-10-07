@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.116.0] - 2026-10-13
+
+### Fixed
+
+- The dream paid-loop breaker could never stop a phase whose idempotency key churned every cycle: `dream:patterns:` keys digest the reflection set, so a `patterns` run that kept dying (for example on `prompt_too_long`) submitted a fresh key each night and each key died once below the 3-death threshold. Dead keyed submissions now also aggregate per phase and source into a `dream:phase:<phase>:<source>` key (the same shape contained paid phase failures already record) — but only when at least two distinct dream keys died, so one stable poisoned key remains a per-key matter and cannot pause the whole phase. Reset with `gbrain dream reset-key 'dream:phase:<phase>:<source>'`; resetting an individual submission key also stops its deaths counting toward the phase key. Keyless runs are also gated by the phase+source key. Closes #6236.
+
+*Contributor: Devin (Cognition) — closes #6236.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

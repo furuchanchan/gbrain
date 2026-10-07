@@ -47,7 +47,7 @@ import { probeChatModel } from '../ai/gateway.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { throwIfAborted } from '../abort-check.ts';
 import { resolveCycleDate } from './cycle-date.ts';
-import { dreamBreakerRefusal, loadDreamBreaker } from './dream-breaker.ts';
+import { dreamBreakerRefusal, dreamPhaseBreakerKey, loadDreamBreaker } from './dream-breaker.ts';
 import { publishOrHold } from '../persistence/accepted-pending.ts';
 
 export interface PatternsPhaseOpts {
@@ -285,9 +285,12 @@ export async function runPhasePatterns(
       private_queue_owner_token: privateQueueOwnerToken,
       private_queue_lease_ms: DEFAULT_PRIVATE_QUEUE_LEASE_MS,
     };
-    // Paid-loop breaker: only maintenance runs carry a key, so only they are covered.
-    const breaker = submitOpts.idempotency_key ? await loadDreamBreaker(engine) : null;
-    const refusal = breaker && dreamBreakerRefusal(breaker, submitOpts.idempotency_key!);
+    // Paid-loop breaker: the per-key check covers stable keys; the
+    // phase+source key (#6236) covers the content-hashed family that re-keys
+    // every cycle, and also gates runs that carry no key at all.
+    const breaker = await loadDreamBreaker(engine);
+    const refusal = breaker && ((submitOpts.idempotency_key ? dreamBreakerRefusal(breaker, submitOpts.idempotency_key) : null)
+      ?? dreamBreakerRefusal(breaker, dreamPhaseBreakerKey('patterns', opts.sourceId ?? 'default')));
     if (refusal) {
       process.stderr.write(`[dream] patterns: ${refusal}\n`);
       return skipped('dream_breaker_tripped', refusal);

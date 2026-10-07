@@ -10,8 +10,15 @@
  * Only dead rows count: a completed job, including a legitimate zero-write
  * completion, is never a death.
  *
- * Not covered: content-hashed keys change whenever a transcript grows, and
- * patterns runs outside maintenance carry no key.
+ * #6236: content-hashed keys change whenever the evidence set changes, so a
+ * phase that keeps dying re-keys every cycle and the per-key breaker never
+ * trips. Dead keyed submissions therefore also count toward a
+ * `dream:phase:<phase>:<source>` key per phase and source — the same shape
+ * contained paid phase failures already record — tripping once for the whole
+ * churning family until an operator resets it.
+ *
+ * Not covered: runs outside maintenance carry no key and leave no family to
+ * aggregate by, so only keyed submissions feed the phase+source count.
  */
 import type { BrainEngine } from '../engine.ts';
 
@@ -58,6 +65,11 @@ async function loadResets(engine: BrainEngine): Promise<Record<string, string>> 
  * reset time do not count. Backed by the partial index on dead subagent
  * finish times.
  */
+/** `dream:phase:<phase>:<source>` key a phase+source breaker check consults. */
+export function dreamPhaseBreakerKey(phase: 'patterns' | 'synthesize', sourceId: string): string {
+  return `${DREAM_PHASE_KEY_PREFIX}${phase}:${sourceId}`;
+}
+
 export async function countDeadDreamSubmissions(engine: BrainEngine): Promise<DeadDreamSubmissions[]> {
   const resets = await loadResets(engine);
   const dead = await engine.executeRaw<DeadDreamSubmissions>(
@@ -75,13 +87,50 @@ export async function countDeadDreamSubmissions(engine: BrainEngine): Promise<De
       ORDER BY dead_submissions DESC, base_key`,
     [DREAM_BREAKER_KEY_PREFIXES[0], DREAM_BREAKER_KEY_PREFIXES[1], JSON.stringify(resets)],
   );
+  // #6236: the same dead rows also aggregate per phase and source, so a
+  // content-hashed key family that re-keys every cycle trips one
+  // `dream:phase:<phase>:<source>` key instead of never reaching the
+  // threshold on any single fresh key. Only a CHURNING family counts: one
+  // stable bad key stays a per-key matter, so a single poisoned file can
+  // never pause the whole phase for its source.
+  const byPhase = await engine.executeRaw<DeadDreamSubmissions>(
+    `WITH dead AS (
+       SELECT regexp_replace(COALESCE(idempotency_key, data->>'__released_idempotency_key'), ':c[0-9]+of[0-9]+$', '') AS base_key,
+              COALESCE(NULLIF(data->>'source_id', ''), 'default') AS source_id, queue, finished_at
+         FROM minion_jobs
+        WHERE name = 'subagent' AND status = 'dead' AND finished_at > now() - interval '24 hours'
+     ), keyed AS (
+       SELECT CASE WHEN left(base_key, ${DREAM_BREAKER_KEY_PREFIXES[1].length}) = $2 THEN 'patterns'
+                   WHEN left(base_key, ${DREAM_BREAKER_KEY_PREFIXES[0].length}) = $1 THEN 'synthesize' END AS phase,
+              source_id, queue, finished_at, base_key
+         FROM dead
+      WHERE finished_at > COALESCE(($3::text::jsonb ->> base_key)::timestamptz, '-infinity'::timestamptz)
+     )
+     SELECT 'dream:phase:'||phase||':'||source_id AS base_key,
+            COUNT(DISTINCT queue)::int AS dead_submissions, MAX(finished_at)::text AS last_dead_at
+       FROM keyed
+      WHERE phase IS NOT NULL
+        AND finished_at > COALESCE(($3::text::jsonb ->> 'dream:phase:'||phase||':'||source_id)::timestamptz, '-infinity'::timestamptz)
+      GROUP BY 1
+     HAVING COUNT(DISTINCT base_key) >= 2`,
+    [DREAM_BREAKER_KEY_PREFIXES[0], DREAM_BREAKER_KEY_PREFIXES[1], JSON.stringify(resets)],
+  );
   const cutoff = Date.now() - 24 * 3_600_000;
+  const contained: DeadDreamSubmissions[] = [];
   for (const [baseKey, times] of Object.entries(await loadContained(engine))) {
     const after = Math.max(cutoff, Date.parse(resets[baseKey] ?? '') || -Infinity);
     const counted = times.filter(at => Date.parse(at) > after).sort();
-    if (counted.length) dead.push({ base_key: baseKey, dead_submissions: counted.length, last_dead_at: counted.at(-1)! });
+    if (counted.length) contained.push({ base_key: baseKey, dead_submissions: counted.length, last_dead_at: counted.at(-1)! });
   }
-  return dead.sort((a, b) => b.dead_submissions - a.dead_submissions || a.base_key.localeCompare(b.base_key));
+  const merged = new Map<string, DeadDreamSubmissions>();
+  for (const row of [...dead, ...byPhase, ...contained]) {
+    const prior = merged.get(row.base_key);
+    if (prior) {
+      prior.dead_submissions += row.dead_submissions;
+      if (row.last_dead_at > prior.last_dead_at) prior.last_dead_at = row.last_dead_at;
+    } else merged.set(row.base_key, { ...row });
+  }
+  return [...merged.values()].sort((a, b) => b.dead_submissions - a.dead_submissions || a.base_key.localeCompare(b.base_key));
 }
 
 async function loadContained(engine: BrainEngine): Promise<Record<string, string[]>> {
