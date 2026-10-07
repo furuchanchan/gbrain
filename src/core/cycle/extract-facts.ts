@@ -290,7 +290,24 @@ async function underPageLock<T>(
  * An ordinary expired legacy row does not suppress a fresh canonical fence
  * row. Explicit forget is different: its durable withdrawal record is
  * enforced by the facts trigger and import overlay, even after index rebuild.
+ *
+ * Ontology observations (`dimension IS NOT NULL`) are excluded (#6264): they
+ * belong to the entity's ontology, not the fence — a row fenced by a pre-fix
+ * sweep is not compared against the fence's row set, so it is not retired as
+ * a row that left the table.
  */
+
+/** #6264: clear the fence stamp a pre-fix sweep left on an ontology row, so
+ * it rejoins the pure ontology keyspace before inserts rebuild the page's
+ * (source_markdown_slug, row_num) UNIQUE space. */
+async function unstampOntologyRows(tx: BrainEngine, sourceId: string, slug: string): Promise<void> {
+  await tx.executeRaw(
+    `UPDATE facts SET row_num = NULL, source_markdown_slug = NULL
+     WHERE source_id = $1 AND source_markdown_slug = $2 AND dimension IS NOT NULL`,
+    [sourceId, slug],
+  );
+}
+
 async function listExistingFactsForPage(
   engine: BrainEngine,
   slug: string,
@@ -305,6 +322,7 @@ async function listExistingFactsForPage(
         AND source_markdown_slug = $2
         AND COALESCE(source, '') NOT LIKE 'cli:%'
         AND NOT (row_num IS NULL AND expired_at IS NOT NULL)
+        AND dimension IS NULL
       ORDER BY row_num ASC, id ASC`,
     [sourceId, slug],
   );
@@ -509,6 +527,7 @@ export async function runExtractFacts(
         AND f.row_num IS NULL
         AND f.entity_slug IS NOT NULL
         AND f.expired_at IS NULL
+        AND f.dimension IS NULL
         AND EXISTS (
           SELECT 1 FROM pages p
            WHERE p.source_id = f.source_id
@@ -815,6 +834,7 @@ export async function runExtractFacts(
           if (watermark && !await lockReconcileRevision(tx, sourceId, slug, page.knowledge_revision ?? null)) return null;
           const current = await tx.getPage(slug, { sourceId });
           if (!current || current.compiled_truth !== page.compiled_truth || current.timeline !== page.timeline) return null;
+          await unstampOntologyRows(tx, sourceId, slug);
           for (const fact of expireInPlace) {
             await tx.executeRaw('UPDATE facts SET expired_at = COALESCE(expired_at, now()) WHERE id = $1 AND source_id = $2', [fact.id, sourceId]);
           }

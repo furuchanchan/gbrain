@@ -15,6 +15,10 @@
  * skipped) or the source has a `local_path` and the page's canonical file
  * exists on this host. Everything else is counted and left alone: a NULL
  * entity slug, a missing page or file, or a source without a checkout here.
+ * Ontology observations (`dimension IS NOT NULL`) are never candidates: they
+ * belong to the entity's ontology, not to a page's `## Facts` table — fencing
+ * one makes a later ordinary page rewrite retire it as a row that left the
+ * table (#6264).
  *
  * Write discipline (`fenceUnfencedFacts`):
  * - Managed: one `managed_maintenance_adopt_fact_fence` request per page
@@ -109,7 +113,7 @@ export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: 
             EXISTS (SELECT 1 FROM pages p WHERE p.source_id = f.source_id
               AND p.slug = f.entity_slug AND p.deleted_at IS NULL) AS page_exists
        FROM facts f
-      WHERE row_num IS NULL AND expired_at IS NULL
+      WHERE row_num IS NULL AND expired_at IS NULL AND dimension IS NULL
         ${opts.sourceId !== undefined ? 'AND source_id = $1' : ''}
       ORDER BY source_id, entity_slug, id`,
     opts.sourceId !== undefined ? [opts.sourceId] : [],

@@ -182,6 +182,13 @@ export async function insertFacts(
         const expiredLegacyFilter = del.preserveExpiredLegacy
           ? sqlFragment`AND NOT (row_num IS NULL AND expired_at IS NOT NULL)`
           : sqlFragment``;
+        // #6264: unstamp ontology rows a pre-fix sweep fenced, same repair
+        // as deleteFactsForPage — inside this transaction so a failing
+        // insert rolls the unstamp back too.
+        await tx.run(sqlFragment`
+          UPDATE facts SET row_num = NULL, source_markdown_slug = NULL
+          WHERE source_id = ${ctx.source_id} AND source_markdown_slug = ${del.slug} AND dimension IS NOT NULL
+        `);
         const prefixes = del.excludeSourcePrefixes;
         if (prefixes && prefixes.length > 0) {
           const patterns = prefixes.map(p => `${p}%`);
@@ -311,6 +318,14 @@ export async function deleteFactsForPage(
     const expiredLegacyFilter = opts?.preserveExpiredLegacy
       ? sqlFragment`AND NOT (row_num IS NULL AND expired_at IS NOT NULL)`
       : sqlFragment``;
+    // #6264: ontology observations (`dimension IS NOT NULL`) are never
+    // fence-owned. A row fenced by a pre-fix sweep is unstamped back to a
+    // pure ontology row — kept, and out of the (source_markdown_slug,
+    // row_num) UNIQUE keyspace the re-insert rebuilds.
+    await exec.run(sqlFragment`
+      UPDATE facts SET row_num = NULL, source_markdown_slug = NULL
+      WHERE source_id = ${source_id} AND source_markdown_slug = ${slug} AND dimension IS NOT NULL
+    `);
     if (prefixes && prefixes.length > 0) {
       // #1928: keep rows whose `source` matches an excluded prefix (e.g.
       // `cli:` conversation facts). COALESCE so NULL/empty-source fence rows
@@ -321,12 +336,13 @@ export async function deleteFactsForPage(
         WHERE source_id = ${source_id}
           AND source_markdown_slug = ${slug}
           AND NOT (COALESCE(source, '') LIKE ANY(${patterns}))
+          AND dimension IS NULL
           ${expiredLegacyFilter}
       `);
       return { deleted: result.affectedRows };
     }
     const result = await exec.run(sqlFragment`
-      DELETE FROM facts WHERE source_id = ${source_id} AND source_markdown_slug = ${slug} ${expiredLegacyFilter}
+      DELETE FROM facts WHERE source_id = ${source_id} AND source_markdown_slug = ${slug} AND dimension IS NULL ${expiredLegacyFilter}
     `);
     return { deleted: result.affectedRows };
   }
