@@ -469,8 +469,11 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   // ── Validate ALL pages before ANY write ─────────────────────────────────
   const prefixes = data.allowed_slug_prefixes ?? [];
   // CDX-9 task shapes: reflections/originals sub-trees of the allow-list.
+  // #6160: root-level namespaces mint `originals/*` / `personal/reflections/*`
+  // entries with no leading slash — anchor the containment test on a
+  // normalized leading slash so they count as task shapes too.
   const taskShapePrefixes = prefixes
-    .filter(p => p.includes('/personal/reflections/') || p.includes('/originals/'))
+    .filter(p => `/${p}`.includes('/personal/reflections/') || `/${p}`.includes('/originals/'))
     .map(p => (p.endsWith('/*') ? p.slice(0, -1) : p.endsWith('/') ? p : `${p}/`));
   const inBatch = new Set(parsed.pages.map(p => p.slug));
   // Duplicate slugs inside one batch would make the second write silently

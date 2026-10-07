@@ -1079,6 +1079,33 @@ describe('oneshot mode dispatch (#4216)', () => {
     expect(await engine.getPage(SLUG_A)).not.toBeNull();
   });
 
+  test('root-level namespace prefixes are task shapes: allow-listed slugs pass the shape check (#6160)', async () => {
+    // dream.synthesize.*_slug_prefix at the repo root appends `originals/*` /
+    // `personal/reflections/*` beside the stock `wiki/...` globs — the shape
+    // filter used to keep only the wiki/* entries, so a slug the prompt asked
+    // for (originals/...) passed the allow-list yet bad_slug-fell back.
+    const ROOT_PREFIXES = ['wiki/personal/reflections/*', 'wiki/originals/*', 'personal/reflections/*', 'originals/*'];
+    const ROOT_A = `personal/reflections/2026-08-16-topic-${SUFFIX}`;
+    const ROOT_B = `originals/ideas/2026-08-16-idea-${SUFFIX}`;
+    const VALID_ROOT = JSON.stringify({
+      pages: [
+        { slug: ROOT_A, body: `A. [[${ROOT_B}]]` },
+        { slug: ROOT_B, body: `B. [[${ROOT_A}]]` },
+      ],
+      skipped: false,
+    });
+    const client = new FakeMessagesClient([]);
+    const handler = makeSubagentHandler({ engine, client, _chat: chatStub(VALID_ROOT) });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot', require_writes: true,
+      allowed_slug_prefixes: ROOT_PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    const result = await handler(ctx);
+    expect(result.synth_mode_used).toBe('oneshot');
+    expect(result.pages_written).toBe(2);
+    expect(await engine.getPage(ROOT_A)).not.toBeNull();
+  });
+
   test('explicit oneshot skip under require_writes completes instead of dead-lettering (#5590)', async () => {
     const client = new FakeMessagesClient([]);
     const skip = JSON.stringify({ pages: [], skipped: true, skip_reason: 'verbatim paste of an existing page' });
