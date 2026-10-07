@@ -135,7 +135,7 @@ export const persistenceOperations: Operation[] = [
     name: 'get_write_request',
     idempotent: true,
     outputRedaction: 'no_stored_text',
-    description: 'Read your write\'s receipt by request_id (after write_pending or a lost reply). Poll at retry_after_ms until final.',
+    description: 'Read your write\'s receipt by request_id (after write_pending or a lost reply). Poll at the receipt\'s retry_after_ms until it reaches a final state (committed or failed); queued and running are still in flight.',
     params: { request_id: requestParam },
     scope: 'write', mutating: false, area: 'pages',
     cliHints: { name: 'write-request', positional: ['request_id'] },

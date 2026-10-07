@@ -428,3 +428,16 @@ describe('D3: shadowed handler help and curated help are reachable', () => {
     expect(stdout).toContain('[consent: destructive]');
   });
 });
+
+describe('#6255 — `gbrain write-request --help` documents the receipt-polling contract', () => {
+  test('names the request_id positional, the final-state poll, and runnable examples', async () => {
+    const { stdout, exitCode } = await help(['write-request', '--help']);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('write-request');
+    expect(stdout).toContain('request_id');
+    expect(stdout).toContain('retry_after_ms');
+    expect(stdout).toContain('final state');
+    expect(stdout).toContain('Examples:');
+    expect(stdout).toContain('gbrain write-request');
+  });
+});

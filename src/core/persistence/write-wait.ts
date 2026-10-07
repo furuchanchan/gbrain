@@ -120,9 +120,10 @@ export function writeErrorExitCode(error: unknown, acceptPending: boolean): numb
   return acceptPending ? 0 : PENDING_WRITE_EXIT_CODE;
 }
 
-/** The copy-paste poll command for a pending receipt. */
+/** The copy-paste poll command for a pending receipt. The direct command
+ * also routes on thin-client installs, which `gbrain call` refuses. */
 export function pollCommand(requestId: string): string {
-  return `gbrain call get_write_request '${JSON.stringify({ request_id: requestId })}'`;
+  return `gbrain write-request ${requestId}`;
 }
 
 /**

@@ -2918,6 +2918,10 @@ const OP_HELP_EXAMPLES: Record<string, string[]> = {
     'gbrain graph people/alice-example --source business --direction both',
     'gbrain graph people/alice-example --all-sources   # same slug in two sources stays two nodes (source_id)',
   ],
+  get_write_request: [
+    'gbrain write-request 7f3c0e9a-0000-4000-8000-000000000001            # one poll of the receipt',
+    'gbrain write-request <request_id> --brain host --json               # machine-readable receipt on another brain',
+  ],
 };
 
 export function printOpHelp(op: Operation, invokedName?: string) {

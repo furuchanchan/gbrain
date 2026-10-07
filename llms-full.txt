@@ -9451,7 +9451,7 @@ receipt, but a remote server's own 5 s wait cannot be shortened, so keep
 ```bash
 gbrain put notes/example --request-id 7f3c0e9a-0000-4000-8000-000000000001 < page.md
 echo $?   # 10: accepted, not yet committed
-gbrain call get_write_request '{"request_id":"7f3c0e9a-0000-4000-8000-000000000001"}'
+gbrain write-request 7f3c0e9a-0000-4000-8000-000000000001
 gbrain put notes/example --request-id 7f3c0e9a-0000-4000-8000-000000000001 --wait 60 < page.md   # 0 once committed
 ```
 

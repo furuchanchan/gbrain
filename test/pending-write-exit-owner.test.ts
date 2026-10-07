@@ -76,7 +76,7 @@ describe('paused writers and the CLI exit contract', () => {
           const pending = await cli(['put', 'notes/paused', '--request-id', id, '--wait', '1', '--json'], page('Paused body.'));
           expect({ code: pending.code, stderr: pending.stderr }).toMatchObject({ code: PENDING_WRITE_EXIT_CODE });
           expect(JSON.parse(pending.stdout).write_request).toMatchObject({ request_id: id });
-          expect(pending.stderr).toContain('Poll: gbrain call get_write_request');
+          expect(pending.stderr).toContain('Poll: gbrain write-request');
           const accepted = await cli(['call', 'put_page', JSON.stringify({ slug: 'notes/paused', content: page('Paused body.'), request_id: id }),
             '--wait', '0', '--accept-pending']);
           expect({ code: accepted.code, stderr: accepted.stderr }).toMatchObject({ code: 0 });
