@@ -469,8 +469,13 @@ export async function runSubagentOneshot(args: OneshotArgs): Promise<OneshotOutc
   // ── Validate ALL pages before ANY write ─────────────────────────────────
   const prefixes = data.allowed_slug_prefixes ?? [];
   // CDX-9 task shapes: reflections/originals sub-trees of the allow-list.
+  // #6160: the folder can sit at the ROOT of the allow-list too — a root-level
+  // `originals_slug_prefix`/`reflections_slug_prefix` config renders globs like
+  // `originals/*`, which a leading-slash-only filter dropped, so every
+  // root-level write bounced to bad_slug and the agentic loop rewrote it.
   const taskShapePrefixes = prefixes
-    .filter(p => p.includes('/personal/reflections/') || p.includes('/originals/'))
+    .filter(p => p.includes('/personal/reflections/') || p.includes('/originals/')
+      || p.startsWith('personal/reflections/') || p.startsWith('originals/'))
     .map(p => (p.endsWith('/*') ? p.slice(0, -1) : p.endsWith('/') ? p : `${p}/`));
   const inBatch = new Set(parsed.pages.map(p => p.slug));
   // Duplicate slugs inside one batch would make the second write silently

@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.107.0] - 2026-10-07
+
+**One-shot synthesis accepts root-level originals/reflections prefixes.**
+
+With `dream.synthesize.originals_slug_prefix` (or `reflections_slug_prefix`)
+configured at the root — `originals`, `personal/reflections` — every dream
+`synthesize` one-shot child bounced: the slug allow-list correctly accepted
+`originals/<date>-…`, but the task-shape filter only counted globs with a
+slash *before* the folder name, so `originals/*` never registered a shape
+and each valid write was rejected `bad_slug` and rewritten by the agentic
+fallback (a wasted model call per child). The filter now also counts the
+folder at the start of an allow-list entry, so a slug the full allow-list
+accepts passes the shape check too.
+
+*Contributor: Devin (Cognition) — closes #6160.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

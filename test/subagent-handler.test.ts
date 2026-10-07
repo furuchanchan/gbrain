@@ -1079,6 +1079,38 @@ describe('oneshot mode dispatch (#4216)', () => {
     expect(await engine.getPage(SLUG_A)).not.toBeNull();
   });
 
+  test('root-level originals/reflections prefixes pass the task-shape check (#6160)', async () => {
+    // dream.synthesize.*_slug_prefix configured at the ROOT renders
+    // `originals/*` / `personal/reflections/*` globs (no leading slash), which
+    // the task-shape filter used to drop — every one-shot bounced to
+    // bad_slug and the agentic loop rewrote the same pages.
+    // Mixed like the reporter's brain: the filing-rules output-root globs AND
+    // the root-level config globs sit in one allow-list, so the task-shape
+    // filter was non-empty and rejected the root-level slug the prompt asked
+    // for.
+    const ROOT_PREFIXES = ['wiki/originals/*', 'personal/reflections/*', 'originals/*'];
+    const ROOT_A = `personal/reflections/2026-10-04-topic-${SUFFIX}`;
+    const ROOT_B = `originals/2026-10-04-idea-${SUFFIX}`;
+    const valid = JSON.stringify({
+      pages: [
+        { slug: ROOT_A, body: `A. [[${ROOT_B}]]` },
+        { slug: ROOT_B, body: `B. [[${ROOT_A}]]` },
+      ],
+      skipped: false,
+    });
+    const client = new FakeMessagesClient([]);
+    const handler = makeSubagentHandler({ engine, client, _chat: chatStub(valid) });
+    const ctx = await makeCtx({
+      prompt: 'synthesize', mode: 'oneshot', require_writes: true,
+      allowed_slug_prefixes: ROOT_PREFIXES, oneshot_slug_suffix: SUFFIX,
+    });
+    const result = await handler(ctx);
+    expect(result.synth_mode_used).toBe('oneshot');
+    expect(result.pages_written).toBe(2);
+    expect('fallback_reason' in result).toBe(false);
+    expect(await engine.getPage(ROOT_A)).not.toBeNull();
+  });
+
   test('explicit oneshot skip under require_writes completes instead of dead-lettering (#5590)', async () => {
     const client = new FakeMessagesClient([]);
     const skip = JSON.stringify({ pages: [], skipped: true, skip_reason: 'verbatim paste of an existing page' });
