@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.106.0] - 2026-10-08
+
+**`gbrain lint` no longer flags a date placeholder written inside inline code.** The `placeholder-date` rule already skipped fenced blocks since #3958, but a `` `YYYY-MM-DD` `` inside a sentence or a table cell — documentation of the format, the common case on convention pages — still fired on every lint run, and nothing could fix the line because the text was already correct. The rule now strips inline code spans (single and double backticks) before matching, the same treatment fenced lines get; a real placeholder in prose or a frontmatter value still fires.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

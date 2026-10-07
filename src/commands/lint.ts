@@ -207,6 +207,9 @@ export function lintContent(content: string, filePath: string, opts: LintContent
   // Rule: Placeholder dates. #3958: skip lines inside fenced code blocks —
   // a page DOCUMENTING date formats (```\ncreated: YYYY-MM-DD\n```) is not a
   // page with an unfilled placeholder. Both ``` and ~~~ fences toggle.
+  // #6133: the same holds for inline code — `` `YYYY-MM-DD` `` in a sentence
+  // or table cell is documentation. Double-backtick spans first so their
+  // contents (which may hold single backticks) strip as one span.
   let inFence = false;
   for (let i = 0; i < lines.length; i++) {
     if (/^\s{0,3}(```|~~~)/.test(lines[i])) {
@@ -214,7 +217,8 @@ export function lintContent(content: string, filePath: string, opts: LintContent
       continue;
     }
     if (inFence) continue;
-    if (lines[i].match(/\bYYYY-MM-DD\b/) || lines[i].match(/\bXX-XX\b/) || lines[i].match(/\b\d{4}-XX-XX\b/)) {
+    const probe = lines[i].replace(/``[^`]*``|`[^`]*`/g, '');
+    if (probe.match(/\bYYYY-MM-DD\b/) || probe.match(/\bXX-XX\b/) || probe.match(/\b\d{4}-XX-XX\b/)) {
       issues.push({
         file: filePath, line: i + 1, rule: 'placeholder-date',
         message: `Placeholder date found: ${lines[i].trim().slice(0, 60)}`,
