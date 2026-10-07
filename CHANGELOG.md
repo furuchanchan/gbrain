@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.120.0] - 2026-10-09
+
+**`gbrain lint` no longer flags `## headings` inside code fences as empty sections.** A page that documents an output template (```` ```markdown ```` blocks containing `##` lines) reported a false `empty-section` finding for every quoted heading — on a real brain, 11 of 13 findings were inside fences (#6257). The rule now tracks ``` and ~~~ fences the same way `placeholder-date` already does, and a fenced heading no longer splits a real section's body either.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

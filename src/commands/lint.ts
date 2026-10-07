@@ -289,21 +289,34 @@ export function lintContent(content: string, filePath: string, opts: LintContent
     }
   }
 
-  // Rule: Empty/stub sections
-  const sectionPattern = /^##\s+(.+)$/gm;
-  let sectionMatch;
-  while ((sectionMatch = sectionPattern.exec(content)) !== null) {
-    const sectionStart = sectionMatch.index + sectionMatch[0].length;
-    const nextSection = content.indexOf('\n## ', sectionStart);
-    const sectionBody = content.slice(sectionStart, nextSection > 0 ? nextSection : undefined).trim();
+  // Rule: Empty/stub sections. #6257: `## headings` inside fenced code
+  // blocks are quoted display text (a page documenting an output
+  // template), not page sections — same fence tracking as
+  // placeholder-date: both ``` and ~~~ toggle.
+  {
+    let inFence = false;
+    const headings: { idx: number; title: string }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s{0,3}(```|~~~)/.test(lines[i])) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      const m = lines[i].match(/^##\s+(.+)$/);
+      if (m) headings.push({ idx: i, title: m[1] });
+    }
+    for (let h = 0; h < headings.length; h++) {
+      const start = headings[h].idx;
+      const end = h + 1 < headings.length ? headings[h + 1].idx : lines.length;
+      const sectionBody = lines.slice(start + 1, end).join('\n').trim();
 
-    if (sectionBody === '' || sectionBody === '[No data yet]' || sectionBody === '*[To be filled by agent]*') {
-      const lineNum = content.slice(0, sectionMatch.index).split('\n').length;
-      issues.push({
-        file: filePath, line: lineNum, rule: 'empty-section',
-        message: `Empty section: ## ${sectionMatch[1]}`,
-        fixable: false,
-      });
+      if (sectionBody === '' || sectionBody === '[No data yet]' || sectionBody === '*[To be filled by agent]*') {
+        issues.push({
+          file: filePath, line: start + 1, rule: 'empty-section',
+          message: `Empty section: ## ${headings[h].title}`,
+          fixable: false,
+        });
+      }
     }
   }
 
