@@ -4,6 +4,7 @@
  * path lives in a tmpdir. No network, no real supervisor, no process.env writes.
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import * as dnsPromises from 'node:dns/promises';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -43,6 +44,8 @@ interface TailnetOpts {
   dnsName?: string | null;
   /** Self.CapMap: true → carries the Funnel capability, false → CapMap without it, undefined → no CapMap field. */
   funnelCapable?: boolean;
+  /** Self.CapMap verbatim (overrides funnelCapable). */
+  capMap?: Record<string, unknown>;
   /** Pre-existing root handlers: port → funnel flag. */
   existingHandlers?: Record<number, boolean>;
   publishStatus?: number | null;
@@ -94,7 +97,7 @@ function fakeTailnet(o: TailnetOpts = {}): Fake {
     Version: '1.80.0', BackendState: state,
     Self: {
       DNSName: o.dnsName === undefined ? `${DNS}.` : (o.dnsName ?? ''), TailscaleIPs: ['100.64.0.1'],
-      ...(o.funnelCapable === undefined ? {} : { CapMap: o.funnelCapable ? { 'https://tailscale.com/cap/funnel': [] } : { 'https://tailscale.com/cap/is-admin': [] } }),
+      ...(o.capMap ? { CapMap: o.capMap } : o.funnelCapable === undefined ? {} : { CapMap: o.funnelCapable ? { 'https://tailscale.com/cap/funnel': [] } : { 'https://tailscale.com/cap/is-admin': [] } }),
     },
     CurrentTailnet: { MagicDNSEnabled: true }, CertDomains: o.certDomains ?? [DNS],
   });
@@ -282,6 +285,20 @@ describe('plan + consent', () => {
     const doc = jsonDoc(f);
     expect(doc).toMatchObject({ status: 'pending', reason: 'confirmation_required' });
     expect(doc.next_actions).toContain('gbrain mcp expose --yes');
+    // The consent payload's agent fields ride the legacy document (exit 2 stays under contract v1).
+    expect(doc).toMatchObject({
+      code: 'confirmation_required', effects: ['persistent_install', 'egress'], actor: 'agent', contract_version: 1,
+      fix: { argv: ['gbrain', 'mcp', 'expose', '--yes'], next: 'ask_user' },
+    });
+    expect(doc.user_message).toContain('publish your gbrain MCP server');
+    expect(doc.error).toBeUndefined();
+    const human = fakeTailnet();
+    expect(await runMcpExpose([], human.deps)).toBe(2);
+    const out = human.stdout.join('\n');
+    expect(out).toContain('[AGENT]');
+    expect(out).toContain('next: ask_user');
+    expect(out).toContain('if_yes: gbrain mcp expose --yes');
+    expect(out).not.toMatch(/re-?run[^.\n]{0,40}--yes/i);
     expect(existsSync(f.serveDir)).toBe(false);
     expect(joinedCalls(f).some(c => c.includes('--bg'))).toBe(false);
   });
@@ -291,7 +308,7 @@ describe('plan + consent', () => {
     f.deps.prompt = async () => 'n';
     expect(await runMcpExpose(['--json'], f.deps)).toBe(2);
     const doc = jsonDoc(f);
-    expect(doc).toMatchObject({ status: 'pending', reason: 'declined', message: 'Nothing changed. Re-run with --yes to confirm.' });
+    expect(doc).toMatchObject({ status: 'pending', reason: 'declined', message: 'Nothing changed: the confirmation was declined.', code: 'confirmation_required' });
     expect(checkOf(doc, 'consent')?.status).toBe('pending');
     expect(existsSync(f.serveDir)).toBe(false);
     expect(joinedCalls(f).some(c => c.includes('--bg'))).toBe(false);
@@ -441,6 +458,15 @@ describe('tailscale steps', () => {
     expect(await runMcpExpose(['--yes', '--funnel', '--json'], i.deps)).toBe(0);
     expect(checkOf(jsonDoc(i), 'tailscale.identity')?.detail).toContain('publish step decides');
   });
+  test('--funnel publishes on a Tailscale 1.102 node whose CapMap carries `funnel` + `…/cap/funnel-ports` (#5599)', async () => {
+    const f = fakeTailnet({ capMap: {
+      'default-auto-update': [], funnel: [], https: [],
+      'https://tailscale.com/cap/funnel-ports?ports=443,8443,10000': [],
+      'https://tailscale.com/cap/is-admin': [],
+    } });
+    expect(await runMcpExpose(['--yes', '--funnel', '--json'], f.deps)).toBe(0);
+    expect(joinedCalls(f)).toContain(`${TS} funnel --bg 3131`);
+  });
   test('publish failure is classified: https_not_enabled surfaces the admin URL, exit 1', async () => {
     const f = fakeTailnet({ publishStatus: 1, publishStderr: 'error: HTTPS certificates are not enabled for this tailnet; enable them in the admin console' });
     expect(await runMcpExpose(['--yes', '--json'], f.deps)).toBe(1);
@@ -589,6 +615,11 @@ describe('happy path: linux-systemd', () => {
     expect(prose).toContain('fail with `live_serve`');
     expect(prose).not.toContain('wait on this server');
     expect(prose).toContain('gbrain mcp expose --status');
+    expect(prose).toContain('owner session required');
+    expect(prose).toContain('Native OAuth');
+    expect(prose).toContain('Machine install');
+    expect(doc.next_actions).toContain(`gbrain mcp admin login-link --url https://${DNS}/mcp --admin-token-file ${adminTokenPath(f.serveDir)}`);
+    expect(doc.next_actions).toContain('gbrain mcp admin register --help');
     expect(doc.next_actions.join('\n')).toContain(`--url https://${DNS}/mcp`);
   });
   test('PGLite banner: local agents get the pre-mint + --token guidance and the scoped grant path, never a bare bootstrap harness', async () => {
@@ -793,6 +824,9 @@ describe('service edge cases', () => {
     expect(checkOf(doc, 'verify.local')?.status).toBe('skipped');
     expect(checkOf(doc, 'verify.tailnet')?.status).toBe('skipped');
     expect(f.stderr.join('\n')).toContain('Nothing listens on 127.0.0.1:3131 yet');
+    expect(f.stderr.join('\n')).toContain('--no-service does not change it');
+    expect(doc.next_actions).toContain(`gbrain mcp admin login-link --url https://${DNS}/mcp --admin-token-file <existing-server-admin-token-file>`);
+    expect(doc.next_actions.filter((action: string) => action.includes('--admin-token-file')).every((action: string) => action.includes('<existing-server-admin-token-file>'))).toBe(true);
   });
   test('--no-service re-run after a full install keeps the service block and does not rewrite the wrapper', async () => {
     const f = fakeTailnet();
@@ -979,7 +1013,7 @@ describe('--remove', () => {
     f.deps.prompt = async () => 'no';
     expect(await runMcpExpose(['--remove', '--json'], f.deps)).toBe(2);
     const doc = jsonDoc(f);
-    expect(doc).toMatchObject({ status: 'pending', reason: 'declined', message: 'Nothing changed. Re-run with --yes to confirm.' });
+    expect(doc).toMatchObject({ status: 'pending', reason: 'declined', message: 'Nothing changed: the confirmation was declined.', code: 'confirmation_required' });
     expect(checkOf(doc, 'consent')?.status).toBe('pending');
     expect(existsSync(receiptPath(f.serveDir))).toBe(true);
     expect(joinedCalls(f).some(c => c.includes('disable') || c.includes('off'))).toBe(false);
@@ -1436,7 +1470,7 @@ describe('runMcp dispatch regression', () => {
     try {
       _resetCliExitVerdictForTests();
       await runMcp(['bogus']);
-      expect(JSON.parse(out.join('').trim())).toEqual({ status: 'error', reason: 'mcp_setup_failed', message: 'Expected mcp grant, verify, adapters, profiles or expose' });
+      expect(JSON.parse(out.join('').trim())).toEqual({ status: 'error', reason: 'mcp_setup_failed', message: 'Expected mcp admin, grant, verify, adapters, profiles or expose' });
       expect(currentExitCode()).toBe(1);
       out.length = 0;
       _resetCliExitVerdictForTests();
@@ -1445,6 +1479,7 @@ describe('runMcp dispatch regression', () => {
       expect(help).toContain('gbrain mcp expose --status [--json]');
       expect(help).toContain('gbrain mcp expose --remove [--yes] [--json]');
       expect(help).toContain('See: gbrain mcp expose --help');
+      expect(help).toContain('gbrain mcp admin --help');
       expect(currentExitCode()).toBe(0);
     } finally {
       logSpy.mockRestore();
@@ -1772,7 +1807,7 @@ describe('tailscale serve status fails closed', () => {
     expect(existsSync(receiptPath(f.serveDir))).toBe(true);
     expect(existsSync(wrapperPath(f.serveDir))).toBe(true);
     expect((await inner([TS, 'serve', 'status', '--json'])).stdout).toContain('127.0.0.1:3131');
-    expect(f.stderr.join('\n')).toContain('re-run `gbrain mcp expose --remove --yes`');
+    expect(f.stderr.join('\n')).toContain('run the removal again (the user already approved it: `gbrain mcp expose --remove --yes`)');
     // Tailscale is back → the same command completes the removal
     broken = false;
     f.calls.length = 0;
@@ -2576,6 +2611,48 @@ describe('scoped off + honest recovery (adversarial-review batch)', () => {
     expect(isUnresolvedLookupError(new Error('getaddrinfo EAI_AGAIN your-machine.your-tailnet.ts.net'))).toBe(true);
     expect(isUnresolvedLookupError(Object.assign(new Error('queryA ESERVFAIL'), { code: 'ESERVFAIL' }))).toBe(false);
     expect(isUnresolvedLookupError(new Error('Unable to connect. Is the computer able to access the url?'))).toBe(false);
+  });
+
+  test('the default resolver rejects reserved invalid names without consulting system DNS', async () => {
+    const lookup = spyOn(dnsPromises, 'lookup').mockResolvedValue({ address: '127.0.0.1', family: 4 });
+    try {
+      for (const host of ['invalid', 'INVALID', 'invalid.', 'INVALID.', 'gbrain.invalid', 'gbrain.INVALID.', 'nested.gbrain.invalid.']) {
+        await expect(defaultLookup(host)).rejects.toMatchObject({ code: 'ENOTFOUND' });
+      }
+      expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  test('the default resolver preserves invalid label boundaries and delegates other names', async () => {
+    const lookup = spyOn(dnsPromises, 'lookup').mockResolvedValue({ address: '127.0.0.1', family: 4 });
+    const hosts = ['notinvalid', 'notinvalid.', 'gbrain.notinvalid', 'invalid.example', 'gbrain.invalid.example', 'invalid.example.'];
+    try {
+      for (const host of hosts) await expect(defaultLookup(host)).resolves.toBeUndefined();
+      expect(lookup.mock.calls.map(([host]) => host)).toEqual(hosts);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  test('the default resolver still resolves localhost through the system resolver', async () => {
+    await expect(defaultLookup('localhost')).resolves.toBeUndefined();
+  });
+
+  test('an unanswered lookup and unclassified resolver errors remain unknown', async () => {
+    const deps = {
+      fetch: async () => { throw Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), { code: 'ConnectionRefused' }); },
+      tcpProbe: async () => false,
+      lookup: async () => new Promise<void>(() => {}),
+      now: () => new Date(), sleep: async () => {}, healthIntervalMs: 1,
+    };
+    const url = 'https://diagnostic.example/health';
+    expect(await tryFetch(deps, url, 25)).toEqual({ res: null, unresolved: false });
+    for (const code of ['ETIMEDOUT', 'ESERVFAIL', 'ECANCELLED']) {
+      expect(await tryFetch({ ...deps, lookup: async () => { throw Object.assign(new Error(code), { code }); } }, url, 25))
+        .toEqual({ res: null, unresolved: false });
+    }
   });
 
   test('the real default resolver: a .invalid name never resolves (RFC 6761; a resolver outage classifies as unresolved too), so Bun\'s refused-looking rejection is reported as unresolved', async () => {

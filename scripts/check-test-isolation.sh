@@ -18,6 +18,15 @@
 #  R4: any file that creates `new PGLiteEngine(` must call `.disconnect(`
 #      inside an `afterAll(` block. Without disconnect, engines leak across
 #      file boundaries within a shard process.
+#  R5: a file whose code calls `configureGateway(` must also call
+#      `resetGateway(` in its code (normally from afterAll/afterEach). The
+#      AI gateway is one object per process, so whatever a file configures
+#      (embedding model and width, keys, base URLs) is still in force for
+#      the next file the shard loads, and that file's PGLite schema is sized
+#      from it: eval-canary once failed "expected 1280 dimensions, not 1536"
+#      after a reshuffle ran a LiteLLM-configuring file first. Comments do
+#      not count either way. A file whose only calls run inside a spawned
+#      child's script string carries `isolation-lint: R5-subprocess-only`.
 #
 # Scope:
 #  - Recursively scans `test/**/*.test.ts`.
@@ -33,15 +42,29 @@
 #  be added — the allow-list shrinks over time, never grows.
 #
 # Usage: scripts/check-test-isolation.sh [TARGET_DIR]
+#        scripts/check-test-isolation.sh --as-parallel FILE...
+#   --as-parallel lints the named files (serial ones included) as if they
+#   ran in the parallel pool: the check a *.serial.test.ts file must pass
+#   before it rejoins the unit lane (scripts/serial-files.tsv).
 # Exit:  0 when clean, 1 when un-allow-listed violations found.
 
 set -euo pipefail
 
 . "$(dirname "$0")/lib/guard-candidates.sh"
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# GBRAIN_GUARD_ROOT (guard self-test): lint a fixture tree, whose unit files
+# end in .test.fixture.ts so the real lint and `bun test` never collect them.
+ROOT="${GBRAIN_GUARD_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
+TEST_SUFFIX='.test.ts'
+[ -n "${GBRAIN_GUARD_ROOT:-}" ] && TEST_SUFFIX='.test.fixture.ts'
 
+AS_PARALLEL=0
+if [ "${1:-}" = "--as-parallel" ]; then
+  AS_PARALLEL=1
+  shift
+  [ "$#" -gt 0 ] || { echo "Usage: scripts/check-test-isolation.sh --as-parallel FILE..." >&2; exit 2; }
+fi
 TARGET_DIR="${1:-test}"
 # When scanning the default root, also lint evals/**/*.test.ts — those files
 # are collected into the CI matrix (scripts/test-shard.sh) and must obey the
@@ -82,15 +105,45 @@ is_allowlisted() {
 
 # Find non-serial unit test files (excluding test/e2e). Portable across
 # bash 3.2 (macOS default) and bash 4+; no mapfile.
-FILE_LIST="$(find "$TARGET_DIR" $EXTRA_DIRS -name '*.test.ts' \
-  -not -name '*.serial.test.ts' \
+if [ "$AS_PARALLEL" = 1 ]; then
+  FILE_LIST="$(printf '%s\n' "$@")"
+else
+FILE_LIST="$(find "$TARGET_DIR" $EXTRA_DIRS -name "*$TEST_SUFFIX" \
+  -not -name "*.serial$TEST_SUFFIX" \
   -not -path "*/e2e/*" \
   -type f 2>/dev/null | sort)"
+fi
 
 ENV_MUTATION_PATTERN='process\.env\.[A-Za-z_][A-Za-z_0-9]*[[:space:]]*=[^=]|process\.env\[[^]]+\][[:space:]]*=[^=]|delete[[:space:]]+process\.env\.|delete[[:space:]]+process\.env\[|Object\.assign[[:space:]]*\([[:space:]]*process\.env|Reflect\.set[[:space:]]*\([[:space:]]*process\.env'
 MODULE_MOCK_PATTERN='mock\.module[[:space:]]*\('
 ENGINE_PATTERN='new PGLiteEngine[[:space:]]*\('
-CANDIDATES="$(guard_candidates -E -e "$ENV_MUTATION_PATTERN" -e "$MODULE_MOCK_PATTERN" -e "$ENGINE_PATTERN" <<< "$FILE_LIST")"
+GATEWAY_PATTERN='configureGateway[[:space:]]*\('
+GATEWAY_OPT_OUT='isolation-lint: R5-subprocess-only'
+# Comment removal for R5, line by line: a block comment that opens at the
+# start of a line (JSDoc included) is dropped through its closing */, and a
+# // comment is dropped from the // to the end of the line when it follows
+# the line start, whitespace or punctuation (so a URL's :// survives).
+# Block comments opening mid-line are left alone: a glob such as
+# 'test/*.ts' would otherwise swallow the rest of the file.
+GATEWAY_CODE_SCAN='
+  in_block {
+    if (index($0, "*/") == 0) next
+    in_block = 0
+    next
+  }
+  /^[[:space:]]*\/\*/ {
+    if (index(substr($0, index($0, "/*") + 2), "*/") == 0) in_block = 1
+    next
+  }
+  {
+    code = $0
+    sub(/(^|[[:space:];,(){}])\/\/.*$/, "", code)
+    if (code ~ /resetGateway[[:space:]]*\(/) restored = 1
+    if (code ~ /configureGateway[[:space:]]*\(/) calls = calls NR ":" $0 "\n"
+  }
+  END { if (calls != "" && !restored) printf "%s", calls }
+'
+CANDIDATES="$(guard_candidates -E -e "$ENV_MUTATION_PATTERN" -e "$MODULE_MOCK_PATTERN" -e "$ENGINE_PATTERN" -e "$GATEWAY_PATTERN" <<< "$FILE_LIST")"
 
 violations=0
 file_count=0
@@ -154,6 +207,16 @@ while IFS= read -r f; do
       emit_violation "$f" "R4" "creates PGLiteEngine but missing afterAll(() => engine.disconnect()); engine leaks across files in the shard process" ""
     fi
   fi
+
+  # R5: gateway configured but never restored. GATEWAY_CODE_SCAN reads the
+  # file with comments removed and prints the configureGateway lines only
+  # when no resetGateway call is left.
+  if grep -qE "$GATEWAY_PATTERN" "$f" 2>/dev/null && ! grep -qF "$GATEWAY_OPT_OUT" "$f" 2>/dev/null; then
+    unrestored=$(awk "$GATEWAY_CODE_SCAN" "$f" 2>/dev/null || true)
+    if [ -n "$unrestored" ]; then
+      emit_violation "$f" "R5" "configureGateway() with no resetGateway(); the gateway is process-global, so this config reaches every later file in the shard. Add afterAll(() => resetGateway()) or rename to *.serial.test.ts" "$unrestored"
+    fi
+  fi
 done <<EOF
 $FILE_LIST
 EOF
@@ -167,6 +230,8 @@ if [ $violations -gt 0 ]; then
   echo "  - For mock.module(), rename to *.serial.test.ts (quarantine)"
   echo "  - For PGLiteEngine, follow the canonical pattern in"
   echo "    test/helpers/reset-pglite.ts JSDoc and CLAUDE.md."
+  echo "  - For configureGateway(), call resetGateway() in afterAll; it"
+  echo "    puts back the preload's baseline gateway for the next file."
   echo
   echo "Or, if this is a baseline file from before the lint shipped,"
   echo "add it to scripts/check-test-isolation.allowlist (with a TODO"

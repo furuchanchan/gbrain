@@ -112,6 +112,10 @@ const MATRIX: Row[] = [
   { name: 'find_trajectory', mode: 'skip', reason: 'typed-claim/event rows come from the extraction pipeline; eval-trajectory + facts suites own it (probe: hand-seeded claim rows do not surface)' },
   { name: 'ontology_conflicts', mode: 'skip', reason: 'conflict rows need the ontology merge pipeline cross-observation shape; D7 ontology-merge parity suite owns conflicts' },
   { name: 'get_skill', mode: 'skip', reason: 'skills catalog + brain-resident packs; skill-catalog confinement suites own it' },
+  { name: 'get_skill_asset', mode: 'skip', reason: 'Exact-revision approved asset isolation is exercised over real authenticated HTTP in test/shared-skills-transports.test.ts and test/e2e/shared-skills-transports.test.ts.' },
+  { name: 'join_brain', mode: 'skip', reason: 'Own-principal source/policy-bound enrollment requires an explicit member grant; test/shared-skills-membership.test.ts and real shared-skills transport suites prove isolation.' },
+  { name: 'sync_brain_skills', mode: 'skip', reason: 'Issued delivery batches and narrowed grants are tested against real PGLite/Postgres in test/shared-skills-membership.test.ts and the authenticated shared-skills transport suites.' },
+  { name: 'leave_brain', mode: 'skip', reason: 'Principal-bound leave/epoch races and foreign installation denial are tested in test/shared-skills-membership.test.ts.' },
   { name: 'list_brain_skillpack', mode: 'skip', reason: 'brain-resident skillpack surface; skillpack suites own it' },
   { name: 'advisor', mode: 'skip', reason: 'aggregate advisory over full stack; advisor suites own it' },
   { name: 'open_loops', mode: 'skip', reason: 'loop rows need the Gmail detector pipeline; test/ops-loops.test.ts owns its remote posture (no-scope denial, grant confinement, redacted evidence)' },
@@ -147,6 +151,7 @@ const MATRIX: Row[] = [
   { name: 'list_pages', mode: 'isolated', args: { limit: 100 } },
   { name: 'search', mode: 'isolated', args: { query: 'BETAMARKER', limit: 20 } },
   { name: 'query', mode: 'isolated', args: { query: 'BETAMARKER', limit: 20 } },
+  { name: 'assemble_evidence', mode: 'isolated', args: { hits: [{ source_id: 'srcbeta', slug: 'notes/beta-note', chunk_id: 0 }], return_unit: 'page' } },
   { name: 'get_tags', mode: 'isolated', args: { slug: 'notes/beta-note' } },
   { name: 'get_links', mode: 'isolated', args: { slug: 'notes/beta-note' } },
   { name: 'get_backlinks', mode: 'isolated', args: { slug: 'people/beta-person' } },
@@ -158,6 +163,7 @@ const MATRIX: Row[] = [
   { name: 'get_chunks', mode: 'isolated', args: { slug: 'notes/beta-note' } },
   { name: 'get_ingest_log', mode: 'isolated', args: { limit: 50 } },
   { name: 'find_orphans', mode: 'isolated', args: {} },
+  { name: 'wanted_pages', mode: 'isolated', args: {} },
   { name: 'takes_list', mode: 'isolated', args: { limit: 50 } },
   { name: 'takes_search', mode: 'isolated', args: { query: 'BETAMARKER', limit: 20 } },
   { name: 'get_recent_salience', mode: 'isolated', args: { limit: 50 } },
@@ -246,6 +252,10 @@ beforeAll(async () => {
     await engine.addTag(`notes/${name}-note`, `${name}-topic`, { sourceId: src });
     await engine.addTag(`people/${name}-person`, `${name}-topic`, { sourceId: src });
     await engine.addLink(`notes/${name}-note`, `people/${name}-person`, `${MARK} ctx`, 'mentions', 'markdown', undefined, undefined, { fromSourceId: src, toSourceId: src });
+    // Wanted page: an unresolved link from the note to a missing marker-named target.
+    await engine.executeRaw(`INSERT INTO wanted_links (origin_page_id, source_id, producer, ref_kind, target_source_id, target_ref, checked_at)
+      SELECT id, $1, 'body', 'slug', $1, $2, now() FROM pages WHERE slug = $3 AND source_id = $1`,
+    [src, `people/${name}-missing-${MARK.toLowerCase()}`, `notes/${name}-note`]);
     await engine.createVersion(`notes/${name}-note`, { sourceId: src });
     await engine.putRawData(`notes/${name}-note`, 'crm', { owner: MARK }, { sourceId: src });
     await engine.logIngest({

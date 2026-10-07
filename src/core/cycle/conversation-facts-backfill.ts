@@ -59,6 +59,8 @@ import {
 // binding extract-conversation-facts.ts re-exports) so this phase is part of
 // the drift-guarded set in test/conversation-facts-type-allowlist-drift.test.ts.
 import { ALLOWED_TYPES, type AllowedType } from '../facts/conversation-types.ts';
+import { conversationFactsCostCap } from '../facts/conversation-budget.ts';
+import { noPricingMessage } from '../budget/no-pricing.ts';
 
 /** Per-phase wrapper opts. */
 export interface ConversationFactsBackfillPhaseOpts {
@@ -89,6 +91,7 @@ interface ResolvedConfig {
   enabled: boolean;
   maxCostUsd: number;          // per source per cycle
   maxTotalCostUsd: number;     // brain-wide per cycle
+  explicitCostCap: boolean;
   maxWalltimeMin: number;      // per source per cycle
   maxTotalWalltimeMin: number; // brain-wide per cycle
   types: AllowedType[];
@@ -156,6 +159,7 @@ async function loadCfg(engine: BrainEngine): Promise<ResolvedConfig> {
     enabled: enabledFlag,
     maxCostUsd: parseFloatOrDefault(maxCost, 1.0),
     maxTotalCostUsd: parseFloatOrDefault(maxTotalCost, 5.0),
+    explicitCostCap: maxCost !== null || maxTotalCost !== null,
     maxWalltimeMin: parseFloatOrDefault(maxWall, 20),
     maxTotalWalltimeMin: parseFloatOrDefault(maxTotalWall, 30),
     types,
@@ -191,6 +195,7 @@ export async function runPhaseConversationFactsBackfill(
   }
 
   const startedAt = Date.now();
+  const costCap = await conversationFactsCostCap(engine, cfg.maxTotalCostUsd, cfg.explicitCostCap, pricingOverrides);
   const maxTotalWalltimeMs = cfg.maxTotalWalltimeMin * 60_000;
   const maxWalltimeMs = cfg.maxWalltimeMin * 60_000;
 
@@ -220,6 +225,10 @@ export async function runPhaseConversationFactsBackfill(
     pages_considered: 0,
     pages_processed: 0,
     pages_skipped: 0,
+    pages_skipped_unparsed: 0,
+    pages_skipped_type_mismatch: 0,
+    pages_skipped_insufficient_turns: 0,
+    pages_skipped_since: 0,
     pages_skipped_too_large: 0,
     pages_skipped_disappeared: 0,
     pages_skipped_completed: 0,
@@ -261,14 +270,14 @@ export async function runPhaseConversationFactsBackfill(
       }
 
       // Brain-wide cost check (sum of per-source tracker spends).
-      const remainingCostUsd = cfg.maxTotalCostUsd - totalSpent;
+      const remainingCostUsd = costCap === undefined ? Infinity : costCap - totalSpent;
       if (remainingCostUsd <= 0) {
         skippedByBrainWideCap = sources.length - i;
         break;
       }
 
       const perSourceWallMs = Math.min(maxWalltimeMs, remainingWallMs);
-      const perSourceCapUsd = Math.min(cfg.maxCostUsd, remainingCostUsd);
+      const perSourceCapUsd = costCap === undefined ? undefined : Math.min(cfg.maxCostUsd, remainingCostUsd);
       const tracker = new BudgetTracker({
         maxCostUsd: perSourceCapUsd,
         maxRuntimeMs: perSourceWallMs,
@@ -327,6 +336,9 @@ export async function runPhaseConversationFactsBackfill(
           perSourceResults[src.id] = {
             ...zeroResult(),
             budget_exhausted: true,
+            budget_reason: err.reason,
+            budget_model: err.modelId,
+            ...(err.pricing ? { budget_pricing: err.pricing } : {}),
             error: err.message,
           };
         } else if (isAbortError(err)) {
@@ -370,6 +382,10 @@ export async function runPhaseConversationFactsBackfill(
   const totals = {
     pages_processed: 0,
     pages_skipped: 0,
+    pages_skipped_unparsed: 0,
+    pages_skipped_type_mismatch: 0,
+    pages_skipped_insufficient_turns: 0,
+    pages_skipped_since: 0,
     pages_skipped_completed: 0,
     pages_skipped_non_extractable: 0,
     pages_marked_non_extractable: 0,
@@ -384,6 +400,10 @@ export async function runPhaseConversationFactsBackfill(
     if (!r.error) totals.sources_processed++;
     totals.pages_processed += r.pages_processed;
     totals.pages_skipped += r.pages_skipped;
+    totals.pages_skipped_unparsed += r.pages_skipped_unparsed;
+    totals.pages_skipped_type_mismatch += r.pages_skipped_type_mismatch;
+    totals.pages_skipped_insufficient_turns += r.pages_skipped_insufficient_turns;
+    totals.pages_skipped_since += r.pages_skipped_since;
     totals.pages_skipped_completed += r.pages_skipped_completed;
     totals.pages_skipped_non_extractable += r.pages_skipped_non_extractable;
     totals.pages_marked_non_extractable += r.pages_marked_non_extractable;
@@ -395,10 +415,13 @@ export async function runPhaseConversationFactsBackfill(
   }
 
   const anyError = Object.values(perSourceResults).some(
-    (r) => r.error || r.pages_failed > 0,
+    (r) => r.error || r.pages_failed > 0 || r.budget_reason === 'no_pricing',
   );
   const status = anyError ? 'warn' : 'ok';
-  const summary = `${totals.facts_inserted} facts inserted across ${totals.sources_processed}/${sources.length} sources, ~$${totalSpent.toFixed(4)} spent`;
+  const noPricing = [...new Map(Object.values(perSourceResults)
+    .flatMap((r) => r.budget_pricing ? [[r.budget_pricing.model, r.budget_pricing] as const] : [])).values()];
+  const summary = `${totals.facts_inserted} facts inserted across ${totals.sources_processed}/${sources.length} sources, ~$${totalSpent.toFixed(4)} spent` +
+    noPricing.map((g) => `. ${noPricingMessage(g)}`).join('');
 
   return {
     phase: 'conversation_facts_backfill',
@@ -410,6 +433,10 @@ export async function runPhaseConversationFactsBackfill(
       sources_processed: totals.sources_processed,
       pages_processed: totals.pages_processed,
       pages_skipped: totals.pages_skipped,
+      pages_skipped_unparsed: totals.pages_skipped_unparsed,
+      pages_skipped_type_mismatch: totals.pages_skipped_type_mismatch,
+      pages_skipped_insufficient_turns: totals.pages_skipped_insufficient_turns,
+      pages_skipped_since: totals.pages_skipped_since,
       pages_skipped_completed: totals.pages_skipped_completed,
       pages_skipped_non_extractable: totals.pages_skipped_non_extractable,
       pages_marked_non_extractable: totals.pages_marked_non_extractable,
@@ -424,8 +451,10 @@ export async function runPhaseConversationFactsBackfill(
       // #3627: per-source cap enforcement observability.
       sources_budget_exhausted: sourcesBudgetExhausted,
       sources_walltime_exhausted: sourcesWalltimeExhausted,
+      no_pricing: noPricing,
       types: cfg.types,
       max_cost_usd: cfg.maxCostUsd,
+      cost_cap_enforced: costCap !== undefined,
       max_walltime_min: cfg.maxWalltimeMin,
       max_total_cost_usd: cfg.maxTotalCostUsd,
       max_total_walltime_min: cfg.maxTotalWalltimeMin,

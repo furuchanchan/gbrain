@@ -42,7 +42,7 @@ import {
   ensureCompiledGbrain,
 } from '../helpers/agent-harness.ts';
 import { operations } from '../../src/core/operations.ts';
-import { filterOpsForSurface } from '../../src/mcp/surface.ts';
+import { isCallable, publishGatesFromDisabled } from '../../src/core/ops/callable.ts';
 import { codexPluginProvidesName } from '../../src/core/bootstrap/harness.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..');
@@ -217,7 +217,8 @@ describe.skipIf(!PLUGIN_CAPABLE)('codex plugin door — INSTALL (no auth needed)
         env: probeEnv,
         timeoutMs: 120_000,
       });
-      const expected = filterOpsForSurface(operations, 'starter').map((o) => o.name).sort();
+      const publishGates = publishGatesFromDisabled(operations, new Set());
+      const expected = operations.filter((o) => isCallable(o, { transport: 'stdio', surface: 'starter', scopes: [], publishGates })).map((o) => o.name).sort();
       expect(tools.sort()).toEqual(expected);
 
       // (f) cold-home fast-fail: fresh empty GBRAIN_HOME → actionable exit,
@@ -229,9 +230,17 @@ describe.skipIf(!PLUGIN_CAPABLE)('codex plugin door — INSTALL (no auth needed)
         env: hermeticChildEnv({ HOME: coldHome, GBRAIN_BIN: gbrainBin, GBRAIN_HOME: coldHome }) as Record<string, string>,
         timeout: 60_000,
       });
-      expect(cold.status).not.toBe(0);
-      expect(cold.stderr).toContain('No brain configured');
-      expect(cold.stderr).toContain('gbrain init');
+      expect(cold.status).toBe(0);
+      expect(cold.stderr).toContain('STATUS-ONLY');
+      const coldFast = spawnSync(launcher, [...serverArgs, '--fail-fast'], {
+        cwd: snap!,
+        encoding: 'utf8',
+        env: hermeticChildEnv({ HOME: coldHome, GBRAIN_BIN: gbrainBin, GBRAIN_HOME: coldHome }) as Record<string, string>,
+        timeout: 60_000,
+      });
+      expect(coldFast.status).not.toBe(0);
+      expect(coldFast.stderr).toContain('No brain configured');
+      expect(coldFast.stderr).toContain('gbrain init');
 
       // (g) --source-guard: a GENUINELY AMBIGUOUS brain (default + TWO
       // non-default sources, so resolution can't land on the unambiguous
@@ -344,13 +353,17 @@ describe.skipIf(!PLUGIN_CAPABLE || !hasCodexAuth())('codex plugin door — SMOKE
       let lastEvidence = '';
       for (let attempt = 1; attempt <= maxAttempts && !passed; attempt++) {
         if (attempt > 1) await new Promise((r) => setTimeout(r, 3_000));
-        const turn = await codexExecTurn({ prompt, cwd: home, home, timeoutMs: 230_000, extraEnv });
+        const turn = await codexExecTurn({
+          prompt, cwd: home, home, timeoutMs: 230_000, extraEnv,
+          mcpToolApprovals: [{ plugin: 'gbrain@gbrain', server: 'gbrain', tools: ['whoami', 'query', 'search', 'recall', 'get_page'] }],
+          waitForMcpStartup: true,
+        });
         const usedMcp = turn.mcpToolCalls.some((c) => c.server === 'gbrain');
         const gotFact = turn.finalText.toLowerCase().includes(fact);
         lastEvidence =
           `[plugin smoke attempt ${attempt}/${maxAttempts}] exit=${turn.exitCode} timedOut=${turn.timedOut} ` +
           `usedMcp=${usedMcp} gotFact=${gotFact}\nmcpToolCalls=${JSON.stringify(turn.mcpToolCalls)}\n` +
-          `finalText=${turn.finalText.slice(0, 800)}`;
+          `finalText=${turn.finalText.slice(0, 800)}\nstderr=${turn.stderrText.slice(-800)}`;
         console.log(lastEvidence);
         if (usedMcp && gotFact) passed = true;
       }

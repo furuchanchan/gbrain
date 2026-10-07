@@ -1,7 +1,8 @@
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
-import { OperationError } from '../ops/contract.ts';
+import { opError, OperationError } from '../ops/contract.ts';
+import { pageIdentityError } from './page-identity.ts';
 import { renderTimelineEntry, spliceTimelineBlock } from '../timeline-write-through.ts';
 import { extractTimelineFromContent } from '../timeline-extract.ts';
 import { preparePageMutation } from './page-prepare.ts';
@@ -9,19 +10,43 @@ import type { PreparedMutation } from './coordinator.ts';
 import type { WriteRequest } from './model.ts';
 import { assertPageRevision } from '../page-state/types.ts';
 import { engineMutationPrecondition, parseMutationPrecondition } from './preconditions.ts';
+import { materializedMarker } from '../timeline-marker.ts';
+import { isConnectorSourceKind } from './connector-identity.ts';
 
 function hasExactBlock(text: string, block: string): boolean {
   const wanted = block.trimEnd().split('\n');
   const lines = text.split('\n');
   return lines.some((_, index) => wanted.every((line, offset) => lines[index + offset] === line));
 }
+/**
+ * Fix wave 4 audit of the page-regenerating writers: pages a writer re-renders
+ * from its own inputs through a preserving publication, where an unmarked
+ * user-added bullet the new body drops would be read as removed.
+ *  - connector pages (Google, GitHub), re-rendered from the provider (#5567);
+ *  - dream-owned pages (`dream_generated: true`: synthesis summaries, concepts,
+ *    patterns), republished by the dream cycle;
+ *  - Life Chronicle event pages (`captured_via: life-chronicle:auto`);
+ *  - drift reports (`reports/drift-<date>`), rewritten by same-day re-runs.
+ * Ordinary pages keep unmarked bullets: their writers edit with the page's
+ * current body, so a bullet they drop is a deliberate removal.
+ */
+export function regeneratedByWriter(sourceKind: string | null | undefined, page: { slug: string; frontmatter?: Record<string, unknown> | null }): boolean {
+  if (isConnectorSourceKind(sourceKind)) return true;
+  const fm = page.frontmatter ?? {};
+  if (fm.dream_generated === true || fm.dream_generated === 'true') return true;
+  if (typeof fm.captured_via === 'string' && fm.captured_via.startsWith('life-chronicle:')) return true;
+  return /^reports\/drift-/.test(page.slug);
+}
+
 export async function prepareSemanticPageMutation(engine: BrainEngine, row: WriteRequest, config: GBrainConfig): Promise<PreparedMutation> {
   const snapshot = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id });
-  if (!snapshot || snapshot.page.id !== row.page_id) throw new OperationError('page_identity_changed', 'The accepted page no longer exists.');
+  if (!snapshot || snapshot.page.id !== row.page_id) throw pageIdentityError(snapshot != null, 'The accepted page was replaced by another page.');
   const p = row.intent!;
   if (p.expected_revision !== undefined) assertPageRevision(snapshot,engineMutationPrecondition(parseMutationPrecondition(p)));
   if (row.operation === 'add_tag' || row.operation === 'remove_tag') {
-    if (typeof p.tag !== 'string' || !p.tag.trim()) throw new OperationError('invalid_params', 'A tag must be nonempty.');
+    if (typeof p.tag !== 'string' || !p.tag.trim()) {
+      throw opError('invalid_params', 'A tag must be nonempty.', `Request ${row.request_id} for ${row.slug} in source ${row.source_id} named an empty tag, so nothing changed. Submit the tag change again with a nonempty tag.`);
+    }
     const tag = p.tag.trim();
     const tags = row.operation === 'add_tag' ? [...new Set([...snapshot.tags, tag])].sort() : snapshot.tags.filter(value => value !== tag);
     const prepared = await preparePageMutation(engine, row, config, {
@@ -29,16 +54,27 @@ export async function prepareSemanticPageMutation(engine: BrainEngine, row: Writ
     });
     return { ...prepared, apply: async tx => ({ ...await prepared.apply(tx), status: 'ok', tag }) };
   }
-  if (row.operation !== 'add_timeline_entry') throw new OperationError('writer_coordinator_required', 'This semantic writer has no registered preparation handler.');
+  if (row.operation !== 'add_timeline_entry') {
+    throw opError('writer_coordinator_required', 'This semantic writer has no registered preparation handler.',
+      `Request ${row.request_id} (${row.operation}) in source ${row.source_id} has no preparation handler in this gbrain version, so nothing changed. This is an internal or version-skew fault: report it to the user.`);
+  }
   const entry = { date: String(p.date), summary: String(p.summary), source: String(p.source ?? ''), detail: String(p.detail ?? '') };
   const rendered = renderTimelineEntry(entry, row.slug);
-  if (!rendered) throw new OperationError('invalid_params', 'The timeline entry cannot be represented losslessly in Markdown.');
-  const exact = hasExactBlock(snapshot.page.timeline, rendered.block);
+  if (!rendered) {
+    throw opError('invalid_params', 'The timeline entry cannot be represented losslessly in Markdown.',
+      `Request ${row.request_id}'s timeline entry for ${row.slug} would not read back as the same entry, so nothing changed. Submit it again with a YYYY-MM-DD date and a nonempty single-line summary that has no Markdown list or heading syntax.`);
+  }
+  // #5567: a writer that regenerates the page from its own inputs never holds this entry. The materialized
+  // marker makes its preserving render carry the bullet forward instead of deleting it (fix wave 4 audit).
+  const [source] = await engine.executeRaw<{ kind: string | null }>("SELECT config->>'kind' AS kind FROM sources WHERE id=$1", [row.source_id]);
+  const block = regeneratedByWriter(source?.kind, snapshot.page) ? `${materializedMarker(rendered.canonical)}\n${rendered.block}` : rendered.block;
+  // An identical entry written before the page's writer marked user bullets is still a duplicate.
+  const exact = hasExactBlock(snapshot.page.timeline, block) || (block !== rendered.block && hasExactBlock(snapshot.page.timeline, rendered.block));
   const tuples = extractTimelineFromContent(`${snapshot.page.compiled_truth}\n<!-- timeline -->\n${snapshot.page.timeline}`, row.slug);
   if (!exact && tuples.some(tuple => tuple.date === rendered.canonical.date && tuple.source === rendered.canonical.source && tuple.summary === rendered.canonical.summary)) {
     throw new OperationError('invalid_params', 'This timeline identity already exists with different detail.', 'Read and conditionally edit the existing page to change that entry.');
   }
-  const page = { ...snapshot.page, timeline: exact ? snapshot.page.timeline : spliceTimelineBlock(snapshot.page.timeline, entry.date, rendered.block) };
+  const page = { ...snapshot.page, timeline: exact ? snapshot.page.timeline : spliceTimelineBlock(snapshot.page.timeline, entry.date, block) };
   const prepared = await preparePageMutation(engine, row, config, {
     expectedRevision: snapshot.revision, content: serializePageToMarkdown(page, snapshot.tags),
   });

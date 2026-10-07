@@ -7,6 +7,8 @@
  * page_links, chunk_relations via existing FKs.
  */
 import type { BrainEngine } from '../core/engine.ts';
+import { purgeDeletedPagesCoordinated } from '../core/persistence/purge-deleted.ts';
+import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 
 const SOFT_DELETE_TTL_HOURS_DEFAULT = 72;
 
@@ -44,11 +46,15 @@ async function runPurgeDeleted(engine: BrainEngine, args: string[]): Promise<voi
     return;
   }
 
-  const result = await engine.purgeDeletedPages(olderThanHours);
+  const result = await purgeDeletedPagesCoordinated(engine, olderThanHours);
   if (json) {
-    console.log(JSON.stringify({ older_than_hours: olderThanHours, count: result.count, slugs: result.slugs }, null, 2));
+    console.log(JSON.stringify({ older_than_hours: olderThanHours, count: result.count, slugs: result.slugs,
+      ...(result.blocked.length ? { blocked: result.blocked } : {}) }, null, 2));
+    if (result.error) setCliExitVerdict(1);
     return;
   }
+  for (const b of result.blocked) console.error(`Not purged: ${b.source_id}/${b.slug}: ${b.reason}`);
+  if (result.error) setCliExitVerdict(1);
   if (result.count === 0) {
     console.log(`No pages to purge (older than ${olderThanHours}h).`);
   } else {
@@ -67,8 +73,9 @@ Subcommands:
                                     Mirror of the autopilot purge phase.
 
 Notes:
-  Soft-delete a page via the MCP \`delete_page\` op (also removes its markdown file
-  from the source working tree). Restore via \`restore_page\` (re-creates the file).
+  Soft-delete a page via \`gbrain delete <slug> --force\`; restore via \`gbrain restore <slug> --force\`
+  (the delete_page / restore_page ops, equally reachable over MCP). Deleting also removes
+  the page's markdown file from the source working tree; restoring re-creates it.
   This command is the manual operator escape hatch — the autopilot cycle's
   purge phase already calls the same library function on every run.
 `);

@@ -26,14 +26,18 @@ import { tmpdir } from 'node:os';
 
 import * as realHybrid from '../src/core/search/hybrid.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { encodeDeepResearchId } from '../src/core/deep-research-id.ts';
 
-let nextResults: unknown[] = [{ page_id: 1, slug: 'a', chunk_text: 'x' }];
+let nextResults: unknown[] = [{ id: encodeDeepResearchId('default', 'a'), page_id: 1, source_id: 'default', slug: 'a', chunk_text: 'x' }];
 
 // Mock BEFORE importing dispatch (operations.ts binds hybridSearchCached at
 // import time; the spread keeps every other export live).
 mock.module('../src/core/search/hybrid.ts', () => ({
   ...realHybrid,
   hybridSearchCached: async () => nextResults,
+}));
+mock.module('../src/core/search/projection-readiness.ts', () => ({
+  probeProjectionReadiness: async () => ({ status: 'ready', ready: true }),
 }));
 
 const { dispatchToolCall, __resetBackupNoticeForTests } = await import('../src/mcp/dispatch.ts');
@@ -53,6 +57,9 @@ const { __resetBackupRefreshForTests } = await import('../src/core/backup/covera
 // ── engine stub (records executeRaw SQL; never a real PGLite) ───────────────
 
 let rawCalls: string[] = [];
+// A source listing. Search's own live read policy (the safe-chunk probe runs on
+// every remote result) references `FROM sources read_source`; that is not one.
+const BACKUP_SOURCES_QUERY = /\bfrom\s+sources\b(?!\s+read_source)/i;
 const engineStub = {
   kind: 'pglite',
   getConfig: async () => null,
@@ -104,13 +111,22 @@ type CallOpts = { remote?: boolean; transport?: 'stdio' | 'http' };
 
 // Default transport is 'stdio' — the ONLY transport the notice fires on.
 // Trust-pin tests pass 'http' / undefined explicitly.
-function callSearch(opts: CallOpts = {}) {
-  return dispatchToolCall(engineStub, 'search', { query: 'anything at all' }, {
+/** Remote callers get lean rows (C1): the fixture row minus its page_id diagnostic. */
+function leanResults(): unknown[] {
+  return nextResults.map(r => { const { page_id: _p, ...lean } = r as Record<string, unknown>; return lean; });
+}
+
+async function callSearch(opts: CallOpts = {}) {
+  const out = await dispatchToolCall(engineStub, 'search', { query: 'anything at all' }, {
     remote: true,
     transport: 'stdio',
     sourceId: 'default',
     ...opts,
   });
+  // F3's degraded_recall notice (this keyless stub searches keyword-only) is
+  // orthogonal to the backup block under test; it is pinned in
+  // test/mcp-notice-channels.test.ts.
+  return { ...out, content: out.content.filter(c => !c.text.startsWith('[gbrain notice degraded_recall ')) };
 }
 
 async function waitFor(pred: () => boolean, ms = 2000): Promise<boolean> {
@@ -144,7 +160,7 @@ beforeEach(() => {
   __resetBackupNoticeForTests();
   __resetBackupRefreshForTests();
   rawCalls = [];
-  nextResults = [{ page_id: 1, slug: 'a', chunk_text: 'x' }];
+  nextResults = [Object.freeze({ id: encodeDeepResearchId('default', 'a'), page_id: 1, source_id: 'default', slug: 'a', chunk_text: 'x' })];
 });
 
 afterEach(() => {
@@ -164,7 +180,7 @@ describe('maybeAttachBackupNotice (stdio aggregate block)', () => {
     const first = await callSearch({ remote: true, transport: 'stdio' });
     expect(first.isError).toBeUndefined();
     // content[0] is UNCHANGED — still the bare op result.
-    expect(JSON.parse(first.content[0].text)).toEqual(nextResults);
+    expect(JSON.parse(first.content[0].text)).toEqual(leanResults());
     // The backup block rides as an EXTRA block.
     expect(first.content.length).toBe(2);
     const block = first.content[1].text;
@@ -175,7 +191,7 @@ describe('maybeAttachBackupNotice (stdio aggregate block)', () => {
     // Once per process: the second call carries NO backup block.
     const second = await callSearch({ remote: true, transport: 'stdio' });
     expect(second.content.length).toBe(1);
-    expect(JSON.parse(second.content[0].text)).toEqual(nextResults);
+    expect(JSON.parse(second.content[0].text)).toEqual(leanResults());
   });
 
   test("transport 'http' + warn cache → NO block (stdio-only notice); a later stdio call still gets it", async () => {
@@ -183,7 +199,7 @@ describe('maybeAttachBackupNotice (stdio aggregate block)', () => {
 
     const http = await callSearch({ remote: true, transport: 'http' });
     expect(http.content.length).toBe(1);
-    expect(JSON.parse(http.content[0].text)).toEqual(nextResults);
+    expect(JSON.parse(http.content[0].text)).toEqual(leanResults());
 
     // The http call must not burn the once-per-process flag or arm the
     // hourly latch — the first stdio call still attaches the block.
@@ -196,7 +212,7 @@ describe('maybeAttachBackupNotice (stdio aggregate block)', () => {
     saveBackupStatus(warnStatus());
     const out = await callSearch({ remote: true, transport: undefined });
     expect(out.content.length).toBe(1);
-    expect(JSON.parse(out.content[0].text)).toEqual(nextResults);
+    expect(JSON.parse(out.content[0].text)).toEqual(leanResults());
   });
 
   test('aggregate block never leaks local paths or source ids', async () => {
@@ -282,7 +298,7 @@ describe('stdio-gated refresher (TRUST PIN)', () => {
     // to land before asserting it never did.
     await new Promise((r) => setTimeout(r, 300));
     expect(existsSync(backupStatusPath())).toBe(false);
-    expect(rawCalls.filter((sql) => /\bfrom\s+sources\b/i.test(sql))).toEqual([]);
+    expect(rawCalls.filter((sql) => BACKUP_SOURCES_QUERY.test(sql))).toEqual([]);
   });
 
   test('transport UNSET is fail-closed: no compute, no sources query', async () => {
@@ -290,7 +306,7 @@ describe('stdio-gated refresher (TRUST PIN)', () => {
     await callSearch({ remote: true, transport: undefined });
     await new Promise((r) => setTimeout(r, 300));
     expect(existsSync(backupStatusPath())).toBe(false);
-    expect(rawCalls.filter((sql) => /\bfrom\s+sources\b/i.test(sql))).toEqual([]);
+    expect(rawCalls.filter((sql) => BACKUP_SOURCES_QUERY.test(sql))).toEqual([]);
   });
 
   test("transport 'stdio' kicks the in-process refresher: absent cache gets computed + persisted", async () => {
@@ -306,7 +322,7 @@ describe('stdio-gated refresher (TRUST PIN)', () => {
     expect(s!.overall).toBe('ok'); // zero sources, zero pages → nothing at risk
     expect(s!.totals.assets).toBe(0);
     // The refresher DID walk the sources table on the stdio path.
-    expect(rawCalls.some((sql) => /\bfrom\s+sources\b/i.test(sql))).toBe(true);
+    expect(rawCalls.some((sql) => BACKUP_SOURCES_QUERY.test(sql))).toBe(true);
   });
 
   test('attempt floor arms on the fresh-cache no-op path: a deleted cache is NOT recomputed within the hour', async () => {
@@ -315,7 +331,7 @@ describe('stdio-gated refresher (TRUST PIN)', () => {
     saveBackupStatus(okStatus());
     await callSearch({ remote: true, transport: 'stdio' });
     await new Promise((r) => setTimeout(r, 100));
-    expect(rawCalls.filter((sql) => /\bfrom\s+sources\b/i.test(sql))).toEqual([]);
+    expect(rawCalls.filter((sql) => BACKUP_SOURCES_QUERY.test(sql))).toEqual([]);
 
     // Delete the cache. A second stdio call within the hour is still a no-op
     // — the floor, not the cache, gates the attempt.
@@ -323,13 +339,13 @@ describe('stdio-gated refresher (TRUST PIN)', () => {
     await callSearch({ remote: true, transport: 'stdio' });
     await new Promise((r) => setTimeout(r, 300));
     expect(existsSync(backupStatusPath())).toBe(false);
-    expect(rawCalls.filter((sql) => /\bfrom\s+sources\b/i.test(sql))).toEqual([]);
+    expect(rawCalls.filter((sql) => BACKUP_SOURCES_QUERY.test(sql))).toEqual([]);
 
     // __resetBackupRefreshForTests clears the floor → the compute runs.
     __resetBackupRefreshForTests();
     await callSearch({ remote: true, transport: 'stdio' });
     const appeared = await waitFor(() => existsSync(backupStatusPath()), 2000);
     expect(appeared).toBe(true);
-    expect(rawCalls.some((sql) => /\bfrom\s+sources\b/i.test(sql))).toBe(true);
+    expect(rawCalls.some((sql) => BACKUP_SOURCES_QUERY.test(sql))).toBe(true);
   });
 });

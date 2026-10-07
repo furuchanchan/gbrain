@@ -37,6 +37,7 @@ writes_to:
   - media/
   - conversations/
   - sources/
+when_to_use: "Use when the user asks: \"cold start\", \"fill my brain\", \"bootstrap brain\", \"bootstrap my data\", \"import my data\"."
 ---
 
 # Cold Start — Day-One Brain Bootstrapping
@@ -171,6 +172,18 @@ the exact protocol.
 
 ## Phase 1: Existing Markdown / Obsidian Import
 
+For an existing company Git repository, use the migrate (host-side) company
+workflow instead of the generic import below. On the trusted brain host, start with
+`gbrain sources inspect <path> --profile company-brain`; confirm an initialized
+company brain and a new source, show the connect destination/access preview, and
+obtain approval before `--yes`. Do not flatten its vocabulary by activating or
+normalizing an unrelated personal schema. The offline `gbrain sources demo
+company-brain` needs no keys or private data. Details:
+`docs/guides/company-brain-ingestion.md`.
+For this company path, stop after reporting the durable receipt; skip the generic
+import and post-bootstrap checklist below. Later enrichment or scheduling needs
+separate consent and must respect the source's immutable keyless sync policy.
+
 **The highest-leverage first import.** If the user already has a notes system, this
 is hundreds or thousands of structured pages ready to go.
 
@@ -194,7 +207,7 @@ done
 
 ```bash
 # Obsidian vaults are markdown directories — import directly, then wire wikilinks
-# (full flow: skills/migrate/SKILL.md)
+# (full flow: migrate (host-side))
 gbrain import /path/to/vault --no-embed --workers 4
 gbrain extract links --source db      # parses [[wikilinks]] natively
 
@@ -488,6 +501,14 @@ After completing available phases:
    > - The **daily-task-prep** skill handles day planning
    > - Say 'enrich [person]' to deep-dive any contact"
 
+## When it fails
+
+Follow the [agent operator protocol](../../docs/protocol/AGENT_OPERATOR_v1.md) for any gbrain error `code`, exit code, `[AGENT]` block or notice block. Specific to this skill:
+
+- Every import phase is a user choice: when a command exits 3 (`confirmation_required`) or prints an `[AGENT]` ask, relay the `[SHOW USER]` block and wait; do not chain phases with `--yes`.
+- `gbrain google setup` prints `[SHOW USER]` steps: relay them verbatim and wait for the user to finish the consent click. Credential errors carry their own `fix`; follow it.
+- The first `gbrain query` after an import is empty with a degraded notice: embeddings are off or still backfilling, so the import may have worked. Check `gbrain doctor --json` before telling the user the import failed.
+
 ## Anti-Patterns
 
 - **Giving the agent raw OAuth tokens.** This is the #1 anti-pattern. An agent with
@@ -543,3 +564,13 @@ Next: Phase N+1 — [description]. Ready to proceed?
 - `add_link` — cross-reference entities
 - `add_timeline_entry` — record events on entity timelines
 - `sync_brain` — sync changes to the index after each phase
+
+## Tools outside your MCP surface
+
+This plugin serves the starter tool surface. When a step above names one of these tools and your tool list
+does not have it, call request_tools {"surface":"full"} to add it to this session, or run its gbrain CLI equivalent:
+
+- `add_link` → `gbrain link`
+- `sync_brain` → `gbrain sync`
+
+To widen every new session, set this machine's plugin surface with GBRAIN_SURFACE=full.

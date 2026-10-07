@@ -41,6 +41,7 @@ upstream:
   - meeting-ingestion@fc834ee
   - meeting-gold-standard@fc834ee
   - chronology-guard@fc834ee
+when_to_use: "Use when the user asks: \"meeting transcript\", \"process this meeting\", \"meeting notes\", \"meeting recorder\", \"ingest this recording\"."
 ---
 
 # Meeting Ingestion Skill — Unified Pipeline
@@ -119,8 +120,10 @@ source_url: "..."              # link back to the source platform, if any
   from it into the brain.
 
 Retain the raw transcript when the source provides one: file it as a sidecar
-page (e.g. `meetings/YYYY-MM-DD-{slug}-transcript`) or keep the source file
-reachable, and link it from the meeting page. The transcript is the canonical
+page with `type: source` at `sources/meetings/YYYY-MM-DD-{slug}-transcript`
+(the default pack files raw evidence as `source` under `sources/`; never
+invent `meeting-transcript`, and don't write the `transcript` alias) or keep
+the source file reachable, and link it from the meeting page. The transcript is the canonical
 evidence for every quote and claim check downstream.
 
 **Redact before you retain.** A raw transcript routinely captures pasted
@@ -224,9 +227,14 @@ and sometimes confidently WRONG names. Resolve by evidence:
 ### Phase 5: Create meeting page
 
 ```markdown
+---
+type: meeting
+attendees: [{comma-separated slugs of the same people, e.g. people/alice-example}]
+---
+
 # {Meeting Title} — {Date}
 
-**Attendees:** {list with links to people pages}
+Attendees: {comma-separated links to the people pages of everyone in the room}
 **Date:** {YYYY-MM-DD}
 **Duration:** {if available}
 
@@ -247,6 +255,19 @@ If none: _No notable quotes — operational/logistics meeting._}
 {Structured notes by topic}
 ```
 
+The `Attendees:` line is the page's attendance record, and the link extractor
+reads it literally. Write it as one line that starts with `Attendees:` (no
+bold markup) and holds only links to people pages, one per person who was in
+the room, separated by commas (no "and"). Link a person only when the
+identification is high or medium confidence (Phase 4). Put a company, role,
+speaker confidence, a low-confidence guess, or an unresolved speaker such as
+`UNKNOWN_2` in Discussion Notes instead: any extra text on the line stops the
+extractor from reading it as the attendance record, and a line wrapped onto a
+second line loses everyone after the break. Leave people who were only
+invited or mentioned off the line. The `attendees:` frontmatter lists
+exactly the same people by slug; extraction reads it as a second attendance
+record, so the two must agree.
+
 The four required sections are Summary, Key Decisions, Action Items, and
 Notable Quotes — additional sections (Discussion Notes, a link to the
 transcript sidecar) are additive, never replacements. An empty section always
@@ -254,6 +275,14 @@ carries an explicit reason; a bare `- None.` is a dodge, not an answer.
 
 Quotes are VERBATIM. Write what was said the way it was said — a paraphrase in
 a blockquote is a fabricated quote.
+
+Timeline events (`life/events/`) are extracted from the saved meeting page in
+the background (Life Chronicle, on by default; one paid chat call per page).
+Check the write receipt: `chronicle_backstop.pending: "next_cycle"` means the
+next cycle extracts it (`gbrain dream --phase chronicle` runs it now, paid), and
+`chronicle_backstop.skipped` names the reason and its fix. Never hand-write
+`life/events/` pages; edit the meeting page and extraction updates its events.
+See `docs/guides/life-chronicle.md`.
 
 ### Phase 6: Claim verification + consistency check (gate for every entity write)
 
@@ -316,9 +345,24 @@ garbled name or a low-confidence guess; a wrong backlink pollutes the graph
 worse than a missing one.
 
 **Note:** Once the meeting page is written via `gbrain put`, the auto-link
-post-hook automatically creates `attended` links from the meeting to each
-attendee whose page is referenced as `[Name](people/slug)`. You don't need to
-call `gbrain link` for attendees. You DO still need `gbrain timeline-add` for
+post-hook reads attendance from the page. Where the active schema pack does
+not override attendance (gbrain-base-v2, which `gbrain init` sets), each
+person on the `Attendees:` line and in `attendees:` frontmatter (Phase 5) gets a
+`person --attended--> meeting` edge, and people linked anywhere else on the
+page are not recorded as attendance; a pack that overrides attendance, such as
+the older `gbrain-base`, sets its own rule and direction. Leave attendance to
+auto-link rather than `gbrain link` or `add_link`: a hand-written `attended`
+edge can point the wrong way. Over MCP, `put_page` skips auto-link: a stdio
+`gbrain serve` reconciles the page on its maintenance sweep, and behind
+`gbrain serve --http` you run `gbrain sweep --once` or
+`gbrain extract links --source db`.
+
+A missing `attended` edge has one of two causes. Either the attendee record
+breaks a Phase 5 rule, or it names a person whose page did not exist when the
+meeting page was written; auto-link then reports an error and writes none of
+the page's links. This skill creates new people pages in Phase 7, after the
+meeting page, so once Phase 7 is done run `gbrain extract --stale` (over MCP,
+the sweep above) to link the page. You DO still need `gbrain timeline-add` for
 dated events (auto-link only handles links, not timeline entries).
 
 ### Phase 8: Entity propagation + timeline merge (MANDATORY)
@@ -382,7 +426,7 @@ Phase 4. An unflagged anonymous label means speaker resolution was skipped.
   quote still shares a long contiguous run of content words, a fabricated one
   does not.
   ```bash
-  gbrain get meetings/{date}-{slug}-transcript   # then locate each quote span
+  gbrain get sources/meetings/{date}-{slug}-transcript   # then locate each quote span
   ```
 - **Prompt checklist (no transcript retained):** re-read the source notes and
   attest that each quote traces to them word-for-word.
@@ -463,6 +507,14 @@ Phase 6, list each flag — the user resolves them, not silence. If any
 checklist item cannot be made to pass, report the meeting as NOT ingested and
 name the failing item.
 
+## When it fails
+
+Follow the [agent operator protocol](../../docs/protocol/AGENT_OPERATOR_v1.md) for any gbrain error `code`, exit code, `[AGENT]` block or notice block. Specific to this skill:
+
+- A contradiction with an existing page blocks ingestion until the user fixes or waives it: show both sources and wait.
+- `add_link` / auto-link reports an error after the meeting page was written: the page is saved but the links are not; list the failed links and add them after fixing slugs.
+- `put_page` returns `revision_conflict` on an attendee page: re-read and merge; never overwrite a person page from an old read.
+
 ## Anti-Patterns
 
 - Creating the meeting page without enriching attendees
@@ -495,3 +547,14 @@ name the failing item.
   transit between them
 - Re-checking substance in the sequence pass (or order in V1–V5) — the axes
   are orthogonal by design
+
+## Tools outside your MCP surface
+
+This plugin serves the starter tool surface. When a step above names one of these tools and your tool list
+does not have it, call request_tools {"surface":"full"} to add it to this session, or run its gbrain CLI equivalent:
+
+- `add_link` → `gbrain link`
+- `chronicle_day` → `gbrain day`
+- `get_timeline` → `gbrain timeline`
+
+To widen every new session, set this machine's plugin surface with GBRAIN_SURFACE=full.

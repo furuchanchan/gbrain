@@ -38,9 +38,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative } from 'node:path';
 
-import type { BrainEngine, NewFact, FactVisibility, FactKind } from '../engine.ts';
+import type { BrainEngine, NewFact, FactVisibility, FactKind, FactAttribution } from '../engine.ts';
 import type { ResolutionSource } from '../entities/resolve.ts';
 import { inferTypeFromPack, parseMarkdown } from '../markdown.ts';
+import { yamlScalar } from '../frontmatter-inference.ts';
 import { sanitizeText } from '../batch-rows.ts';
 import { loadActivePackBestEffort } from '../schema-pack/best-effort.ts';
 import { withPageLock } from '../page-lock.ts';
@@ -48,10 +49,13 @@ import { assertSourceFilesystemActive, hasSourceFilesystemLock, withSourceFilesy
 import { gbrainPath } from '../config.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through.ts';
 import { isDurabilityHardened, commitWriteThroughFile } from '../brain-repo-durability.ts';
-import { upsertFactRow, parseFactsFence } from '../facts-fence.ts';
+import { upsertFactRow, parseFactsFence, formatFenceDate } from '../facts-fence.ts';
 import { contentHash } from '../utils.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
+import { isFactWithdrawn } from './withdrawal.ts';
+import { managedPersistenceEnabled } from '../persistence/ownership.ts';
+import { maintenanceTransaction } from '../persistence/attribution.ts';
 
 /** Resolved source binding for the entity page. */
 export interface FenceTarget {
@@ -74,6 +78,7 @@ export interface FenceTarget {
 
 /** Input fact prepared by runPipelineWithBody (post-dedup). */
 export interface FenceInputFact {
+  embedding_model?: string | null;
   fact: string;
   kind: NewFact['kind'];
   notability: NewFact['notability'];
@@ -84,13 +89,16 @@ export interface FenceInputFact {
   confidence?: number;
   validFrom?: Date;
   /**
-   * MEMORY_VERBS v1 (c5): remember's ttl → valid_until. Date-only in the
-   * fence cell; the DB column derives from it on the stamp step.
+   * MEMORY_VERBS v1 (c5): remember's ttl → valid_until. Written to the
+   * fence cell losslessly (formatFenceDate); the DB column derives from it on
+   * the stamp step.
    * Undefined/null = never expires (pre-v1 behavior unchanged).
    */
   validUntil?: Date | null;
   embedding: Float32Array | null;
   sessionId: string | null;
+  /** Speaker attribution; written to the fence's attributed_to cell. */
+  attributedTo?: FactAttribution;
 }
 
 export interface FenceWriteResult {
@@ -115,6 +123,12 @@ export interface FenceWriteResult {
    * `jared.md` stub.
    */
   stubGuardBlocked?: true;
+  /**
+   * Input facts dropped because their claim is withdrawn for this page's
+   * entity (write-path audit B-10): a withdrawn claim is never appended to
+   * the Markdown fence as an active row.
+   */
+  withdrawnSkipped?: number;
   /**
    * True when the shared page-target resolver could not produce a usable
    * fence file path (source tree missing / not a directory, or a hostile
@@ -150,9 +164,9 @@ function recordWriteFailure(slug: string, sourceId: string, warnings: string[], 
   }
 }
 
-type FactFenceGitPathState = 'clean' | 'self_dirty' | 'foreign_dirty' | 'unknown';
+export type FactFenceGitPathState = 'clean' | 'self_dirty' | 'foreign_dirty' | 'unknown';
 
-function gitPathState(repoPath: string, filePath: string): FactFenceGitPathState {
+export function gitPathState(repoPath: string, filePath: string): FactFenceGitPathState {
   try {
     const rel = relative(repoPath, filePath);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) return 'unknown';
@@ -180,7 +194,7 @@ function gitPathState(repoPath: string, filePath: string): FactFenceGitPathState
   }
 }
 
-async function commitFactFenceFile(
+export async function commitFactFenceFile(
   repoPath: string,
   filePath: string,
   slug: string,
@@ -225,7 +239,7 @@ async function commitFactFenceFile(
  * (e.g. `people/alice` → 'person'); unknown prefixes fall back to
  * 'concept' which is the most permissive PageType.
  */
-function stubEntityPage(
+export function stubEntityPage(
   slug: string,
   pack: Parameters<typeof inferTypeFromPack>[1] | null,
 ): string {
@@ -247,7 +261,7 @@ function stubEntityPage(
   const title = tail
     .replace(/[-_/]+/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase()) || slug;
-  return `---\ntype: ${type}\ntitle: ${title}\nslug: ${slug}\n---\n\n# ${title}\n`;
+  return `---\ntype: ${yamlScalar(type)}\ntitle: ${yamlScalar(title)}\nslug: ${yamlScalar(slug)}\n---\n\n# ${title}\n`;
 }
 
 /**
@@ -275,6 +289,19 @@ export async function writeFactsToFence(
   target: FenceTarget,
   facts: FenceInputFact[],
 ): Promise<FenceWriteResult> {
+  if (await managedPersistenceEnabled(engine)) {
+    // The coordinator owns the canonical file on a managed brain: publish the
+    // fence rows through its fact intent instead of editing the file here.
+    const kept: FenceInputFact[] = [];
+    for (const f of facts) {
+      if (!await isFactWithdrawn(engine, target.sourceId, f.visibility, f.fact, target.slug)) kept.push(f);
+    }
+    const withdrawnSkipped = facts.length - kept.length ? { withdrawnSkipped: facts.length - kept.length } : {};
+    if (!kept.length) return { inserted: 0, ids: [], ...withdrawnSkipped };
+    const { publishManagedEntityFacts } = await import('./managed-fact-write.ts');
+    const { inserted, ids } = await publishManagedEntityFacts(engine, target.sourceId, target.slug, kept);
+    return { inserted, ids, ...withdrawnSkipped };
+  }
   if (target.localPath === null) {
     return { inserted: 0, ids: [], legacyFallback: true };
   }
@@ -318,6 +345,14 @@ export async function writeFactsToFence(
   return withPageLock(
     target.slug,
     async () => {
+      const kept: FenceInputFact[] = [];
+      for (const f of facts) {
+        if (!await isFactWithdrawn(engine, target.sourceId, f.visibility, f.fact, target.slug)) kept.push(f);
+      }
+      const withdrawnSkipped = facts.length - kept.length ? { withdrawnSkipped: facts.length - kept.length } : {};
+      facts = kept;
+      if (!facts.length) return { inserted: 0, ids: [], ...withdrawnSkipped };
+
       // 1. Read existing body or stub-create.
       let body: string;
       if (existsSync(filePath)) {
@@ -373,7 +408,7 @@ export async function writeFactsToFence(
               ? `[facts] refusing to stub-create unprefixed entity page slug=${target.slug} — routing to legacy DB-only path. Provide a directory prefix (people/, companies/, etc.) to opt into fence writes.`
               : `[facts] refusing to stub-create entity page slug=${target.slug} from a fallback-resolved reference (no live page verified) — routing to legacy DB-only path.`,
           );
-          return { inserted: 0, ids: [], stubGuardBlocked: true };
+          return { inserted: 0, ids: [], stubGuardBlocked: true, ...withdrawnSkipped };
         }
         // Stub-create the parent directory if it doesn't exist.
         mkdirSync(dirname(filePath), { recursive: true });
@@ -405,7 +440,8 @@ export async function writeFactsToFence(
       //    Degrades to the previous file-only behaviour if the lookup fails
       //    (pre-v51 brain without the fence columns, or a transient DB error):
       //    a fence write must not become impossible just because the counter
-      //    hint is unavailable.
+      //    hint is unavailable. The degradation is reported, never silent,
+      //    because file-only numbering is the duplicate-key class above.
       let dbMaxRowNum = 0;
       try {
         const rows = await engine.executeRaw<{ max_row_num: number | null }>(
@@ -414,8 +450,8 @@ export async function writeFactsToFence(
           [target.sourceId, target.slug],
         );
         dbMaxRowNum = Number(rows[0]?.max_row_num ?? 0);
-      } catch {
-        dbMaxRowNum = 0;
+      } catch (err) {
+        console.warn(`[facts.fence] FACTS_ROW_NUM_HINT_UNAVAILABLE: ${target.slug} (source ${target.sourceId}): ${err instanceof Error ? err.message : String(err)}; numbering from the file alone`);
       }
       const { facts: existingFenceFacts } = parseFactsFence(body);
       const fileMaxRowNum = existingFenceFacts.length > 0
@@ -425,7 +461,6 @@ export async function writeFactsToFence(
 
       const assignedRowNums: number[] = [];
       for (const f of facts) {
-        const validFromStr = (f.validFrom ?? new Date()).toISOString().slice(0, 10);
         const { body: updated, rowNum } = upsertFactRow(body, {
           rowNum:      nextRowNum++,
           claim:       f.fact,
@@ -433,13 +468,14 @@ export async function writeFactsToFence(
           confidence:  f.confidence ?? 1.0,
           visibility:  f.visibility,
           notability:  f.notability ?? 'medium',
-          validFrom:   validFromStr,
+          validFrom:   formatFenceDate(f.validFrom ?? new Date()),
           // MEMORY_VERBS v1 (c5): remember's ttl threads through to the fence
           // cell — was hard-coded undefined, which silently dropped expiry on
           // this path. extractFactsFromFenceText derives the DB column from it.
-          validUntil:  f.validUntil ? f.validUntil.toISOString().slice(0, 10) : undefined,
+          validUntil:  f.validUntil ? formatFenceDate(f.validUntil) : undefined,
           source:      f.source,
           context:     f.context ?? undefined,
+          ...(f.attributedTo ? { attributedTo: f.attributedTo } : {}),
         });
         body = updated;
         assignedRowNums.push(rowNum);
@@ -487,11 +523,15 @@ export async function writeFactsToFence(
         const reparsed = parseMarkdown(tmpBody, `${target.slug}.md`);
         const existing = await engine.getPage(target.slug, { sourceId: target.sourceId });
         if (existing) {
-          await engine.refreshPageBody(target.slug, target.sourceId,
+          await maintenanceTransaction(engine, tx => tx.refreshPageBody(target.slug, target.sourceId,
             sanitizeText(reparsed.compiled_truth), sanitizeText(reparsed.timeline),
-            existing.content_hash || contentHash(existing));
+            existing.content_hash || contentHash(existing)));
         }
-      } catch { /* degrades to the pre-#4872 window (stale until the next sync) */ }
+      } catch (err) {
+        // The file is committed; the page cache stays stale until the next
+        // sync (reconcile refuses destructive work meanwhile). Say so.
+        console.warn(`[facts.fence] FACTS_PAGE_MIRROR_FAILED: ${target.slug} (source ${target.sourceId}): ${err instanceof Error ? err.message : String(err)}; pages cache stale until the next sync`);
+      }
 
       // 6. Stamp the DB. extractFactsFromFenceText handles the
       //    validFrom/validUntil date derivation + the strikethrough
@@ -510,10 +550,11 @@ export async function writeFactsToFence(
       const enriched = toInsert.map((row, i) => ({
         ...row,
         embedding:      facts[i].embedding,
+        embedding_model: facts[i].embedding_model,
         source_session: facts[i].sessionId,
       }));
 
-      const result = await engine.insertFacts(enriched, { source_id: target.sourceId }); // gbrain-allow-direct-insert: writeFactsToFence is the markdown-first reconcile path; runs only after the atomic fence write commits
+      const result = await maintenanceTransaction(engine, tx => tx.insertFacts(enriched, { source_id: target.sourceId })); // gbrain-allow-direct-insert: writeFactsToFence is the markdown-first reconcile path; runs only after the atomic fence write commits
       // v0.46 (#3014) — an unresolvable `superseded by #N` reference (self
       // / dangling / struck target) leaves superseded_by NULL; log it rather
       // than swallow it. The row still lands (expired_at set for struck
@@ -531,7 +572,7 @@ export async function writeFactsToFence(
           durabilityPrewriteState,
         );
       }
-      return { inserted: result.inserted, ids: result.ids };
+      return { inserted: result.inserted, ids: result.ids, ...withdrawnSkipped };
     },
     { timeoutMs: 5_000 },
   );

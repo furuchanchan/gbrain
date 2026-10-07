@@ -14,12 +14,14 @@
  * engine-shaped check gets a stub with just `getConfig`).
  */
 import { describe, test, expect, afterAll, spyOn } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 import { bootstrapDoctorChecks, type Check } from '../src/commands/doctor.ts';
+import { finalizeCheckFixes } from '../src/commands/doctor/check-fix.ts';
+import { readBootId, readPidNs } from '../src/core/pglite-lock.ts';
 import { writeHarnessReceipt } from '../src/core/bootstrap/format.ts';
 import { LATEST_VERSION } from '../src/core/migrate.ts';
 import { VERSION } from '../src/version.ts';
@@ -353,6 +355,16 @@ describe('bootstrap_push_health', () => {
     expect(c?.message).toContain('last push ok');
   }, T);
 
+  test('fresh successful push but the workspace is AHEAD of origin → warn, never ok (#5063)', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ ahead: true });
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: new Date().toISOString(), ok: true }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toBe(`last push ok (${JSON.parse(readFileSync(join(home, 'bootstrap', 'push-status.json'), 'utf8')).ts}), but ${ws} has 1 commit(s) not on origin — recent agent memory is unpushed. Run \`gbrain sources push --path ${ws}\`.`);
+  }, T);
+
   test('last push FAILED → warn naming the reason (regardless of age)', async () => {
     const { parent, home } = makeHome();
     writePushStatus(home, JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'push_failed' }));
@@ -431,6 +443,8 @@ describe('bootstrap_push_health', () => {
     expect(c?.status).toBe('fail');
     expect(c?.message).toContain('DIRTY');
     expect(c?.message).toContain(ws);
+    expect(c?.message).toContain(`Run \`gbrain sources push --path ${ws}\`.`);
+    expect(c?.fix).toBeUndefined();
   }, T);
 
   test('unparseable ts → not stale (NaN guard) → ok', async () => {
@@ -496,23 +510,73 @@ describe('bootstrap_serve_lock', () => {
     writeFileSync(join(lockDir, 'lock'), JSON.stringify(lock));
   }
 
-  test('live serve holder → ok (hook IPC available), names the pid', async () => {
-    const { parent, home } = makeHome();
-    writeHeartbeat(home, [{ outcome: 'ok' }]); // open the gate
-    writeLock(home, { pid: process.pid, subcommand: 'serve' });
-    const c = byName(await run(parent), 'bootstrap_serve_lock');
-    expect(c?.status).toBe('ok');
-    expect(c?.message).toContain(String(process.pid));
-    expect(c?.message).toContain('live serve');
+  // #5481: a lock holder must be a GENUINELY FOREIGN live process to exercise
+  // the ok/warn paths meaningfully — `probeLivePgliteHolder` only requires
+  // liveness, and the fix under test distinguishes "this process's own pid"
+  // from every other case, so a foreign/self test pair needs two distinct
+  // real pids. Cross-platform: a JS timer via a spawned bun/node process,
+  // not a shelled-out POSIX command.
+  async function withLiveForeignProcess<T>(fn: (pid: number) => Promise<T>): Promise<T> {
+    const proc = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    try {
+      return await fn(proc.pid);
+    } finally {
+      proc.kill();
+    }
+  }
+
+  test('live serve holder (foreign pid) → ok, names the pid', async () => {
+    await withLiveForeignProcess(async (foreignPid) => {
+      const { parent, home } = makeHome();
+      writeHeartbeat(home, [{ outcome: 'ok' }]); // open the gate
+      writeLock(home, { pid: foreignPid, subcommand: 'serve' });
+      const c = byName(await run(parent), 'bootstrap_serve_lock');
+      expect(c?.status).toBe('ok');
+      expect(c?.message).toContain(String(foreignPid));
+      expect(c?.message).toContain('live serve');
+    });
   }, T);
 
-  test('live NON-serve holder → warn (hook IPC blocked)', async () => {
+  test('live NON-serve holder (foreign pid) → warn (hook IPC blocked)', async () => {
+    await withLiveForeignProcess(async (foreignPid) => {
+      const { parent, home } = makeHome();
+      writeHeartbeat(home, [{ outcome: 'ok' }]);
+      writeLock(home, { pid: foreignPid, subcommand: 'sync' });
+      const c = byName(await run(parent), 'bootstrap_serve_lock');
+      expect(c?.status).toBe('warn');
+      expect(c?.message).toContain('non-serve');
+      expect(c?.message).toContain(String(foreignPid));
+    });
+  }, T);
+
+  test('#5481: live NON-serve holder whose pid IS this doctor process, matching namespace evidence → no check (self lock is not a foreign collision)', async () => {
     const { parent, home } = makeHome();
     writeHeartbeat(home, [{ outcome: 'ok' }]);
-    writeLock(home, { pid: process.pid, subcommand: 'sync' });
+    writeLock(home, { pid: process.pid, subcommand: 'sync', pid_ns: readPidNs(), boot_id: readBootId() });
+    expect(byName(await run(parent), 'bootstrap_serve_lock')).toBeUndefined();
+  }, T);
+
+  test('#5481: pid matches but namespace evidence is foreign → still warns (a shared-mount container cannot masquerade as self via pid reuse)', async () => {
+    const { parent, home } = makeHome();
+    writeHeartbeat(home, [{ outcome: 'ok' }]);
+    writeLock(home, {
+      pid: process.pid,
+      subcommand: 'sync',
+      pid_ns: 'pid:[99999999]',
+      boot_id: '00000000-0000-0000-0000-000000000000',
+    });
     const c = byName(await run(parent), 'bootstrap_serve_lock');
-    expect(c?.status).toBe('warn');
-    expect(c?.message).toContain('non-serve');
+    if (process.platform === 'linux') {
+      expect(c?.status).toBe('warn');
+      expect(c?.message).toContain('non-serve');
+    } else {
+      // Non-Linux platforms have no PID namespaces; a pid match alone is
+      // trusted there, matching pglite-lock.ts's own acquisition-time
+      // platform short-circuit.
+      expect(c).toBeUndefined();
+    }
   }, T);
 
   test('dead holder / no lock → no check (stale lock dir is inert)', async () => {
@@ -743,5 +807,97 @@ describe('fail-soft umbrella', () => {
     expect(byName(checks, 'bootstrap_push_health')?.status).toBe('warn');
     expect(checks.every((c) => c.name.startsWith('bootstrap_'))).toBe(true);
     expect(checks.some((c) => c.status === 'fail')).toBe(false);
+  }, T);
+});
+
+// #5371: a managed canonical worktree refuses `gbrain sources push`, and the
+// ownership stamp gbrain writes into it is not unpushed work.
+describe('bootstrap_push_health on a managed canonical worktree (#5371)', () => {
+  const stamp = (ws: string) => writeFileSync(join(ws, '.gbrain-owner.json'), '{}');
+  const MANAGED_PROBE = 'gbrain sources writer status --probe --json';
+  function expectManagedGuidance(c: Check | undefined, ws: string): void {
+    expect(c?.message).toContain(`${ws} is a managed canonical worktree`);
+    expect(c?.message).toContain('legacy bulk push is not available');
+    expect(c?.message).toContain(MANAGED_PROBE);
+    expect(c?.message).not.toContain('gbrain sources push');
+  }
+
+  test('stale push + tree whose only change is the ownership stamp → ok, confirmed clean', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ clean: true });
+    stamp(ws);
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: STALE_TS, ok: true }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('ok');
+    expect(c?.message).toContain('confirmed clean');
+  }, T);
+
+  test('stale push + a real page beside the stamp → still fail, with the managed-writer remedy', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ clean: true });
+    stamp(ws);
+    writeFileSync(join(ws, 'unpushed-note.md'), 'recent agent memory\n');
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: STALE_TS, ok: true }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('fail');
+    expect(c?.message).toContain('DIRTY');
+    expectManagedGuidance(c, ws);
+    expect(c?.message).toContain('direct file edits here are not published');
+  }, T);
+
+  test('a recorded managed-writer refusal stays warn and points at the writer status probe', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ clean: true });
+    stamp(ws);
+    writePushStatus(home, JSON.stringify({
+      ts: new Date().toISOString(), ok: false, repoRoot: ws,
+      reason: 'writer_coordinator_required: This path belongs to the managed canonical worktree.',
+    }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toContain('FAILED');
+    expectManagedGuidance(c, ws);
+  }, T);
+
+  test('fresh push but AHEAD of origin (wave 9 path) → warn with the managed-writer remedy', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ ahead: true });
+    stamp(ws);
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: new Date().toISOString(), ok: true }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toContain('1 commit(s) not on origin');
+    expectManagedGuidance(c, ws);
+  }, T);
+
+  test('stale push + failed git probe → still warn "unverified", never ok, with the managed-writer remedy', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace();
+    stamp(ws);
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: STALE_TS, ok: true }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toContain('git probe failed');
+    expectManagedGuidance(c, ws);
+  }, T);
+
+  test('the managed finding renders the agent contract: a read-only probe with a doctor verify', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ dirty: true });
+    stamp(ws);
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: STALE_TS, ok: true }));
+    const [c] = finalizeCheckFixes((await run(parent)).filter((x) => x.name === 'bootstrap_push_health'));
+    expect(c?.status).toBe('fail');
+    expect(c?.fix_unavailable_reason).toBeUndefined();
+    expect(c?.fix).toMatchObject({
+      next: 'run', command: MANAGED_PROBE, consent: [], actor: 'agent',
+      verify: { argv: ['gbrain', 'doctor', '--only', 'bootstrap_push_health', '--json'] },
+    });
+    expect(String((c?.fix as { why?: string }).why)).toContain('changes nothing');
   }, T);
 });

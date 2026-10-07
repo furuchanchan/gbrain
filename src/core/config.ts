@@ -69,20 +69,15 @@ export interface GBrainConfig {
   integrations?: { memorable?: { enabled?: boolean } };
   /** Monthly backup-coverage check. File-plane for engine-free hook children. */
   backup?: { check_enabled?: boolean | string; check_interval_days?: number | string };
+  /** #5232: CLI write wait in ms (file plane; persistence/write-wait.ts). */
+  persistence?: { write_wait_ms?: number | string };
+  migrate?: { graduation?: boolean }; // `migrate.graduation false`: legacy copier instead of graduation (file plane, read pre-connect)
+  /** A4 user preapprovals (file plane only; set by the trusted local CLI; read by core/consent.ts). */
+  consent?: { preapprove?: { paid?: { max_usd_per_run?: number }; persistent_install?: boolean } };
   database_url?: string;
   database_path?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
-  /**
-   * ZeroEntropy API key. v0.37 fix wave (CDX2-5+6): ZE became the default
-   * embedding + reranker provider in v0.36 but lacked a file-plane config
-   * slot. `gbrain config set zeroentropy_api_key X` wrote DB plane,
-   * `loadConfig` only merged OpenAI/Anthropic, and `buildGatewayConfig`
-   * at cli.ts:1401 only mapped those two — so the key never reached the
-   * embed pipeline. Now wired through: file plane → loadConfig env
-   * merge → buildGatewayConfig env dict → recipe reads ZEROENTROPY_API_KEY.
-   */
-  zeroentropy_api_key?: string;
   /**
    * OpenRouter API key. File-plane slot so `gbrain config set
    * openrouter_api_key X` (or config.json) reaches the openrouter recipe:
@@ -90,19 +85,7 @@ export interface GBrainConfig {
    * reads OPENROUTER_API_KEY.
    */
   openrouter_api_key?: string;
-  /**
-   * Voyage AI API key (#2662). File-plane slot so `~/.gbrain/config.json`'s
-   * `voyage_api_key` reaches the voyage recipe the same way
-   * zeroentropy_api_key/openrouter_api_key do: file plane →
-   * buildGatewayConfig env dict → recipe reads VOYAGE_API_KEY. Before this,
-   * launchd/daemon/MCP contexts without a process-env export silently
-   * failed multimodal embeds despite config.json looking complete.
-   *
-   * NOTE: `gbrain config set voyage_api_key X` routes to the FILE plane
-   * (FILE_PLANE_API_KEYS in src/commands/config.ts); a value that landed in
-   * the DB plane anyway is still honored via the #2119 read-side merge
-   * (DB_MERGED_PROVIDER_KEY_FIELDS, env > file > DB).
-   */
+
   voyage_api_key?: string;
   /**
    * Alibaba DashScope API key (#3500). File-plane slot so config.json's
@@ -149,7 +132,7 @@ export interface GBrainConfig {
   azure_openai_endpoint?: string;
   azure_openai_deployment?: string;
   azure_openai_use_entra?: string;
-  /** AI gateway config (v0.14+). v0.36+ default: "zeroentropyai:zembed-1" / 1280 / "anthropic:claude-haiku-4-5-20251001". */
+
   embedding_model?: string;
   embedding_dimensions?: number;
   /**
@@ -168,11 +151,13 @@ export interface GBrainConfig {
    */
   chat_model?: string;
   /**
-   * Optional silent-refusal fallback chain for `chatWithFallback()` (v0.27+).
-   * Each entry is a "provider:modelId" string. Blocked from critic/judge/
-   * synthesize flows in their respective handlers (per D13 review decision).
+   * Optional chat fallback chain for `chatWithFallback()` (v0.27+): tried in
+   * order when a chat call fails or refuses. Each entry is a "provider:modelId"
+   * string. Judge, critic and eval call sites pin their model (allowFallback).
    */
   chat_fallback_chain?: string[];
+  /** `false`: the chain still covers errors but never forwards a refused request. Default true (env, file, DB). */
+  chat_fallback_on_refusal?: boolean;
   /** Optional base URL overrides for openai-compatible providers (keyed by recipe id). */
   provider_base_urls?: Record<string, string>;
   /** Optional chat request providerOptions overrides keyed by recipe id or "recipe:modelId". */
@@ -216,8 +201,8 @@ export interface GBrainConfig {
       /** Enable the nightly probe in the autopilot loop. Defaults to false. */
       enabled?: boolean;
       /**
-       * Cost cap (USD) per probe invocation. Defaults to 5.
-       * Worst case: 5 × 30 nights ≈ $150/month per brain.
+       * Run-level cap (USD) over every paid call of one probe run (LongMemEval
+       * and judges). Default 5; a set value is a user cap (unpriced → no_pricing).
        */
       max_usd?: number;
     };
@@ -274,6 +259,8 @@ export interface GBrainConfig {
     adaptive_return_entity_max?: number;
     adaptive_return_other_max?: number;
     adaptive_return_min_keep?: number;
+    /** #5824 rollback switch (search/vector-legacy-guard.ts); file > DB, env wins over both. */
+    vector_legacy_guard?: boolean;
   };
 
   /**
@@ -567,6 +554,12 @@ export interface GBrainConfig {
      * over this file slot. Always bounded by the server ceiling (D2).
      */
     default_surface_dcr?: 'verbs' | 'starter' | 'full';
+    /** Tools listed to agents (callable set unchanged; request_tools reaches the rest). Dual-plane, DB > file. */
+    advertised_surface?: 'verbs' | 'starter' | 'full';
+    /** Search/query row shape for remote MCP callers: 'lean' (default) | 'full'. Dual-plane, DB > file. */
+    result_rows?: 'lean' | 'full';
+    /** Stdio `request_tools {surface}` widens the session's tool surface (default true). Dual-plane, DB > file. */
+    allow_session_widen?: boolean | string;
   };
 }
 
@@ -739,7 +732,6 @@ export function loadConfig(): GBrainConfig | null {
     ...(dbUrl ? { database_path: undefined } : {}),
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
     ...(process.env.ANTHROPIC_API_KEY ? { anthropic_api_key: process.env.ANTHROPIC_API_KEY } : {}),
-    ...(process.env.ZEROENTROPY_API_KEY ? { zeroentropy_api_key: process.env.ZEROENTROPY_API_KEY } : {}),
     ...(process.env.OPENROUTER_API_KEY ? { openrouter_api_key: process.env.OPENROUTER_API_KEY } : {}),
     ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
     ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: parseInt(process.env.GBRAIN_EMBEDDING_DIMENSIONS, 10) } : {}),
@@ -747,6 +739,9 @@ export function loadConfig(): GBrainConfig | null {
     ...(process.env.GBRAIN_CHAT_MODEL ? { chat_model: process.env.GBRAIN_CHAT_MODEL } : {}),
     ...(process.env.GBRAIN_CHAT_FALLBACK_CHAIN
       ? { chat_fallback_chain: process.env.GBRAIN_CHAT_FALLBACK_CHAIN.split(',').map(s => s.trim()).filter(Boolean) }
+      : {}),
+    ...(process.env.GBRAIN_CHAT_FALLBACK_ON_REFUSAL?.trim()
+      ? { chat_fallback_on_refusal: !isEnvDisabled(process.env.GBRAIN_CHAT_FALLBACK_ON_REFUSAL) }
       : {}),
     ...(process.env.GBRAIN_EMBEDDING_MULTIMODAL
       ? { embedding_multimodal: process.env.GBRAIN_EMBEDDING_MULTIMODAL === 'true' }
@@ -1176,6 +1171,8 @@ export async function loadConfigWithEngine(
     const n = Number(await dbStr(`search.${cap}`));
     if (Number.isFinite(n)) mergedSearch[cap] = n;
   }
+  const dbVectorLegacyGuard = await dbBoolStrict('search.vector_legacy_guard');
+  if (mergedSearch.vector_legacy_guard === undefined && dbVectorLegacyGuard !== undefined) mergedSearch.vector_legacy_guard = dbVectorLegacyGuard;
   if (Object.keys(mergedSearch).length > 0) {
     merged.search = mergedSearch;
   }
@@ -1222,7 +1219,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'database_path',
   'openai_api_key',
   'anthropic_api_key',
-  'zeroentropy_api_key',
   'openrouter_api_key',
   'voyage_api_key',
   'dashscope_api_key',
@@ -1240,6 +1236,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'expansion_model',
   'chat_model',
   'chat_fallback_chain',
+  'chat_fallback_on_refusal',
   'provider_base_urls',
   // Integration gates (file-plane, hook-lane)
   'integrations.memorable.enabled',
@@ -1254,6 +1251,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'eval.scrub_pii',
   'embedding_multimodal',
   'embedding_multimodal_model',
+  // #5691: per-brain query instruction (DB plane; read by search/query-prefix.ts).
+  'embedding_query_prefix',
   'embedding_image_ocr',
   'embedding_image_ocr_model',
   'embedding_columns',
@@ -1274,6 +1273,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'agent.use_gateway_loop',
   // #2778: per-turn output-token cap for the subagent loop (default 8192).
   'agent.max_output_tokens',
+  // #4921: subagent per-turn chat timeout (minions/handler-timeouts.ts, default 30 min).
+  'ai.chat.per_turn_timeout_ms',
   // File-plane bootstrap hook-lane keys (routed to ~/.gbrain/config.json by
   // `config set` — engine-free hook/push children read loadConfigFileOnly).
   'push.allow_unverified_remote',
@@ -1326,9 +1327,18 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.mcp_keyword_only',
   REMOTE_PRIVATE_PAGES_KEY,
   'search.track_retrieval',
+  // Retrieval feedback (feedback/settings.ts).
+  'feedback.enabled', 'feedback.learn', 'feedback.influence', 'feedback.implicit', 'feedback.alpha',
+  'feedback.max_ratings_per_hour', 'feedback.event_retention_days', 'feedback.rating_prompt', 'feedback.notice_shown',
   // #4415: per-brain query-intent pattern extensions (JSON bank→regex[]),
   // merged over the shipped banks in src/core/search/query-intent.ts.
   'search.intent_patterns',
+  // Per-brain source-boost map (`prefix:factor,...`; `none` drops the
+  // defaults), read by search/mode.ts loadSearchModeConfig and ops/search.ts.
+  'search.source_boosts',
+  // #5428 opt-in single-token alias hop (`true` enables), read by
+  // search/mode.ts loadSearchModeConfig.
+  'search.alias_token_hop',
   // 2026-08 fix wave (E5a): the adaptive-return / autocut / CRAG knobs were
   // read by the search path but never registered — `gbrain config set`
   // rejected them, making the documented config plane a no-op. Read sites:
@@ -1341,6 +1351,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // weak-graded query), and unlike crag_think it is reachable by remote
   // callers — attacker-shaped weak queries drive that spend (ship security
   // review). See docs/operations/spend-controls.md.
+  // #5824 one-release rollback, latched per process (search/vector-legacy-guard.ts).
+  'search.vector_legacy_guard',
   'search.adaptive_return',
   'search.adaptive_return_entity_max',
   'search.adaptive_return_other_max',
@@ -1353,12 +1365,25 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.expansion_variant_budget',
   // Ranker wave (R1): relational-arm rows re-pinned above reranked text rows (mode.ts reads; `off` | 0..10).
   'search.relational_rerank_pin',
+  // Multi-hop planner (mode.ts reads; boolean) and typed one-hop orientation (boolean; unset follows the planner).
+  'search.relational_planner',
+  'search.relational_orient_onehop',
+  // Multi-hop chain slots: chain rows leading page 1 when a chain fired (mode.ts reads; 0..10).
+  'search.relational_chain_slots',
   // Ranker wave (Phase E2): keyword-arm confidence floor — weak keyword arm fuses at half weight (mode.ts reads; `off` | (0, 1]).
   'search.keyword_arm_confidence_floor',
   // Ranker wave (Phase E3): metadata boost gate — `lexical` skips post-fusion metadata boosts when the vector arm was the only voter (mode.ts reads; `always` | `lexical`).
   'search.metadata_boost_gate',
   'search.crag_escalation',
   'search.crag_think',
+  // Evidence delivery (search/evidence-delivery.ts): default unit (auto),
+  // window radius, default/auto/remote-max token budgets; think reads its own unit.
+  'search.return_unit',
+  'search.return_window',
+  'search.return_budget_default',
+  'search.return_budget_conversation',
+  'search.return_budget_max_remote',
+  'think.return_unit',
   // Models tier system (v0.31.12)
   'models.default',
   'models.tier.utility',
@@ -1369,6 +1394,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.dream.synthesize',
   'models.dream.extract_atoms',
   'cycle.extract_atoms.budget_usd',
+  // #4907: synthesize_concepts phase budget (finite USD > 0, default 1.5); cycle/phase-config-values.ts.
+  'cycle.synthesize_concepts.budget_usd',
   'cycle.extract_atoms.max_source_chars',
   'cycle.extract_atoms.page_discovery_budget',
   // #4540: per-item extractor caps (defaults 50000 chars / 4096 tokens) plus
@@ -1384,13 +1411,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.dream.triage',
   'models.drift',
   'models.auto_think',
-  'models.think',
+  'models.think', 'models.fence_repair', // models.fence_repair: #6188 Tier 3 fence repair model (fence-repair/llm.ts), tier deep
   'models.subagent',
   'models.expansion',
   'models.contextual_synopsis',
   'models.chat',
   'models.brainstorm.judge',
-  'models.eval.longmemeval',
+  'models.eval.longmemeval', 'models.eval.cross_modal.slot_a', 'models.eval.cross_modal.slot_b', 'models.eval.cross_modal.slot_c', // #5872 D12 probe judge slots
   'facts.extraction_model',
   // Brain-wide kill switch for fact extraction, read by
   // src/core/facts/extract.ts:isFactsExtractionEnabled and honored by
@@ -1405,6 +1432,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'loops.extraction_enabled',
   // #2113: output-token cap for the per-turn facts extractor (default 4000).
   'facts.extraction_max_tokens',
+  // Automatic facts drain caps (src/core/facts/drain.ts FACTS_DRAIN_KEYS).
+  'facts.drain_budget_usd', 'facts.drain_daily_budget_usd', 'facts.drain_max_jobs',
   // #3852: operator-set system-prompt appendix for the facts extractor (e.g.
   // a durable-vs-ephemeral rubric for agent work-session transcripts).
   // Composes with BOTH honest-notability prompt variants.
@@ -1412,10 +1441,15 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // #3852: kill-switch for the deterministic junk gate on extracted fact text
   // (plan narration / provider error strings / meta-chatter). Default on.
   'facts.extraction_junk_filter',
+  // B-16: confidence stored for an extracted candidate whose confidence is
+  // missing or non-numeric (a number in 0..1). Unset keeps the legacy 1.0.
+  'facts.extraction_missing_confidence',
+  'extraction.date_grounding', 'facts.attribution', // extraction prompt variants (facts/extract.ts getExtractorVariant)
   // [ENG-8] Brain-level default visibility for facts writes when the caller
   // didn't specify one: 'private' (default) | 'world'. Resolved by
   // src/core/facts/visibility.ts; explicit caller values always win.
   'facts.default_visibility',
+  'facts.entity_inference', // #5836: write-time subject inference kill switch (subject-infer.ts)
   // Ambient memory writeback (opt-in, default OFF): 'off' | 'salient' | 'all'.
   // DUAL-PLANE: `gbrain config set` writes the DB plane (authoritative — the
   // serve-side harvest gate re-checks it) AND mirrors into the file plane's
@@ -1429,6 +1463,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // Fire-once sentinel for the ambient-writeback consent nudge (WP8):
   // stamped 'true' after the init/post-upgrade ask has been shown once.
   'memory.auto_writeback_notice_shown',
+  // Always-loaded core memory + context-pressure notice (docs/guides/core-memory.md#configuration).
+  'memory.core.enabled', 'memory.core.max_chars', 'memory.core.remote_edit',
+  'memory.pressure.enabled', 'memory.pressure.warn_ratio', 'memory.pressure.context_window',
   // Declared brain audience: 'personal' | 'shared'. Set by the operator, by
   // company-brainify's Phase-5 handoff (shared), or from the bootstrap
   // interview. Declaration beats the conservative client-count heuristic in
@@ -1436,11 +1473,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // personal brains and never auto-enables anything.
   'brain.audience',
   // Conversation parser LLM fallback. Deliberately register the exact key,
-  // not a conversation_parser.* prefix: fallback is the only live opt-in
-  // consumer, while the polish scaffold remains unwired.
+  // not a conversation_parser.* prefix: fallback is the only opt-in consumer.
   'conversation_parser.llm_fallback_enabled',
   // Dream cycle config
-  'dream.synthesize.session_corpus_dir',
+  'dream.synthesize.session_corpus_dir', 'dream.synthesize.conversation_pages', // #4419 conversation pages feed synthesis
   'dream.synthesize.meeting_transcripts_dir',
   'dream.synthesize.last_completion_ts',
   'dream.synthesize.verdict_model',
@@ -1461,6 +1497,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'dream.synthesize.mode',
   'dream.synthesize.link_manifest',
   'dream.synthesize.quote_verify',
+  'dream.quote_verify',
+  'think.quote_verify',
   'dream.synthesize.inline_concurrency',
   // #4152 triage knobs. The triage model's preferred key is
   // `models.dream.triage` (models.* prefix, registered via the models.dream.*
@@ -1478,12 +1516,17 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // inside maxTokens, so the hardcoded defaults truncated every dense page.
   'dream.propose_takes.max_tokens',
   'dream.propose_takes.retry_max_tokens',
+  // #5958: per-call extractor timeout (whole ms 1000..300000; unset scales with the output cap); cycle/phase-config-values.ts.
+  'dream.propose_takes.call_timeout_ms',
   'dream.patterns.lookback_days',
   'dream.patterns.min_evidence',
   // #2782-family: patterns-phase subagent timeouts (mirror of the
   // dream.synthesize.* pair from #1594).
   'dream.patterns.subagent_timeout_ms',
   'dream.patterns.subagent_wait_timeout_ms',
+  // Paid-loop breaker: dead submissions of one dream key within 24h before
+  // it is refused (default 3; 0 disables). `gbrain dream reset-key` clears one.
+  'dream.breaker.max_dead_submissions',
   // Emotional weight (v0.29)
   'emotional_weight.high_tags',
   'emotional_weight.user_holder',
@@ -1491,6 +1534,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // #4348: IANA timezone that owns the dream-cycle calendar day (summary
   // bucketing). Unset → host timezone → UTC. Validated at set time.
   'cycle.timezone',
+  'cycle.consolidate.cluster_threshold', // #5363: (0, 1], default 0.85; read + validated in cycle/phases/consolidate.ts
+  // A11: IANA timezone for offset-less frontmatter datetimes in effective_date.
+  // Unset → UTC (date-only values are always UTC calendar dates). Validated at set time.
+  'brain.timezone',
+  // A12 (opt-in, default off): undated new pages in git-backed sources take the
+  // file's git first-commit date as their effective-date fallback on full import.
+  'sync.git_first_commit_dates',
   'cycle.grade_takes.write_gstack_learnings',
   // #4102: off switch for the propose_takes LLM phase (default ON; the
   // phase ships in the default list). Read by src/core/cycle/propose-takes.ts.
@@ -1518,6 +1568,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // WP3 — unknown tool-call argument posture ('warn' default | 'reject').
   // Read dual-plane by src/mcp/validate-params.ts (DB > file > 'warn').
   'mcp.strict_params',
+  'mcp.result_rows', // C1 row shape, read dual-plane by src/mcp/result-rows.ts
+  'mcp.allow_session_widen', // stdio request_tools session widening (default on), read dual-plane by src/mcp/surface.ts
   // Skill-nag suppression (#2180): brain-resident pack install nag off-switch.
   'skillpack.nag_disabled',
   // Self-upgrade (v0.42; file plane, read on the hot path)
@@ -1540,35 +1592,54 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // set` accepts them directly. See docs/operations/spend-controls.md.
   'spend.posture',
   'pricing.overrides',
-  // Life Chronicle (v0.42.56.0, #2390). The release notes' enable command is
-  // `gbrain config set auto_chronicle true`, but the key was never registered
-  // — so the documented command failed with "Unknown config key" and the
-  // operator had to discover --force by reading source. Same class as the
-  // spend-controls registration above.
+  // Life Chronicle (#2390, #5876): automatic event extraction, on by default
+  // (unset = on). The documented opt-out is `gbrain config set auto_chronicle
+  // false`; read by core/chronicle/config.ts.
   'auto_chronicle',
   // Auto-link toggle read by the put_page post-hook (link-extraction.ts),
   // reconcile-links, and sweep. The documented off-switch is `gbrain config
   // set auto_link false` — same unregistered-key class as auto_chronicle.
   'auto_link',
+  // Entity mention index (core/mentions/policy.ts): off switch, +type/-type linkable types, names never linked, pages never linked (#5829).
+  'mentions.auto_link', 'mentions.entity_types', 'mentions.ignore', 'mentions.exclude_slugs',
   // #4987: the write-path timeline extractor's off switch (read by
   // isAutoTimelineEnabled); registered so `gbrain config set auto_timeline off`
   // works without --force, as the compiled-truth guide documents.
   'auto_timeline',
-  // v0.46.3: the provider_sunset doctor check's own suppression escape hatch
-  // (doctor.ts) and docs/guides/embedding-migration.md both document
-  // `gbrain config set doctor.suppress_provider_sunset true`, but the key was
-  // never registered — the documented command exited 1 with "Unknown config
-  // key". Same class as auto_chronicle above. Deliberately an exact key, not
-  // a blanket 'doctor.' prefix (unbounded namespaces defeat the typo gate).
-  'doctor.suppress_provider_sunset',
+  // Wanted pages: record unresolved authored links and wake their origins
+  // when the target appears (src/core/wanted-links.ts). On by default; the
+  // off switch is `gbrain config set wanted_pages.enabled false`.
+  'wanted_pages.enabled',
+  // Remote writes (the persistence `links` effect) record missing mention targets too. On by default (held-out verdict H8).
+  'wanted_pages.remote',
+  // Line grammar (src/core/line-grammar.ts): typed relation lines, off by default
+  // (held-out verdict H3); undeclared relation types fall back to inference unless allowed.
+  'line_grammar.enabled',
+  'line_grammar.allow_undeclared_types',
+  // Validity ranges on typed relation lines stored as dated edge transitions
+  // (core/link-effective.ts). On by default (held-out verdict H7); applies while line_grammar.enabled is on.
+  'line_grammar.effective_ranges',
+  // put_page "did you mean an existing page?" advisory on creates (core/similar-pages.ts). Off by default (held-out verdict H5b).
+  'put_page.similar_pages',
+  // #5584: skillopt optimizer output cap (default 32000 thinking / 4096 otherwise).
+  'skillopt.reflect_max_tokens',
+  // #5585: skillopt strict model provenance (true|1|yes|on; other values count as on).
+  'skillopt.models_strict',
   // #2606: chronicle judge output-token cap (default 4000). Event-dense
   // pages overflowed the old hardcoded 1500 and were misrecorded as
   // no_events; the cap is now configurable and truncation is surfaced.
   'chronicle.judge_max_tokens',
+  'chronicle.job_budget_usd', 'chronicle.auto_daily_limit', 'chronicle.auto_recent_days', 'chronicle.auto_settle_seconds', // #5876 rails (chronicle/config.ts validates)
   // Takes bootstrap (v0.41.18.0, A12). The onboard remediation's two-gate
   // consent reads this key, and enabling it is the documented path to
   // `gbrain takes extract --from-pages` — same unregistered-key class.
   'takes.bootstrap_enabled',
+  // #5885: `embed --stale` (cycle embed phase, migration drain) also embeds
+  // stale takes; `false` turns that off (GBRAIN_EMBED_TAKES=0 overrides).
+  'takes.auto_embed',
+  // B-14: USD cap for one takes-bootstrap run's classifier calls (default 5.0;
+  // 0 disables). Read by src/core/extract-takes-from-pages.ts.
+  'takes.bootstrap_budget_usd',
   // Orphan reporting scope. These are consumed by core/orphan-policy.ts and
   // documented there as the per-brain override path.
   'orphans.exclude_prefixes',
@@ -1576,6 +1647,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'sync.cost_gate_min_usd',
   'sync.federated_v2',
   'sync.include_working_tree',
+  // #5984: managed Postgres sync publishes pages in bulk groups (on by default; each page keeps its own request).
+  'sync.bulk',
+  'sync.bulk_size',
+  'sync.bulk_max_txn_ms',
+  'sync.lanes',
   // Persisted indexing scope (comma/newline-separated glob list; trailing '/'
   // normalizes to a '/**' subtree glob). Read best-effort at the top of
   // performSyncInner and UNIONED with any per-call --exclude so internal
@@ -1586,6 +1662,17 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // #4901: the dot-directory WAIVER's persisted twin (unioned with the per-call
   // include-hidden flag, which bulk sync refuses); registered so `config set` accepts it.
   'sync.include_hidden',
+  // #5988: Git sync holds (read by readSyncHoldPolicy). `sync.holds=fail`
+  // restores fail-closed blocking; the rest tune detail, escalation and the
+  // parser-regression stop. Registered so the documented `config set` works.
+  'sync.holds',
+  'sync.hold_cap',
+  'sync.hold_escalate_count',
+  'sync.hold_escalate_pct',
+  'sync.parser_regression',
+  'fences.normalize', // #6188: inline Tier 1 fence normalization (fence-repair/config.ts); default on
+  'fences.repair.enabled', 'fences.repair.llm', // #6188: the fence_repair cycle phase and its Tier 3 model step (fence-repair/config.ts); default on
+  'fences.repair.max_usd_per_page', 'fences.repair.max_usd_per_day', // #6188: Tier 3 fence repair caps; 0 = no model spend
   // #2179: clamp window for DCR-requested per-client token TTLs. Read by
   // `gbrain serve --http` at startup; unset min defaults to 300s, unset max
   // defaults fail-closed to max(--token-ttl, min).
@@ -1606,6 +1693,21 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'schema.type_warnings',
   // #4795 reindex-search-vector marker (doctor fts_reindex_incomplete reads it); `config unset` is the escape hatch.
   'fts.reindex_in_progress',
+  // #5470: managed-write journal caps + receipt retention, read by
+  // persistence/limits.ts (JOURNAL_CONFIG_KEYS; drift-guarded by test).
+  'persistence.limits.principal_outstanding', 'persistence.limits.brain_outstanding',
+  'persistence.limits.principal_intent_bytes', 'persistence.limits.brain_intent_bytes',
+  'persistence.limits.principal_lifetime_ids', 'persistence.limits.brain_lifetime_ids',
+  'persistence.limits.principal_terminal_bytes', 'persistence.limits.brain_terminal_bytes',
+  'persistence.limits.brain_recovery_bytes', 'persistence.limits.worktree_recovery_bytes',
+  'persistence.receipt_retention_days', 'persistence.unbound_write', // #5254: persistence/unbound-source.ts
+  // shared-skills migration inventory bounds (src/core/shared-skills/inventory-limits.ts)
+  'shared_skills.inventory.max_files', 'shared_skills.inventory.max_total_bytes', 'shared_skills.inventory.max_file_bytes', 'shared_skills.inventory.max_entries',
+  'persistence.write_wait_ms', // #5232: file plane, persistence/write-wait.ts
+  'migrate.graduation', // file plane, src/commands/migrate-graduation.ts (engine graduation opt-out)
+  'consent.preapprove.paid.max_usd_per_run', 'consent.preapprove.persistent_install', // A4: file plane, core/consent.ts
+  // F4b: PGLite row-delta ANALYZE (src/core/planner-stats.ts); F4a: get_health memo TTL (src/core/health-memo.ts, 0 disables).
+  'planner.auto_analyze', 'planner.first_read_budget_ms', 'import.analyze_every_pages', 'health.cache_ttl_ms',
 ];
 
 /**
@@ -1614,17 +1716,18 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
  * Levenshtein suggestion in `gbrain config set`.
  */
 export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
-  'search.',           // search.* (mode, cache.*, etc.)
+  'search.',           // search.* (mode, cache.*, etc.); config set refuses unregistered leaves (commands/config/enumerated-keys.ts)
+  'graph.',            // graph.edge_validity (temporal typed-edge read policy, src/core/link-validity.ts)
   'models.',           // models.* (tier, aliases, per-task)
   'dream.',            // dream.synthesize.*, dream.patterns.*
   'cycle.',            // cycle.<phase>.*
   'embedding_columns.', // per-column overrides
   'provider_base_urls.', // per-provider base URL overrides
   'provider_chat_options.', // per-provider / per-model chat providerOptions
-  'content_sanity.',    // v0.41 content-sanity tunables
+  'content_sanity.',    // v0.41 content-sanity tunables; enumerated like search.
   'mcp.',               // mcp.publish_skills, mcp.skills_dir (PR1 skill catalog)
   'autopilot.',         // autopilot.nightly_quality_probe.*, autopilot.auto_drain.* (#1685)
-  'chronicle.',         // chronicle.tz + future Life Chronicle knobs (#2390)
+  'chronicle.',         // Life Chronicle knobs; config set refuses leaves outside CHRONICLE_CONFIG_KEYS (#5876)
   'self_upgrade.',      // v0.42 self-upgrade (mode, quiet_hours, state)
   // Queue admission control (per-name sub-keys):
   //   minions.coalesce_params.<name>, minions.ttl_waiting_hours.<name>,
@@ -1633,6 +1736,7 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   //   parser; numeric 0 disables.
   'minions.',
   'pace.',              // pace.mode + PACE_MODE_CONFIG_KEYS (src/core/pace-mode.ts)
+  'decide.',            // System One decide.* (validated by src/core/ai/decide/config.ts DECIDE_CONFIG_KEYS)
   'connectors.',        // chat-connectors: source_id, sync_floor_min, embed_kickoff_min_pages, doctor_stale_hours, <provider>.{auto_sync,last_sync_at,auth_error_at,watermark_iso} (no secrets — creds are file-plane)
 ];
 

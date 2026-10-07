@@ -14,6 +14,8 @@ import { withEnv } from './helpers/with-env.ts';
 import { submitPageMutation } from '../src/core/persistence/page-mutations.ts';
 import { submitRememberMutation } from '../src/core/persistence/memory-mutations.ts';
 import { runPersistenceAdministration } from '../src/core/persistence/administration.ts';
+import { reviewedWriterIntent } from './helpers/writer-admin-intent.ts';
+import { caught, envelopeFor, expectFunnelSuggestions } from './helpers/agent-envelope.ts';
 
 let diskEngine: PGLiteEngine;
 beforeAll(() => { diskEngine = new PGLiteEngine(); });
@@ -40,6 +42,15 @@ describe('source lifecycle CLI', () => {
     expect(() => parseSourceLifecycleArgs(['add', 'example', '--kind', 'google', '--account', 'account@example.invalid', '--access', 'command'])).toThrow('access');
   });
 
+  test('usage refusals name their own next step and offer the verb help', async () => {
+    expectFunnelSuggestions('src/commands/sources-lifecycle-args.ts', 'invalid', 20);
+    const misplaced = envelopeFor(await caught(() => parseSourceLifecycleArgs(['archive', 'example', '--force'])));
+    expect(misplaced).toMatchObject({ code: 'invalid_params', fix: { argv: ['gbrain', 'sources', 'archive', '--help'], next: 'run' } });
+    expect(misplaced.suggestion).toContain('Remove --force; sources archive accepts');
+    const githubOnly = envelopeFor(await caught(() => parseSourceLifecycleArgs(['add', 'example', '--repos', 'acme-example/notes'])));
+    expect(githubOnly.suggestion).toContain('Add --kind github for --repos');
+  });
+
   test('actual CLI source writes use the resident owner, replay after deletion, and share page request identity', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gbrain-source-cli-'));
     await withEnv({ GBRAIN_HOME: dir, GBRAIN_BRAIN_ID: 'host', GBRAIN_SOURCE: undefined, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
@@ -51,7 +62,7 @@ describe('source lifecycle CLI', () => {
         mkdirSync(join(dir, '.gbrain'), { recursive: true });
         writeFileSync(join(dir, '.gbrain', 'config.json'), JSON.stringify(config));
         const provider = await createPersistenceIpcProvider(engine, config);
-        await runPersistenceAdministration(engine, 'writer_activate', { confirm_quiesced: true });
+        await runPersistenceAdministration(engine, 'writer_activate', { confirm_quiesced: true, ...await reviewedWriterIntent(engine, 'writer_activate') });
         binding = await startPersistenceIpcServer(persistenceSocketPathForConfig(config)!, provider);
         const cli = async (args: string[]) => {
           const child = Bun.spawn([process.execPath, join(import.meta.dir, '../src/cli.ts'), 'sources', ...args, '--json'], {

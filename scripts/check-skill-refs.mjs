@@ -12,7 +12,8 @@
 // 2. DONOR REMNANTS (fail, allowlist-ratcheted): donor-workspace path prefixes
 //    must not appear outside files listed in scripts/skill-refs-allowlist.txt.
 //    The allowlist is a ratchet: it may shrink, never silently grow — add a
-//    line only with a review-visible commit.
+//    line only with a review-visible commit. An entry whose file has no donor
+//    hit (cleaned or deleted) fails as stale, so the list shrinks with it.
 // 3. CLI REFS (warn only): `gbrain <cmd>` tokens inside fenced code blocks are
 //    checked against the CLI's --tools-json surface. Warnings never fail the
 //    build; they exist so a skill body promising a nonexistent command is
@@ -88,6 +89,7 @@ const allowlist = new Set(
 const files = walk(SKILLS_DIR);
 const failures = [];
 const warnings = [];
+const allowlistHits = new Set();
 
 for (const file of files) {
   // Path identity is always "skills/<path-under-skills-dir>", independent of cwd
@@ -98,7 +100,9 @@ for (const file of files) {
   const text = readFileSync(file, 'utf8');
 
   // --- 2. donor remnants (skip migrations wholesale) ---
-  if (!inMigrations && !allowlist.has(rel)) {
+  if (!inMigrations && allowlist.has(rel)) {
+    if (DONOR_PREFIXES.some((prefix) => text.includes(prefix))) allowlistHits.add(rel);
+  } else if (!inMigrations) {
     for (const prefix of DONOR_PREFIXES) {
       if (text.includes(prefix)) {
         const line = text.split('\n').findIndex((l) => l.includes(prefix)) + 1;
@@ -211,6 +215,9 @@ if (RUN_CLI_REFS) {
     try {
       const cliSrc = readFileSync('src/cli.ts', 'utf8');
       for (const m of cliSrc.matchAll(/(?:command === |case )'([a-z][a-z0-9-]*)'/g)) known.add(m[1]);
+      // Refactor wave 1: CLI-only commands are records in the command table.
+      const tableSrc = readFileSync('src/cli/command-table.ts', 'utf8');
+      for (const m of tableSrc.matchAll(/\{ name: '([a-z][a-z0-9-]*)'/g)) known.add(m[1]);
     } catch {}
     // ops cliHints that --tools-json does not serialize: read them from source.
     // operations.ts is a façade post-peel — the op declarations (and their
@@ -242,6 +249,13 @@ if (RUN_CLI_REFS) {
       }
     }
   }
+}
+
+// The ratchet only shrinks if a clean file leaves the list: an entry whose
+// file no longer carries a donor prefix (or no longer exists) fails.
+for (const entry of allowlist) {
+  if (allowlistHits.has(entry)) continue;
+  failures.push(`[stale-allowlist] ${entry} — listed in ${ALLOWLIST_PATH} but has no donor-remnant hit. Why: an unused entry would let a future donor path in that file pass unreviewed. Fix: delete the line "${entry}" from ${ALLOWLIST_PATH}`);
 }
 
 for (const w of warnings) console.error(`WARN ${w}`);

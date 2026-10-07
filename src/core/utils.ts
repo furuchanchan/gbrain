@@ -222,7 +222,7 @@ export function rowToPage(row: Record<string, unknown>): Page {
     frontmatter: (typeof row.frontmatter === 'string' ? JSON.parse(row.frontmatter) : row.frontmatter) as Record<string, unknown>,
     content_hash: row.content_hash as string | undefined,
     ...(row.source_path !== undefined && { source_path: row.source_path as string | null }),
-    ...(row.knowledge_revision !== undefined && { knowledge_revision: String(row.knowledge_revision) }),
+    ...(row.knowledge_revision != null && { knowledge_revision: String(row.knowledge_revision) }),
     ...(row.text_projection_revision !== undefined && { text_projection_revision: row.text_projection_revision as string | null }),
     // v0.29 (column added in migration v40). Old brains pre-migration return undefined.
     emotional_weight: row.emotional_weight == null ? undefined : Number(row.emotional_weight),
@@ -374,6 +374,17 @@ export function isUndefinedTableError(error: unknown): boolean {
   if (code === '42P01') return true;
   const message = error instanceof Error ? error.message : String(error);
   return /relation .* does not exist|no such table|undefined table/i.test(message);
+}
+
+/**
+ * SQLSTATE 22007 / 22008: a date or timestamp the database could not parse.
+ * On a read path that is the caller's input, never a degraded result or a
+ * server fault: list_pages reports it as invalid_params and the hybrid
+ * lexical arms rethrow it instead of failing open.
+ */
+export function isDatetimeInputError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === '22007' || code === '22008';
 }
 
 const _warnedKeys = new Set<string>();

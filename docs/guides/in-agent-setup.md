@@ -116,6 +116,11 @@ separately, including the date and app version when visible.
 
 ## 4. Make memory useful
 
+Save durable preferences and facts with provenance; keep transient task state,
+credentials, configuration, and harness activation state local. See
+[memory boundaries](memory-boundaries.md) for the graph-maintenance, provider
+disclosure, and backup limits shared by every installation path.
+
 The generated skill is intentionally small: recall relevant context before
 personal or continuing-work questions; save requested durable facts with a
 source and date; preserve uncertainty; correct stale facts; verify the result.
@@ -174,7 +179,13 @@ chmod 700 /workspace/gbrain-backups
 
 Each output filename must be new. The command holds the real PGLite writer
 lock, takes a full database dump, checks the managed file inventory for changes,
-and publishes a checksummed archive with mode `0600`. A busy database or a
+and publishes a checksummed archive with POSIX mode `0600`. On Windows, built-in
+Windows PowerShell establishes and verifies access for the current owner and
+SYSTEM before writing backup payloads. It protects only newly created backup
+paths, never changes existing parent permissions, and refuses with
+`private_backup_path_unavailable` if enforcement is unavailable. Use a new private
+destination on a local filesystem with Windows ACL support and permitted
+Windows PowerShell. A busy database or a
 changing file fails the operation instead of publishing a success receipt.
 
 | Included | Excluded or inventoried for reconnection |
@@ -214,6 +225,14 @@ source, page, and known config paths; detaches external source/config paths; and
 cancels every unfinished background job in one transaction, preserving its
 previous status for inspection. Completed history remains. No worker, connector,
 sync, native routine, or paid operation starts.
+
+Archive paths are portable forward-slash names; traversal, reserved Windows
+names and ambiguous case or normalization collisions are rejected. Recognized
+nested paths are rebased using the recorded platform's path rules. Unrecognized
+legacy absolute page origins remain unchanged and appear in the reconnect
+inventory for review before sync. Remembered text is never rewritten to replace
+old paths, and restoration is not a promise that every historical origin is
+portable.
 
 External checkout and API sources keep their remembered pages available, but
 their live connector configuration is quarantined and sync is disabled. The
@@ -286,17 +305,19 @@ hosted access, also revoke that installation's grant on the host.
 
 ## Troubleshooting
 
-| Symptom | Action |
-| --- | --- |
-| Setup reports unowned state | Choose an empty root; use `--adopt` only after reviewing a compatible existing local brain |
-| Runtime executable disappeared | Run the retained helper or fetch it again with the same root |
-| Config is malformed or initialized memory is missing | Preserve the root; recover config or restore a full backup into a new root |
-| Generated instructions were edited | Preserve your edited file under a different name, then rerun repair and reattach your additions separately |
-| `pglite_busy` | Wait for the active command to finish and retry; stop a long-lived server through its owning process before using finite CLI mode |
-| Fresh conversation cannot recall the test | Inspect the native skill attachment and exact launcher invocation, then run explicit entity recall |
-| Backup says files changed | Pause the writer and create a new snapshot; do not treat the failed output as a backup |
-| Restore target already exists | Choose another absent root; restore never overwrites existing state |
-| A package or host URL is blocked | Complete the app's normal approval flow; preserve the error if access is denied |
+<a id="in-agent-troubleshooting"></a>
+
+| Symptom | Action | Who acts | Consent | Verify |
+| --- | --- | --- | --- | --- |
+| Setup reports unowned state | Choose an empty root; use `--adopt` only after reviewing a compatible existing local brain | agent, after the user agrees | none | the setup receipt |
+| Runtime executable disappeared | Run the retained helper or fetch it again with the same root | agent | none | the setup receipt |
+| Config is malformed or initialized memory is missing | Preserve the root; recover config or restore a full backup into a new root | agent, after the user agrees | `destructive` when restoring | the setup receipt |
+| Generated instructions were edited | Preserve your edited file under a different name, then rerun repair and reattach your additions separately | agent | none | the setup receipt |
+| `pglite_busy` | Wait for the active command to finish and retry; stop a long-lived server through its owning process before using finite CLI mode | agent | none | retry the read-only command |
+| Fresh conversation cannot recall the test | Inspect the native skill attachment and exact launcher invocation, then run explicit entity recall | user (reloads the native skill) | none | a `recall` from a fresh conversation |
+| Backup says files changed | Pause the writer and create a new snapshot; do not treat the failed output as a backup | agent | none | the new snapshot's verification output |
+| Restore target already exists | Choose another absent root; restore never overwrites existing state | agent | none | the restore output |
+| A package or host URL is blocked | Complete the app's normal approval flow; preserve the error if access is denied | user | none | retry after approval |
 
 ## What has been verified
 
