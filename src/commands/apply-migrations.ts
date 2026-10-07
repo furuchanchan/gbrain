@@ -683,22 +683,24 @@ async function runLockedMigrations(
   // preflight above created the table, so take the lease before orchestrating.
   await holdLock();
 
+  // #6089: gates BEFORE toRun is built — the reconcile:true shared-content
+  // migration keeps toRun non-empty, so a nested check could never fire.
+  if (schemaBehind) {
+    console.error(
+      'Schema migrations are behind. ' +
+      'Run `gbrain apply-migrations --yes` (or `--force-schema`) to apply them.',
+    );
+    fail('schema_behind', schemaBehindError(args));
+    return 1;
+  }
   const toRun: Migration[] = [...plan.partial, ...plan.pending, ...plan.pending_fresh_install, ...plan.applied.filter(migration => migration.reconcile)]
     .sort((left, right) => compareVersions(left.version, right.version));
   if (toRun.length === 0) {
-    if (schemaBehind) {
-      console.error(
-        'Orchestrator migrations are up to date, but schema migrations are behind. ' +
-        'Run `gbrain apply-migrations --yes` (or `--force-schema`) to apply them.',
-      );
-      fail('schema_behind', schemaBehindError(args));
-      return 1;
-    }
     console.log('All migrations up to date.');
     doc.status = 'up_to_date';
     return 0;
   }
-  if (!schemaBehind && plan.pending.length === 0 && plan.pending_fresh_install.length === 0 && plan.partial.length === 0) {
+  if (plan.pending.length === 0 && plan.pending_fresh_install.length === 0 && plan.partial.length === 0) {
     console.log('All migrations up to date. This covers orchestrator checkpoints only; host publication and client activation are being rechecked.');
   }
 
@@ -827,7 +829,6 @@ async function runLockedMigrations(
     }
   }
 
-  if (!failed && schemaBehind) doc.schema_behind = true;
   return failed ? 1 : undefined;
 }
 

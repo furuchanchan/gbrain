@@ -287,6 +287,19 @@ describe('resolveSchemaBehind (#1530)', () => {
   test('up-to-date branch exits 1 when schemaBehind (source shape)', async () => {
     const { readFileSync } = await import('fs');
     const src = readFileSync('src/commands/apply-migrations.ts', 'utf8');
-    expect(src).toMatch(/if \(schemaBehind\)[\s\S]{0,300}return 1;[\s\S]{0,120}All migrations up to date/);
+    expect(src).toMatch(/if \(schemaBehind\)[\s\S]{0,400}return 1;[\s\S]{0,400}All migrations up to date/);
+  });
+
+  // #6089: the reconcile:true shared-content migration keeps toRun non-empty
+  // forever, so the schema_behind gate must be evaluated BEFORE toRun is
+  // built — nested under `toRun.length === 0` it can never fire again.
+  test('schema_behind gate precedes toRun construction (#6089 source shape)', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/commands/apply-migrations.ts', 'utf8');
+    const gate = src.indexOf('if (schemaBehind)');
+    const toRun = src.indexOf('const toRun: Migration[]');
+    expect(gate).toBeGreaterThanOrEqual(0);
+    expect(toRun).toBeGreaterThanOrEqual(0);
+    expect(gate).toBeLessThan(toRun);
   });
 });

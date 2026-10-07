@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.112.0] - 2026-10-08
+
+**`gbrain apply-migrations` stops pretending everything is fine when the schema is behind.**
+
+A supervisor running `gbrain apply-migrations` as a start-up gate got exit 0 on a brain whose schema migrations were pending — the `schema_behind` check sat inside a branch that the always-reconciling shared-content migration made unreachable. The check now runs before orchestrator work is considered, so the command exits 1 and names `gbrain apply-migrations --yes` (or `--force-schema`) whenever the schema is behind without approval to apply it.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
