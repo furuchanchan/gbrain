@@ -4,6 +4,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { buildGitEnv } from '../git-remote.ts';
 import { pushStatusPathForRoot, readPushStatusForRoot } from '../workspace-push.ts';
 import { readManifest } from '../bootstrap/format.ts';
+import { isManagedFilesystemPath } from '../persistence/filesystem-guard.ts';
 import { BACKUP_VERIFICATION_MAX_AGE_MS, type BackupAssetVerdict } from './status-file.ts';
 
 export const BACKUP_REMOTE_PROBE_CAP = 8;
@@ -61,7 +62,14 @@ export async function assessBackupRepository(
   const asset: BackupAssetVerdict = { kind, id, state: 'unknown', fix_argv: null, verification: { state: 'not_checked' } };
   try {
     const failedPush = readPushStatusForRoot(root)?.ok === false;
-    if (failedPush && kind === 'bootstrap_workspace') asset.fix_argv = ['gbrain', 'sources', 'push', '--path', root];
+    // #6083: a managed canonical worktree refuses `sources push` with
+    // writer_coordinator_required — name the managed-writer probe instead
+    // of a fix command that cannot run.
+    if (failedPush && kind === 'bootstrap_workspace') {
+      asset.fix_argv = isManagedFilesystemPath(root)
+        ? ['gbrain', 'sources', 'writer', 'status', '--probe', '--json']
+        : ['gbrain', 'sources', 'push', '--path', root];
+    }
     let origin: string;
     try {
       origin = git(root, ['remote', 'get-url', 'origin']);

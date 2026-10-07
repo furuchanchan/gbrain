@@ -70,6 +70,75 @@ function pushHealthCheck(root: string | null | undefined, status: 'warn' | 'fail
   };
 }
 
+/**
+ * Does `root`'s tree hold work origin lacks? `dirty` covers both
+ * uncommitted changes and commits ahead of origin (a clean working tree
+ * with committed-but-unpushed commits is still unpushed work) — the same
+ * two-dimensional definition `treeNeedsPush` uses for the per-turn push
+ * [hook.ts]. `known` distinguishes "verified clean" from "couldn't
+ * verify" (no repo, or the git probe itself failed): unverified must NOT
+ * be treated as clean by callers.
+ */
+function probeWorkspacePushState(root: string): { dirty: boolean; known: boolean; ahead: number } {
+  let dirty = false, known = false, ahead = 0;
+  try {
+    const statusOut = withoutPhysicalRootMetadata(execFileSync('git', ['-C', root, 'status', '--porcelain'], {
+      stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+    }).toString());
+    const branch = execFileSync('git', ['-C', root, 'branch', '--show-current'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).toString().trim();
+    ahead = commitsAheadOfOrigin(root, branch);
+    if (statusOut.trim() !== '') {
+      dirty = true;
+      known = true;
+    } else {
+      const branchOut = branch;
+      if (branchOut) {
+        try {
+          const aheadOut = execFileSync(
+            'git', ['-C', root, 'rev-list', '--count', `origin/${branchOut}..HEAD`],
+            { stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 },
+          ).toString().trim();
+          dirty = (parseInt(aheadOut, 10) || 0) > 0;
+          known = true;
+        } catch {
+          // origin/<branch> doesn't resolve — e.g. never pushed. Any
+          // local commit on top of an empty tree still counts as
+          // needing a push (this fallback only applies to a NAMED
+          // branch with no upstream; see the detached-HEAD branch
+          // below for why the same trick is unsafe there). Mirrors
+          // treeNeedsPush's [hook.ts] existing "never pushed" fallback
+          // as-is: a topic branch already fully contained in another
+          // remote branch (e.g. origin/main) but never itself fetched
+          // as origin/<branch> can over-report as dirty here — an
+          // inherited, pre-existing edge case, left as a false FAIL
+          // rather than a false OK, which is the safer direction for
+          // this specific check.
+          const haveOut = execFileSync('git', ['-C', root, 'rev-list', '--count', 'HEAD'], {
+            stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+          }).toString().trim();
+          dirty = (parseInt(haveOut, 10) || 0) > 0;
+          known = true;
+        }
+      } else {
+        // Detached HEAD: `rev-list --count HEAD` counts ALL history
+        // reachable from HEAD, not just unpushed commits, so it is
+        // NOT a safe "never pushed" fallback here (unlike the named-
+        // branch case above) — it would flag any non-trivial repo as
+        // dirty even when HEAD is already contained by origin. If
+        // `@{u}` doesn't resolve, tree state is simply unverifiable.
+        try {
+          const aheadOut = execFileSync('git', ['-C', root, 'rev-list', '--count', '@{u}..HEAD'], {
+            stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+          }).toString().trim();
+          dirty = (parseInt(aheadOut, 10) || 0) > 0;
+          known = true;
+        } catch { known = false; }
+      }
+    }
+  } catch { dirty = false; known = false; }
+  return { dirty, known, ahead };
+}
+
 export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise<Check[]> {
   const checks: Check[] = [];
   let home: string;
@@ -281,8 +350,21 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
         const s = failing[0]!;
         const target = s.repoRoot ?? ws ?? undefined;
         const rest = failing.length > 1 ? ` [+${failing.length - 1} more workspace(s)]` : '';
-        checks.push(pushHealthCheck(target, 'warn', `last workspace push FAILED${target ? ` for ${target}` : ''} (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest}`,
-          ` — run \`gbrain sources push${target ? ` --path ${target}` : ''}\``));
+        // #6083: a recorded failure is superseded when the tree it concerns
+        // verifies clean against origin — e.g. the documented plain
+        // `git push` workaround succeeded after the failure was recorded
+        // (backup-check already supersedes last_push on a matching remote
+        // HEAD; here the local tracking ref + a clean tree is the probe).
+        // Only a single attributable root may supersede; an ambiguous set
+        // or an unverifiable/dirty tree keeps the warn.
+        const superseded = failing.length === 1 && target !== undefined
+          ? (() => { const p = probeWorkspacePushState(target); return p.known && !p.dirty; })()
+          : false;
+        checks.push(superseded
+          ? { name: 'bootstrap_push_health', status: 'ok',
+              message: `last workspace push FAILED for ${target} (${s.ts ?? 'unknown'}), but its tree verifies clean against origin — nothing left to push` }
+          : pushHealthCheck(target, 'warn', `last workspace push FAILED${target ? ` for ${target}` : ''} (${s.ts ?? 'unknown'}): ${s.reason ?? 'unknown'}${rest}`,
+            ` — run \`gbrain sources push${target ? ` --path ${target}` : ''}\``));
       } else {
         const stamps = pushStatuses.map((s) => Date.parse(s.ts ?? '')).filter((t) => Number.isFinite(t));
         const stalest = stamps.length > 0 ? Math.min(...stamps) : NaN;
@@ -298,70 +380,7 @@ export async function bootstrapDoctorChecks(engine: BrainEngine | null): Promise
         // downgraded to ok on the strength of a different root's clean tree.
         const targetMatchesWs =
           pushStatuses.length === 1 && (pushStatuses[0]!.repoRoot === undefined || pushStatuses[0]!.repoRoot === ws);
-        // `dirty` also covers commits ahead of origin (a clean working tree
-        // with committed-but-unpushed commits is still unpushed work) — the
-        // same two-dimensional definition `treeNeedsPush` uses for the
-        // per-turn push [hook.ts]. `known` distinguishes "verified clean"
-        // from "couldn't verify" (no receipt/workspace, or the git probe
-        // itself failed): unverified must NOT be treated as clean below.
-        let dirty = false, known = false, ahead = 0;
-        if (ws) {
-          try {
-            const statusOut = withoutPhysicalRootMetadata(execFileSync('git', ['-C', ws, 'status', '--porcelain'], {
-              stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
-            }).toString());
-            const branch = execFileSync('git', ['-C', ws, 'branch', '--show-current'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).toString().trim();
-            ahead = commitsAheadOfOrigin(ws, branch);
-            if (statusOut.trim() !== '') {
-              dirty = true;
-              known = true;
-            } else {
-              const branchOut = branch;
-              if (branchOut) {
-                try {
-                  const aheadOut = execFileSync(
-                    'git', ['-C', ws, 'rev-list', '--count', `origin/${branchOut}..HEAD`],
-                    { stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 },
-                  ).toString().trim();
-                  dirty = (parseInt(aheadOut, 10) || 0) > 0;
-                  known = true;
-                } catch {
-                  // origin/<branch> doesn't resolve — e.g. never pushed. Any
-                  // local commit on top of an empty tree still counts as
-                  // needing a push (this fallback only applies to a NAMED
-                  // branch with no upstream; see the detached-HEAD branch
-                  // below for why the same trick is unsafe there). Mirrors
-                  // treeNeedsPush's [hook.ts] existing "never pushed" fallback
-                  // as-is: a topic branch already fully contained in another
-                  // remote branch (e.g. origin/main) but never itself fetched
-                  // as origin/<branch> can over-report as dirty here — an
-                  // inherited, pre-existing edge case, left as a false FAIL
-                  // rather than a false OK, which is the safer direction for
-                  // this specific check.
-                  const haveOut = execFileSync('git', ['-C', ws, 'rev-list', '--count', 'HEAD'], {
-                    stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
-                  }).toString().trim();
-                  dirty = (parseInt(haveOut, 10) || 0) > 0;
-                  known = true;
-                }
-              } else {
-                // Detached HEAD: `rev-list --count HEAD` counts ALL history
-                // reachable from HEAD, not just unpushed commits, so it is
-                // NOT a safe "never pushed" fallback here (unlike the named-
-                // branch case above) — it would flag any non-trivial repo as
-                // dirty even when HEAD is already contained by origin. If
-                // `@{u}` doesn't resolve, tree state is simply unverifiable.
-                try {
-                  const aheadOut = execFileSync('git', ['-C', ws, 'rev-list', '--count', '@{u}..HEAD'], {
-                    stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
-                  }).toString().trim();
-                  dirty = (parseInt(aheadOut, 10) || 0) > 0;
-                  known = true;
-                } catch { known = false; }
-              }
-            }
-          } catch { dirty = false; known = false; }
-        }
+        const { dirty, known, ahead } = ws ? probeWorkspacePushState(ws) : { dirty: false, known: false, ahead: 0 };
         if (dirty && ws && Date.now() - Date.parse(pushStatusForWorkspace(pushStatuses, ws)?.ts ?? '') > PUSH_STALE_MS) { // #5432: this root's own receipt
           checks.push(pushHealthCheck(ws, 'fail', `last successful push ${pushStatusForWorkspace(pushStatuses, ws)?.ts} (>48h) with a DIRTY workspace tree — recent agent memory is unpushed [B4]`,
             `. Run \`gbrain sources push --path ${ws}\`.`));

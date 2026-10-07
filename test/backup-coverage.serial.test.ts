@@ -862,6 +862,29 @@ describe('computeBackupCoverage — bootstrap workspace failing push', () => {
     expect(s.totals.recoverable_repos).toBe(0);
   });
 
+  test('failing push on a MANAGED workspace → fix_argv names the writer probe, not a push the guard refuses (#6083)', async () => {
+    const ws = join(tmp, 'ws-managed');
+    mkdirSync(ws, { recursive: true });
+    // The same refusal marker `sources push` honors: a managed canonical
+    // worktree answers writer_coordinator_required, so `gbrain sources push`
+    // can never be the fix here.
+    writeFileSync(join(ws, '.gbrain-managed'), JSON.stringify({ version: 1, managed: true }));
+    writeReceipt(ws, { repo_url: 'https://example.com/acme-example/brain.git' });
+
+    const statusFile = pushStatusPathForRoot(ws);
+    mkdirSync(join(home(), 'bootstrap'), { recursive: true });
+    writeFileSync(
+      statusFile,
+      JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'push failed', repoRoot: ws }),
+    );
+
+    const s = await computeBackupCoverage(stubEngine({}), { localGitProbes: true });
+    const asset = s.assets.find((a) => a.kind === 'bootstrap_workspace');
+    expect(asset?.state).toBe('failing');
+    expect(asset?.fix_argv).toEqual(['gbrain', 'sources', 'writer', 'status', '--probe', '--json']);
+    expect(asset?.fix_argv?.join(' ')).not.toContain('sources push');
+  });
+
   test("a failing push status for a DIFFERENT root leaves the workspace ok", async () => {
     const ws = join(tmp, 'ws-healthy');
     mkdirSync(ws, { recursive: true });

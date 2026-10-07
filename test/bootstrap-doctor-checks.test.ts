@@ -374,6 +374,42 @@ describe('bootstrap_push_health', () => {
     expect(c?.message).toContain('push_failed');
   }, T);
 
+  test('last push FAILED + git-VERIFIED clean tree → ok (a matching origin supersedes the sticky FAIL, #6083)', async () => {
+    const { parent, home } = makeHome();
+    // The recorded failure is real, but the documented plain `git push`
+    // workaround succeeded afterwards: the tree is clean and origin/<branch>
+    // matches HEAD, so nothing is left to push.
+    const ws = makeWorkspace({ clean: true });
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'push_failed' }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('ok');
+    expect(c?.message).toContain('verifies clean');
+    expect(c?.message).toContain('nothing left to push');
+  }, T);
+
+  test('last push FAILED + workspace still AHEAD of origin → warn (the failure is not superseded)', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ ahead: true });
+    writeReceipt(home, ws);
+    writePushStatus(home, JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'push_failed' }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toContain('FAILED');
+  }, T);
+
+  test('two FAILED tracked workspaces → warn, never ok on one clean tree (ambiguous attribution, #6083)', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ clean: true });
+    writeReceipt(home, ws);
+    writePushStatusRoot(home, 'aaaaaaaaaaaa', JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'x', repoRoot: ws }));
+    writePushStatusRoot(home, 'bbbbbbbbbbbb', JSON.stringify({ ts: new Date().toISOString(), ok: false, reason: 'y', repoRoot: makeWorkspace() }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('warn');
+    expect(c?.message).toContain('FAILED');
+    expect(c?.message).toContain('+1 more');
+  }, T);
+
   test('>48h stale + no receipt/workspace (state unverified) → warn, not ok', async () => {
     const { parent, home } = makeHome();
     // No receipt → ws is null → tree state can't be probed at all.
@@ -847,9 +883,26 @@ describe('bootstrap_push_health on a managed canonical worktree (#5371)', () => 
     expect(c?.message).toContain('direct file edits here are not published');
   }, T);
 
-  test('a recorded managed-writer refusal stays warn and points at the writer status probe', async () => {
+  test('a recorded managed-writer refusal is superseded when the tree verifies clean (#6083)', async () => {
     const { parent, home } = makeHome();
+    // The recorded refusal is real (`sources push` genuinely cannot run on a
+    // managed worktree) — but once origin matches, e.g. after the documented
+    // plain `git push` workaround, nothing is left to push and the sticky
+    // FAIL must not keep warning (#6083 ask 2).
     const ws = makeWorkspace({ clean: true });
+    stamp(ws);
+    writePushStatus(home, JSON.stringify({
+      ts: new Date().toISOString(), ok: false, repoRoot: ws,
+      reason: 'writer_coordinator_required: This path belongs to the managed canonical worktree.',
+    }));
+    const c = byName(await run(parent), 'bootstrap_push_health');
+    expect(c?.status).toBe('ok');
+    expect(c?.message).toContain('nothing left to push');
+  }, T);
+
+  test('a recorded managed-writer refusal still warns while the tree is dirty, with the writer status probe', async () => {
+    const { parent, home } = makeHome();
+    const ws = makeWorkspace({ ahead: true });
     stamp(ws);
     writePushStatus(home, JSON.stringify({
       ts: new Date().toISOString(), ok: false, repoRoot: ws,
