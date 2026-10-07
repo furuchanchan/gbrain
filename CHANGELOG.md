@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.116.0] - 2026-10-08
+
+**A managed sync that raced with a plain page write no longer wedges forever on `idempotency_conflict`.** When the bulk-sync drain forms a group while another caller admits the group's head through the ordinary single-page path, the head's committed row lacks the `group` marker the group members carry, so every later pass rejected the re-admission with `idempotency_conflict` and the run stopped at the same page forever (autopilot died on the same error each cycle). Group admission now replays a member's existing row on either the group digest or the solo digest — the member intent minus the `group`/`after`/`lane` keys group formation adds — so a racing single-path admission is adopted into the group instead of conflicting, and a genuinely different intent still conflicts as before.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

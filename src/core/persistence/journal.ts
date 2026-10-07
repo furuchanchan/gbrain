@@ -130,6 +130,23 @@ export function assertReplayIntent(row: WriteRequest, expectedDigest: string): W
     'This request_id was already accepted with different intent.', 'Replay the original request, or allocate a new request_id for a new intent.');
   return row;
 }
+/**
+ * #6075: the keys group formation stamps on top of a member's single-path
+ * intent (`group` on every member, `after` on window groups, `lane` under
+ * lanes). A member admitted on the single-page path while its group was
+ * forming has a row whose digest lacks them; a group admission replays that
+ * row on the solo digest instead of wedging on idempotency_conflict.
+ */
+const GROUP_INTENT_KEYS = new Set(['group', 'after', 'lane']);
+export function assertGroupMemberReplay(
+  prior: WriteRequest,
+  item: { input: Pick<WriteAdmission, 'operation' | 'sourceId' | 'slug' | 'callerIntent'>; fingerprint: string },
+): WriteRequest {
+  if (prior.digest === item.fingerprint) return prior;
+  const solo: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(item.input.callerIntent)) if (!GROUP_INTENT_KEYS.has(key)) solo[key] = value;
+  return assertReplayIntent(prior, intentDigest({ ...item.input, callerIntent: solo }));
+}
 export async function admitWrite(engine: BrainEngine, input: WriteAdmission, overrides?: Partial<JournalLimits>): Promise<WriteRequest> {
   const { requestId, apply } = await prepareAdmission(engine, input, overrides);
   return retryWriteAdmission(requestId, remaining => engine.transaction(async tx => {
@@ -245,7 +262,7 @@ export async function admitWriteGroupInTransaction(tx: BrainEngine, inputs: Writ
     if ((prior.target_kind ?? 'page') !== 'page' || (prior.protocol_version ?? 1) !== 1) throw opError('idempotency_conflict', 'This request_id belongs to a different mutation target or protocol.',
       `Request ID ${item.requestId} was already accepted for a ${prior.target_kind ?? 'page'} write (protocol ${prior.protocol_version ?? 1}), so this page write was not admitted. Read the original request${prior.principal_kind === 'local_cli' ? ' with the command in fix' : ' with get_write_request'} if you meant to replay it; otherwise submit this write with a new request_id.`,
       prior.principal_kind === 'local_cli' ? { fix: requestInspectFix(prior) } : {});
-    assertReplayIntent(prior, item.fingerprint);
+    assertGroupMemberReplay(prior, item);
   }
   const fresh = items.filter(item => !priors.has(item.requestId));
   if (fresh.length) {
