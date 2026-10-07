@@ -362,3 +362,58 @@ describe('claudeProjectsDir honors CLAUDE_CONFIG_DIR', () => {
     });
   });
 });
+
+describe('marker-loss adoption (#6171)', () => {
+  function allHookEntries(settings: Record<string, unknown>): unknown[] {
+    const out: unknown[] = [];
+    const hooks = (settings.hooks ?? {}) as Record<string, unknown>;
+    for (const groups of Object.values(hooks)) {
+      if (!Array.isArray(groups)) continue;
+      for (const g of groups) {
+        const entries = (g as { hooks?: unknown[] }).hooks;
+        if (Array.isArray(entries)) out.push(...entries);
+      }
+    }
+    return out;
+  }
+
+  function stripMarker(path: string): void {
+    const settings = readJson(path) as { hooks: Record<string, Array<{ hooks: Array<Record<string, unknown>> }>> };
+    for (const groups of Object.values(settings.hooks)) {
+      for (const g of groups) for (const e of g.hooks) delete e[GBRAIN_HOOK_MARKER_KEY];
+    }
+    writeFileSync(path, JSON.stringify(settings, null, 2));
+  }
+
+  test('a re-run replaces unmarked gbrain hook entries instead of duplicating them', () => {
+    const dir = tmp();
+    const path = join(dir, 'settings.json');
+    const opts = { gbrainBin: BIN, env: { GBRAIN_SOURCE: 'default' }, marker: GBRAIN_HARNESS_MARKER_VALUE };
+
+    writeClaudeHooksAt(path, opts);
+    stripMarker(path); // a foreign rewrite dropped only _gbrain — the reporter's timeline
+    const res = writeClaudeHooksAt(path, opts);
+
+    const after = readJson(path);
+    expect(markerEntries(after, GBRAIN_HARNESS_MARKER_VALUE)).toBe(CLAUDE_HOOK_EVENTS.length);
+    expect(allHookEntries(after)).toHaveLength(CLAUDE_HOOK_EVENTS.length);
+    expect(res.notes.join('\n')).toContain('marker lost');
+  });
+
+  test('foreign unmarked hooks and other-marker gbrain entries are never adopted', () => {
+    const dir = tmp();
+    const path = join(dir, 'settings.json');
+    const opts = { gbrainBin: BIN, env: { GBRAIN_SOURCE: 'default' }, marker: GBRAIN_HARNESS_MARKER_VALUE };
+
+    writeClaudeHooksAt(path, { gbrainBin: BIN, env: { GBRAIN_SOURCE: 'ws' } }); // bootstrap-v1
+    const settings = readJson(path) as { hooks: Record<string, Array<{ hooks: unknown[] }>> };
+    settings.hooks.Stop!.push({ hooks: [{ type: 'command', command: 'env OTHER=1 acme-tool hook stop', timeout: 5 }] });
+    writeFileSync(path, JSON.stringify(settings, null, 2));
+
+    writeClaudeHooksAt(path, opts);
+    const after = readJson(path);
+    expect(markerEntries(after, GBRAIN_HOOK_MARKER_VALUE)).toBe(CLAUDE_HOOK_EVENTS.length);
+    expect(markerEntries(after, GBRAIN_HARNESS_MARKER_VALUE)).toBe(CLAUDE_HOOK_EVENTS.length);
+    expect(allHookEntries(after).some((e) => (e as { command?: string }).command === 'env OTHER=1 acme-tool hook stop')).toBe(true);
+  });
+});

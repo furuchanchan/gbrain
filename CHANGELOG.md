@@ -10,6 +10,23 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.106.0] - 2026-10-07
+
+**A re-run of `bootstrap harness` no longer duplicates hooks that lost their marker.**
+
+If something else rewrote your Claude Code settings file and dropped the
+`_gbrain` marker from gbrain's hook entries — the commands stay exactly as
+gbrain wrote them — the marker-keyed dedupe treated them as foreign, so the
+next `gbrain bootstrap harness` appended a second identical set (10 entries
+for 5 events, every event double-firing) and `bootstrap harness --remove`
+could never find the orphans. A re-run now adopts an unmarked entry whose
+command is still gbrain's own `gbrain hook <event>` invocation — matched on
+the invocation shape so a stale binary path or changed env values still
+match — and replaces it with the fresh marked entry. Foreign hooks and
+entries carrying another gbrain marker are never touched.
+
+*Contributor: Devin (Cognition) — closes #6171.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

@@ -313,6 +313,30 @@ function isForeignGbrainMarked(entry: unknown, marker: string): boolean {
 }
 
 /**
+ * #6171: an entry whose command is gbrain's own hook invocation for `event`
+ * but whose `_gbrain` marker was dropped by a foreign rewrite of the settings
+ * file (the reporter's entries lost only that key — Claude Code saving its
+ * own settings or a manual edit, writer unknown). The marker-keyed dedupe
+ * then treats it as foreign and a re-run appends a second identical entry
+ * that double-fires every event — and stays foreign to `--remove` forever.
+ *
+ * The match is on the INVOCATION SHAPE, never command-string equality (the
+ * dedupe's own rule): the command must END — modulo the portable `|| exit 0`
+ * suffix — with a `gbrain hook <subcommand>` invocation for THIS event, so a
+ * stale binary path or changed env values still match. Entries carrying the
+ * marker in any form are left to the marker-keyed logic above.
+ */
+function unmarkedGbrainHookFor(event: ClaudeHookEvent, entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+  if (typeof e.command !== 'string') return false;
+  if (e[GBRAIN_HOOK_MARKER_KEY] !== undefined) return false; // marker logic owns it
+  const cmd = e.command.trim().replace(/\s*\|\|\s*exit\s+0\s*$/, '');
+  const sub = CLAUDE_HOOK_SUBCOMMAND[event];
+  return new RegExp(`(?:^|[^\\w])gbrain'?\\s+hook\\s+${sub}\\s*$`).test(cmd);
+}
+
+/**
  * Strip marker-carrying command entries from one event's matcher-group array.
  * Groups EMPTIED by the removal are dropped; groups that were already empty
  * (foreign) survive untouched. Returns the surviving groups + removal count.
@@ -516,7 +540,32 @@ export function writeClaudeHooksAt(
       }
       groups = [];
     }
-    const kept = [...(groups as unknown[])];
+    const kept: unknown[] = [];
+
+    // #6171: adopt this event's marker-less orphans — an unmarked entry whose
+    // command is still gbrain's own hook invocation for this event is a prior
+    // install that lost only its marker. Replace it with the fresh marked
+    // entry below instead of appending a second identical entry that
+    // double-fires every event. Emptying a group drops its husk (same rule
+    // as stripOurEntries); non-array groups and foreign hooks never touch.
+    let adopted = 0;
+    for (const group of groups as unknown[]) {
+      const g = group as HookMatcherGroup;
+      if (!Array.isArray(g?.hooks)) {
+        kept.push(group);
+        continue;
+      }
+      const before = g.hooks!.length;
+      const filtered = g.hooks!.filter((h) => !unmarkedGbrainHookFor(event, h));
+      adopted += before - filtered.length;
+      if (filtered.length === 0 && before > 0) continue; // we emptied it → drop the husk
+      kept.push(filtered.length === before ? group : { ...g, hooks: filtered });
+    }
+    if (adopted > 0) {
+      notes.push(
+        `${event}: replaced ${adopted} unmarked gbrain hook entr${adopted === 1 ? 'y' : 'ies'} (marker lost — the new entry carries it again) [#6171]`,
+      );
+    }
 
     if (carried.has(event)) {
       notes.push(`${event}: carried by the committed .claude/settings.json — local entry skipped [D12]`);
