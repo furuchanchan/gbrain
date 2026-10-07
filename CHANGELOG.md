@@ -10,6 +10,23 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.110.0] - 2026-10-07
+
+**`pack_upgrade_available` no longer recommends an apply that cannot run.**
+
+On a managed brain, the onboard/doctor finding recommended a `unify-types`
+apply job that always dead-letters `writer_coordinator_required` — the
+retype deliberately refuses to run outside the persistence coordinator,
+with no alternate migration path. The finding is now topology-aware: on
+managed brains it says up front that coordinated apply is not supported
+yet, and the remediation step downgrades to the dry-run preview instead of
+recommending a doomed apply. Unmanaged brains keep the apply remediation.
+The schema-unify skill now documents the managed limitation, and stale
+`--allow-protected` references (a CLI flag that no longer exists) are
+removed from the handler header and test comments.
+
+*Contributor: Devin (Cognition) — closes #6196.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

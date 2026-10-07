@@ -103,6 +103,8 @@ gbrain jobs submit unify-types \
 
 The persistent worker daemon is Postgres-only. Without `--follow` on PGLite, the job sits queued forever and the migration never runs.
 
+**Managed brains:** `apply:true` is refused by design — the retype runs outside the persistence coordinator and the job dead-letters `writer_coordinator_required`. On a managed brain the only supported step is the dry-run preview (`apply:false`, the default); coordinated apply is not available yet.
+
 `apply` defaults to **false** (dry-run) per the handler contract, so
 `"apply":true` is required here or the job reports success having retyped
 nothing and left the active pack unflipped. Omit it to preview.

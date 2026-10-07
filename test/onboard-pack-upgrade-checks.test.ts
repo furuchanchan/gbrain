@@ -102,6 +102,22 @@ describe('checkPackUpgradeAvailable', () => {
       expect(rec.apply_policy).toBe('manual_only');
     });
   });
+
+  it('managed brains get a preview-only remediation that names the unsupported route (#6196)', async () => {
+    await withEnv({ GBRAIN_HOME: emptyHome(), GBRAIN_SCHEMA_PACK: undefined }, async () => {
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+      const result = await checkPackUpgradeAvailable(engine);
+      expect(result.check.name).toBe('pack_upgrade_available');
+      expect(result.check.status).toBe('warn');
+      expect(result.check.message).toContain('Managed brain');
+      expect(result.remediations.length).toBe(1);
+      expect(result.remediations[0].job).toBe('unify-types');
+      // Apply dead-letters on managed (writer_coordinator_required) —
+      // the step must preview instead of recommending a doomed apply.
+      expect(result.remediations[0].params.apply).toBe(false);
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    });
+  });
 });
 
 describe('checkTypeProliferation (D16 pack-aware ratio)', () => {

@@ -572,13 +572,22 @@ export async function checkPackUpgradeAvailable(
       };
     }
     const successor = successors[0];
+    // #6196: unify-types apply refuses on managed brains (retype runs
+    // outside the persistence coordinator), so the finding must not
+    // recommend a remediation that dead-letters. On managed the step
+    // downgrades to the dry-run preview and the message names the
+    // supported route up front.
+    const { managedPersistenceEnabled } = await import('../persistence/ownership.ts');
+    const managed = await managedPersistenceEnabled(engine).catch(() => false);
     return {
       check: {
         name: 'pack_upgrade_available',
         status: 'warn',
         message:
           `Active pack: ${active.identity}. Successor available: ${successor.identity}. ` +
-          `Preview: \`gbrain onboard --check --explain\``,
+          (managed
+            ? `Managed brain: coordinated apply is not supported yet — the unify-types apply job refuses (writer_coordinator_required). Preview the plan with \`gbrain onboard --check --explain\`.`
+            : `Preview: \`gbrain onboard --check --explain\``),
       },
       remediations: [
         makeRemediationStep({
@@ -586,7 +595,8 @@ export async function checkPackUpgradeAvailable(
           job: 'unify-types',
           // #1575: the worker defaults `apply` to false (dry-run); a
           // remediation step is a consented apply, so carry it explicitly.
-          params: { target_pack: successor.manifest.name, apply: true },
+          // #6196: on managed brains apply dead-letters — preview only.
+          params: { target_pack: successor.manifest.name, apply: !managed },
           severity: 'medium',
           est_seconds: 600,  // ~10min on 186K-page brain (production proxy)
           est_usd_cost: 0,   // pure SQL; no LLM spend
@@ -594,8 +604,11 @@ export async function checkPackUpgradeAvailable(
           rationale:
             `Pack upgrade ${active.manifest.name} → ${successor.manifest.name}; ` +
             `collapses redundant page types into the new canonical taxonomy. ` +
-            `Reversible via 72h soft-delete TTL on alias/link pages + ` +
-            `frontmatter.legacy_type preservation on retyped pages.`,
+            (managed
+              ? `Managed persistence: the apply job is refused by design (retype runs outside the ` +
+                `persistence coordinator); this step previews the plan only.`
+              : `Reversible via 72h soft-delete TTL on alias/link pages + ` +
+                `frontmatter.legacy_type preservation on retyped pages.`),
           status: 'remediable',
         }),
       ],
