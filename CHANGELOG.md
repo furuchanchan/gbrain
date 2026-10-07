@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.115.0] - 2026-10-13
+
+### Fixed
+
+- `gbrain sources reconcile <source> <slug>` no longer refuses a page whose canonical file shares its basename with more than 100 other pages in the source ("Too many candidate page origins to verify this exact file safely"). Chat-archive imports that keep one date-named file per channel per month (`channels/<name>/2015-09.md`) hit this cap on every page and left drifted pages with no supported repair path; the candidate check now pages through every basename-sharing page, and the realpath comparison that detects a genuine shared-file claim is unchanged. Closes #6222.
+
+*Contributor: Devin (Cognition) — closes #6222.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

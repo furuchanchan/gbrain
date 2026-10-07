@@ -631,17 +631,25 @@ test('genuine shared-file origins through explicit paths or URI fallback still r
   }
 }), 120_000);
 
-test('candidate-origin fanout stops at a bounded verification limit rather than scanning the source', async () => isolated(async engine => {
-  const f = await fixture(engine), uri = pathToFileURL(f.file).href;
+test('candidate-origin fanout pages through >100 basename-sharing origins and still catches a real collision', async () => isolated(async engine => {
+  const f = await fixture(engine);
   await engine.transaction(tx => withCoordinatedWrite(tx, [f.id], async () => {
-    await tx.executeRaw('UPDATE pages SET source_uri=$3 WHERE source_id=$1 AND slug=$2', [f.id, f.slug, uri]);
+    // Reporter shape: one file per directory with a shared date-named basename.
     await tx.executeRaw(`INSERT INTO pages(source_id,slug,type,title,compiled_truth,frontmatter,source_path,source_uri)
-      SELECT $1,'other/candidate-'||n,'note','Independent origin','Independent candidate '||n,'{}'::jsonb,'other/candidate-'||n||'.md',$2
-      FROM generate_series(1,101) n`, [f.id, uri]);
+      SELECT $1,'other/candidate-'||n,'note','Independent origin','Independent candidate '||n,'{}'::jsonb,'other/dir'||n||'/example.md',NULL
+      FROM generate_series(1,150) n`, [f.id]);
+  }, TEST_WRITE_ATTRIBUTION));
+  await local(engine, f.registration, async () => {
+    const { preview } = await runReconcilePreview(engine, { source_id: f.id, slug: f.slug });
+    expect(preview.status).toBe('ready');
+  });
+  await engine.transaction(tx => withCoordinatedWrite(tx, [f.id], async () => {
+    await tx.putPage('zzz/collision', { type: 'note', title: 'Collision', compiled_truth: 'Another page claiming the same file.',
+      frontmatter: {}, source_path: 'notes/example.md' }, { sourceId: f.id });
   }, TEST_WRITE_ATTRIBUTION));
   await local(engine, f.registration, async () => {
     await expect(runReconcilePreview(engine, { source_id: f.id, slug: f.slug })).rejects.toMatchObject({
-      code: 'source_changed', message: 'Too many candidate page origins to verify this exact file safely.' });
+      code: 'source_changed', message: 'Several pages claim the recorded canonical file.' });
     expect(await engine.executeRaw('SELECT id FROM persistence_requests WHERE source_id=$1', [f.id])).toHaveLength(0);
   });
 }), 120_000);
