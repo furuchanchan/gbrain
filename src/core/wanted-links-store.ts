@@ -6,6 +6,7 @@
 import type { BrainEngine } from './engine.ts';
 import { executeRawJsonb } from './sql-query.ts';
 import { sanitizeForJsonb } from './batch-rows.ts';
+import { validateSlug } from './utils.ts';
 
 export type WantedProducer = 'body' | 'frontmatter';
 
@@ -40,11 +41,27 @@ export async function replaceWantedLinks(
   replacement: WantedLinksReplacement,
 ): Promise<number> {
   if (!replacement.producers.length) return 0;
-  const rows = replacement.rows.filter(row => replacement.producers.includes(row.producer))
+  const parsed = replacement.rows.filter(row => replacement.producers.includes(row.producer))
     .map(row => ({ ...row, context: sanitizeForJsonb(row.context) }));
+  // #6228: a target that fails slug validation can never resolve — drop the
+  // row rather than letting lockPageKeys abort the whole extract run on it.
+  const rows = parsed.filter((row) => {
+    if (row.ref_kind !== 'slug') return true;
+    try { validateSlug(row.target_ref); return true; } catch { return false; }
+  });
   const slugTargets = rows.filter(row => row.ref_kind === 'slug')
     .map(row => ({ sourceId: row.target_source_id, slug: row.target_ref }));
-  if (slugTargets.length) await tx.lockPageKeys(slugTargets);
+  if (slugTargets.length) {
+    // #6225: a qualified link to an unregistered source has no incarnation
+    // to lock against and lockPageKeys throws for it. The wanted row stays
+    // (target_source_id carries no FK — a source registered later still
+    // resolves), it is just excluded from the lock set.
+    const ids = [...new Set(slugTargets.map(k => k.sourceId))];
+    const known = new Set((await tx.executeRaw<{ id: string }>(
+      'SELECT id FROM sources WHERE id = ANY($1::text[])', [ids])).map(r => r.id));
+    const lockable = slugTargets.filter(k => known.has(k.sourceId));
+    if (lockable.length) await tx.lockPageKeys(lockable);
+  }
   await executeRawJsonb(tx, `DELETE FROM wanted_links w
       WHERE w.origin_page_id = $1
         AND w.producer IN (SELECT jsonb_array_elements_text(($2::jsonb)->'producers'))

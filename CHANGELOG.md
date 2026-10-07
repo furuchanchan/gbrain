@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.112.0] - 2026-10-07
+
+**One bad link target no longer aborts a whole extract run.**
+
+A qualified wikilink to a source that isn't registered — `[[memory:12345]]`,
+the citation shape Cursor writes — reached `lockPageKeys` inside the extract
+transaction, which throws `Page source does not exist` and stopped link and
+timeline extraction for every page after it. The same guard threw
+`Invalid slug` on a malformed wikilink target harvested from code text
+(`[[ ... ]]` array literals). Now: a qualified link to an unregistered
+source keeps its wanted row (the column carries no FK — a source registered
+later still resolves) but is excluded from the lock set, and a target that
+fails slug validation is dropped like a missing target.
+
+*Contributor: Devin (Cognition) — closes #6225, #6228.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
