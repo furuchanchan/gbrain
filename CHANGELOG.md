@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.103.0] - 2026-10-08
+
+**`gbrain quarantine clear` now works on a managed brain, and quoting a bot-wall phrase no longer hides your page.** The command that `gbrain doctor` tells you to run after a false-positive quarantine refused with `writer_coordinator_required` on the very configuration that produced the advice, because it wrote through the legacy import path. It now publishes the marker-free page through the persistence coordinator — the same managed route `lint --fix` uses — so the sanity gate still re-runs and `--force` still clears anyway. And a page that quotes "Enable JavaScript and cookies" inside a comparison table, blockquote, code span or quotation marks is analysis about a bot wall, not scraped wall text: the junk-pattern check now evaluates the body with quoted regions blanked, so only the bare phrase still trips. `gbrain quarantine` also prints real help for each subcommand instead of a bare usage stub.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

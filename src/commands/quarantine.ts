@@ -13,6 +13,8 @@ import type { BrainEngine } from '../core/engine.ts';
 import { isQuarantined, getContentFlag, QUARANTINE_KEY, CONTENT_FLAG_KEY } from '../core/quarantine.ts';
 import { serializePageToMarkdown, serializeMarkdown } from '../core/markdown.ts';
 import { importFromContent } from '../core/import-file.ts';
+import { managedPersistenceEnabled } from '../core/persistence/ownership.ts';
+import { maintenancePreflight, publishMaintenancePage } from '../core/persistence/prepared-maintenance.ts';
 import type { PageType } from '../core/types.ts';
 
 export interface QuarantineRow {
@@ -224,12 +226,42 @@ async function runClear(engine: BrainEngine, args: string[]): Promise<void> {
   const prevNoSanity = process.env.GBRAIN_NO_SANITY;
   if (force) process.env.GBRAIN_NO_SANITY = '1';
   let result;
+  let managedClear = false;
   try {
-    result = await importFromContent(engine, slug, markdown, {
-      sourceId: page.source_id,
-      noEmbed,
-      forceRechunk: true,
-    });
+    // #6259: on a managed brain the legacy import path refuses with
+    // writer_coordinator_required — the exact command `doctor` prints as
+    // the quarantine remedy. Publish the marker-free page through the
+    // persistence coordinator instead (the same managed_maintenance_page
+    // route lint --fix uses); the sanity gate still runs inside the
+    // coordinated import, so a page that is still junk re-quarantines and
+    // --force still bypasses it.
+    const authority = await managedPersistenceEnabled(engine)
+      ? await maintenancePreflight(engine, page.source_id)
+      : null;
+    if (authority) {
+      const snapshot = await engine.readPageSnapshot(slug, { sourceId: page.source_id, includeDeleted: true });
+      if (!snapshot || snapshot.page.deleted_at) {
+        console.error(`Page "${slug}" in source "${page.source_id}" is deleted or unreadable — nothing was submitted.`);
+        process.exit(2);
+      }
+      await publishMaintenancePage(engine, authority, slug, markdown, { expectedRevision: snapshot.revision });
+      managedClear = true;
+      // Re-read the published page: the coordinator's gate may have
+      // re-applied the marker, and a content_flag survives separately.
+      const after = await engine.getPage(slug, { sourceId: page.source_id });
+      const afm = (after?.frontmatter ?? {}) as Record<string, unknown>;
+      result = {
+        quarantined: isQuarantined(afm),
+        flagged: getContentFlag(afm) !== null,
+        flag_reason: getContentFlag(afm)?.reason,
+      };
+    } else {
+      result = await importFromContent(engine, slug, markdown, {
+        sourceId: page.source_id,
+        noEmbed,
+        forceRechunk: true,
+      });
+    }
   } finally {
     if (force) {
       if (prevNoSanity === undefined) delete process.env.GBRAIN_NO_SANITY;
@@ -252,7 +284,7 @@ async function runClear(engine: BrainEngine, args: string[]): Promise<void> {
   console.log(
     `Cleared "${slug}".` +
     (result.flagged ? ` (now flagged: ${result.flag_reason} — searchable, agent warned.)` : '') +
-    (noEmbed ? ' Embedding skipped (--no-embed); run `gbrain embed --stale` to make it searchable.' : ''),
+    (noEmbed && !managedClear ? ' Embedding skipped (--no-embed); run `gbrain embed --stale` to make it searchable.' : ''),
   );
 }
 
@@ -361,8 +393,13 @@ export async function runQuarantine(engine: BrainEngine, args: string[]): Promis
     default:
       console.error('Usage: gbrain quarantine <list|clear|scan> [...]');
       console.error('  list  [--json] [--include-flagged]');
-      console.error('  clear <slug> [--force] [--no-embed] [--json]');
+      console.error('        List quarantined (hidden) pages; --include-flagged adds flagged (searchable, warned) pages.');
+      console.error('  clear <slug> [--source-id <id>] [--force] [--no-embed] [--json]');
+      console.error('        Re-publish a page without its quarantine/content_flag marker so it is searchable again.');
+      console.error('        The sanity gate re-runs on publish: --force clears anyway when the page still trips it.');
+      console.error('        On a managed brain the clear publishes through the persistence coordinator.');
       console.error('  scan  [--limit N] [--apply] [--no-embed] [--json]');
+      console.error('        Re-assess already-ingested pages; --apply sets the markers (dry-run reports only).');
       process.exit(2);
   }
 }

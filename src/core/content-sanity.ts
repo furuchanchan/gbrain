@@ -394,7 +394,22 @@ export function assessContentSanity(opts: {
   // regardless of body size. Lowercased once so substring matching
   // doesn't repeat the lowercase per literal.
   const bodyHead = body.slice(0, SCAN_HEAD_BYTES);
-  const bodyHeadLower = bodyHead.toLowerCase();
+  // #6259: quoting a challenge phrase is not BEING the challenge page — a
+  // page that quotes "Enable JavaScript and cookies" inside a comparison
+  // table, blockquote, code fence or quotation marks is analysis about
+  // the wall, not scraped wall text. Body-scoped patterns and literals
+  // test against the head slice with quoted/marked-up regions blanked
+  // (offset-preserving spaces), so a phrase that only ever appears inside
+  // quotes no longer matches. A scraped wall dump carries the phrase as
+  // bare text and still trips. The title check is unchanged: a page
+  // named exactly like the wall is itself the signal.
+  const bodyHeadProse = bodyHead
+    .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, m => ' '.repeat(m.length))
+    .replace(/`[^`\n]*`/g, m => ' '.repeat(m.length))
+    .replace(/^[^\S\n]*>[^\n]*/gm, m => ' '.repeat(m.length))
+    .replace(/"[^"\n]{1,1000}"/g, m => ' '.repeat(m.length))
+    .replace(/\u201c[^\u201d\n]{1,1000}\u201d/g, m => ' '.repeat(m.length));
+  const bodyHeadProseLower = bodyHeadProse.toLowerCase();
   // Defensive coercion (issue #1939 / #1883 / #1658): this is a pure exported fn;
   // lint.ts and import-file both pass `parsed.title`, which a malformed YAML
   // date/number title could make non-string. Never throw on a bad title.
@@ -411,7 +426,7 @@ export function assessContentSanity(opts: {
       if (p.pattern.test(title)) matched = true;
     }
     if (!matched && (scope === 'body' || scope === 'both')) {
-      if (p.pattern.test(bodyHead)) matched = true;
+      if (p.pattern.test(bodyHeadProse)) matched = true;
     }
     if (matched) junk_pattern_matches.push(p.name);
   }
@@ -427,7 +442,7 @@ export function assessContentSanity(opts: {
         if (titleLower.includes(needle)) matched = true;
       }
       if (!matched && (scope === 'body' || scope === 'both')) {
-        if (bodyHeadLower.includes(needle)) matched = true;
+        if (bodyHeadProseLower.includes(needle)) matched = true;
       }
       if (matched) literal_substring_matches.push(lit.name);
     }
