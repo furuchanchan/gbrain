@@ -242,7 +242,11 @@ export async function preparePageAdmission(ctx: OperationContext,
     }
     if (typeof intent.capture_path === 'string') intent.capture_file_hash = sha256(p.content);
   }
-  validatePageSlug(slug);
+  // #6212 — validate on create, not on delete: a legacy row whose slug no
+  // longer matches the current grammar (e.g. `people/jane doe` written by an
+  // older version) must still be deletable. restore_page re-creates a file,
+  // so it keeps the check; delete only ever removes.
+  if (input.operation !== 'delete_page') validatePageSlug(slug);
   enforceClientSlugFence(ctx, slug, input.operation);
   enforceSubagentSlugFence(ctx, slug, input.operation);
   // Preserve same-source diagnostics for new timeline writes without making

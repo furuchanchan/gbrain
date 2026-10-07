@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.108.0] - 2026-10-08
+
+**`gbrain delete` (and MCP `delete_page`) accepts a legacy slug that no longer matches the current grammar.** Brains written by older versions can hold rows like `people/jane doe` — created before the slug grammar tightened — which every supported path (delete, purge, dry-run) rejected with `invalid_params`, leaving them flagged by doctor and reconcile but impossible to remove. The slug grammar now validates on create, not on delete: `delete_page` skips the check end-to-end (client/subagent slug fences still apply), while `put_page`, `restore_page` and `capture` keep it since they create files. Options 2 and 3 from the issue (a `repair slugs` kind, a doctor fix) remain open follow-ups.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

@@ -386,7 +386,7 @@ const delete_page: Operation = {
     assertPurgeParams(p, ctx.remote);
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {
-        validatePageSlug(p.slug);
+        // #6212 — no slug grammar check on delete; the fences still apply.
         enforceClientSlugFence(ctx, p.slug, 'delete_page');
         enforceSubagentSlugFence(ctx, p.slug, 'delete_page');
       }
