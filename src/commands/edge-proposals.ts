@@ -17,6 +17,8 @@ import type { BrainEngine } from '../core/engine.ts';
 import { applyEdgeProposal, rejectEdgeProposal, undoEdgeProposal, DREAM_TIMELINE_SOURCE } from '../core/cycle/edge-contradictions.ts';
 import { isCalendarDate, dateKey } from '../core/link-validity.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
+import { intFlagValue } from '../cli/flag-values.ts';
+import { parseFlag } from './code-scope.ts';
 
 const STATUSES = ['proposed', 'applied', 'rejected', 'undone', 'stale', 'reverted_by_user', 'undated_unresolved', 'ambiguous_same_date', 'compatible', 'error'];
 
@@ -59,7 +61,7 @@ function describe(r: Row): string {
 export async function runEdgeProposals(engine: BrainEngine, args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const json = rest.includes('--json');
-  const flag = (name: string) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : undefined; };
+  const flag = (name: string) => parseFlag(rest, name);
   const id = Number(rest.find(a => /^\d+$/.test(a)));
   const out = (value: unknown, text: string) => console.log(json ? JSON.stringify(value, null, 2) : text);
 
@@ -67,8 +69,14 @@ export async function runEdgeProposals(engine: BrainEngine, args: string[]): Pro
   if (sub === 'list') {
     const status = flag('--status');
     if (status && status !== 'all' && !STATUSES.includes(status)) { console.error(`Unknown status ${status}. One of: ${STATUSES.join(', ')}, all`); setCliExitVerdict(2); return; }
-    const list = status === 'all' ? await rows(engine, 'TRUE', [], Number(flag('--limit') ?? 50))
-      : await rows(engine, 'p.status = ANY($1::text[])', [status ? [status] : ['proposed', 'undated_unresolved']], Number(flag('--limit') ?? 50));
+    // #6249: contract D4 — a present --limit must be a positive integer in
+    // either spelling (`--limit 20`, `--limit=20`); a malformed, out-of-range
+    // or missing value is a usage error, never `LIMIT NaN` reaching the
+    // database as a raw column error. The 1000 cap stays.
+    const hasLimit = rest.includes('--limit') || rest.some(a => a.startsWith('--limit='));
+    const limit = hasLimit ? intFlagValue(flag('--limit'), '--limit', { min: 1, max: 1000, example: 50 }) : 50;
+    const list = status === 'all' ? await rows(engine, 'TRUE', [], limit)
+      : await rows(engine, 'p.status = ANY($1::text[])', [status ? [status] : ['proposed', 'undated_unresolved']], limit);
     out(list, list.length ? list.map(describe).join('\n') + '\n\nNext: gbrain edge-proposals accept <id> | reject <id>' : 'No open relationship proposals.');
     return;
   }
