@@ -111,7 +111,7 @@ function printHelp(): void {
   console.log(`gbrain schema — active schema pack management
 
 Inspection:
-  active                  Show resolved pack + which tier provided it
+  active [--source <id>]  Show resolved pack + which tier provided it
   list                    List installed packs (bundled + ~/.gbrain/schema-packs/)
   show [<pack>]           Pretty-print a manifest (default: active pack)
   validate [<pack>]       Validate manifest shape against the v1 schema
@@ -197,13 +197,43 @@ async function readDbSchemaPackConfig(cfg: GBrainConfig | null): Promise<string 
   }
 }
 
-async function runActive(_args: string[]): Promise<void> {
+async function runActive(args: string[]): Promise<void> {
+  const { source } = parseFlags(args);
   const cfg = loadConfig();
-  const dbConfig = await readDbSchemaPackConfig(cfg);
-  const resolution = resolveActivePackNameOnly({ cfg, remote: false, dbConfig });
-  const pack = await loadActivePack({ cfg, remote: false, dbConfig });
-  console.log(`Active pack: ${pack.manifest.name} v${pack.manifest.version}`);
+  // Same best-effort/gating contract as readDbSchemaPackConfig, plus the
+  // per-source key schema_pack.source.<id> when --source is given, and a
+  // reachability flag so an unreadable DB is surfaced instead of silently
+  // reporting file-plane config (#6090).
+  let dbConfig: string | undefined;
+  let perSourceDb: Map<string, string> | undefined;
+  let dbRead = false;
+  if (cfg) {
+    try {
+      const read = await withConnectedEngine(async (engine) => {
+        const perSource = source
+          ? (await engine.getConfig(`schema_pack.source.${source}`))?.trim() || undefined
+          : undefined;
+        return { brainWide: await readDbSchemaPack(engine), perSource };
+      });
+      dbRead = true;
+      dbConfig = read.brainWide;
+      if (source && read.perSource) perSourceDb = new Map([[source, read.perSource]]);
+    } catch {
+      // No connectable DB → file/env resolution stands.
+    }
+  }
+  const input = { cfg, remote: false as const, dbConfig, sourceId: source, perSourceDb };
+  const resolution = resolveActivePackNameOnly(input);
+  const pack = await loadActivePack(input);
+  if (source) {
+    console.log(`Active pack for source '${source}': ${pack.manifest.name} v${pack.manifest.version}`);
+  } else {
+    console.log(`Active pack: ${pack.manifest.name} v${pack.manifest.version}`);
+  }
   console.log(`Source: ${resolution.source}`);
+  if (cfg && !dbRead) {
+    console.log('Note: database unreadable — reporting file/env-plane config only.');
+  }
   console.log(`Pack identity: ${pack.identity}`);
   console.log(`Page types: ${pack.manifest.page_types.length}`);
   console.log(`Link verbs: ${pack.manifest.link_types.length}`);
