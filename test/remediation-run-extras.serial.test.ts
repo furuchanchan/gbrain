@@ -112,8 +112,10 @@ describe('runRemediation extraRemediations threading', () => {
   test('E3: an unreachable score target still runs the free job steps and skips only the paid ones', async () => {
     const { runRemediation } = await import('../src/core/remediation/run.ts');
     submittedJobs.length = 0;
+    // A PAID but auto-submittable job name — a manual_only name would now
+    // route to manual_only_steps instead of job_steps_skipped.
     const paid = makeRemediationStep({
-      id: 'onboard.paid_step', job: 'extract-takes-from-pages', params: {}, severity: 'medium', est_seconds: 5,
+      id: 'onboard.paid_step', job: 'synthesize', params: {}, severity: 'medium', est_seconds: 5,
       est_usd_cost: 2, rationale: 'synthetic paid extra', status: 'remediable',
     });
     let unreachable = false;
@@ -133,6 +135,57 @@ describe('runRemediation extraRemediations threading', () => {
     expect(result.submitted.map((s) => s.id)).toEqual(['onboard.free_step']);
     expect(result.job_steps_skipped).toMatchObject({ reason: 'target_unreachable', target: 101, skipped: ['onboard.paid_step'] });
     expect(submittedJobs.map((j) => j.name)).toEqual(['extract-ner']);
+  });
+
+  test('manual_only extras are never submitted and report their explicit command', async () => {
+    // #6248: `onboard --auto` used to submit every remediation in the plan,
+    // including manual_only jobs — unify-types flipped schema_pack and the
+    // paid takes bootstrap ran, both consenting user decisions.
+    const { runRemediation } = await import('../src/core/remediation/run.ts');
+    submittedJobs.length = 0;
+    const manual = makeRemediationStep({
+      id: 'onboard.pack_upgrade', job: 'unify-types', params: { apply: true, target_pack: 'gbrain-base-v2' },
+      severity: 'medium', est_seconds: 300, est_usd_cost: 0, rationale: 'pack upgrade available', status: 'remediable',
+    });
+    const result = await runRemediation(
+      engine,
+      { targetScore: 1, extraRemediations: [extra('onboard.free_step', 'extract-ner'), manual], maxJobs: 5 },
+    );
+    // The auto-submittable extra still runs; the manual_only job never
+    // reaches the queue, and the result names it + the explicit command.
+    expect(result.submitted.map((s) => s.id)).toEqual(['onboard.free_step']);
+    expect(submittedJobs.map((j) => j.name)).toEqual(['extract-ner']);
+    expect(result.manual_only_steps).toEqual([{
+      id: 'onboard.pack_upgrade',
+      job: 'unify-types',
+      submit: `gbrain jobs submit unify-types --params '{"apply":true,"target_pack":"gbrain-base-v2"}'`,
+    }]);
+  });
+
+  test('manual_only reporting survives the mid-run recheck', async () => {
+    // Same refusal must hold after the D7 recheck re-plans recs — a
+    // manual_only step that outlives step 1 must not resurface as
+    // submittable on the refreshed list.
+    const { runRemediation } = await import('../src/core/remediation/run.ts');
+    submittedJobs.length = 0;
+    const manual = makeRemediationStep({
+      id: 'onboard.takes_bootstrap', job: 'extract-takes-from-pages', params: {},
+      severity: 'medium', est_seconds: 600, est_usd_cost: 5, rationale: 'paid takes bootstrap', status: 'remediable',
+    });
+    const result = await runRemediation(
+      engine,
+      {
+        targetScore: 1,
+        extraRemediations: [
+          extra('onboard.a', 'extract-ner'),
+          extra('onboard.b', 'extract-timeline-from-meetings'),
+          manual,
+        ],
+        maxJobs: 5,
+      },
+    );
+    expect(submittedJobs.map((j) => j.name).sort()).toEqual(['extract-ner', 'extract-timeline-from-meetings']);
+    expect(result.manual_only_steps?.map((s) => s.job)).toEqual(['extract-takes-from-pages']);
   });
 
   test('E3: with no worker serving the queue, an unreachable target runs no job step (it would only time out)', async () => {

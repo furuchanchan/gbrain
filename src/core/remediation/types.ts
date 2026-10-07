@@ -154,6 +154,12 @@ export interface RemediationResult {
    * ids) were not run; free job steps and included repair steps still ran.
    */
   job_steps_skipped?: { reason: 'target_unreachable'; target: number; ceiling: number; skipped?: string[] };
+  /**
+   * Remediable steps the run refused to submit because their job is
+   * manual_only — a consenting user decision, never an automatic
+   * submission. `submit` is the explicit command the user can run.
+   */
+  manual_only_steps?: { id: string; job: string; submit: string }[];
   /** Set when `--resume` refused (a checkpoint for another brain). */
   resume_refused?: { reason: string; checkpoint_brain_id: string; brain_id: string; plan_hash: string };
   /** Repair steps the run applied or refused (only when `repairs` was passed). */

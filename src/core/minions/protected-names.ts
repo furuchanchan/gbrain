@@ -73,3 +73,29 @@ export const PROTECTED_JOB_NAMES: ReadonlySet<string> = new Set([
 export function isProtectedJobName(name: string): boolean {
   return PROTECTED_JOB_NAMES.has(name.trim());
 }
+
+/**
+ * Protected jobs that additionally stay manual_only: no automatic run may
+ * submit them, even one that already passes the protected-submit gate. The
+ * render tier (`toOnboardRecommendation`) reports them as manual_only, and
+ * the remediation runner refuses to enqueue them at all — the user must run
+ * the job explicitly (`gbrain jobs submit <name>`).
+ *
+ * Membership criteria: one-time consenting decisions OR LLM-bearing
+ * handlers without a mature eval. Adding a new entry here is a load-
+ * bearing choice — confirm the apply_policy posture before commit.
+ */
+export const MANUAL_ONLY_JOB_NAMES: ReadonlySet<string> = new Set([
+  // v0.41.18.0 (A12, A24): takes-bootstrap classifier stays manual_only
+  // until the 100+-case eval lands.
+  'extract-takes-from-pages',
+  // v0.42 (D17): pack-upgrade migration. Taxonomy change is a one-time
+  // consenting user decision; automatic runs must not auto-flip the
+  // schema pack.
+  'unify-types',
+]);
+
+/** Check a job name against the manual-only set. Normalizes whitespace first. */
+export function isManualOnlyJobName(name: string): boolean {
+  return MANUAL_ONLY_JOB_NAMES.has(name.trim());
+}

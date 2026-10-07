@@ -13,6 +13,7 @@
 import crypto from 'crypto';
 import type { BrainEngine } from '../engine.ts';
 import { queueWorkerAlive } from '../minions/no-worker.ts';
+import { isManualOnlyJobName } from '../minions/protected-names.ts';
 import {
   computeRecommendations,
 } from '../brain-score-recommendations.ts';
@@ -49,14 +50,25 @@ import type {
  * timeout, so every job step is skipped as before.
  */
 function planJobSteps(planned: RemediationStep[], manifest: { job_ids: string[] } | undefined, unreachable?: { target: number; ceiling: number }) {
-  const remediable = planned.filter((r) => r.status === 'remediable' && (!manifest || manifest.job_ids.includes(r.id)));
+  // Manual-only jobs are consenting user decisions (pack migration, paid
+  // takes bootstrap): an automatic run never submits them, it reports
+  // them with the explicit command the user can run.
+  const manualOnly = planned.filter((r) => r.status === 'remediable' && isManualOnlyJobName(r.job));
+  const remediable = planned.filter((r) => r.status === 'remediable' && !isManualOnlyJobName(r.job) && (!manifest || manifest.job_ids.includes(r.id)));
   const workerRuns = !unreachable || queueWorkerAlive('default') === true;
   const freeRecs = workerRuns ? remediable.filter((r) => (r.est_usd_cost ?? 0) === 0) : [];
-  if (!unreachable) return { recs: remediable, freeRecs, jobStepsSkipped: undefined };
+  if (!unreachable) return { recs: remediable, freeRecs, jobStepsSkipped: undefined, manualOnly };
   return {
     recs: freeRecs, freeRecs,
     jobStepsSkipped: { reason: 'target_unreachable' as const, ...unreachable, skipped: remediable.filter((r) => !freeRecs.includes(r)).map((r) => r.id) },
+    manualOnly,
   };
+}
+
+/** The explicit submit command reported for a step an automatic run refused to enqueue. */
+function manualOnlySubmitCommand(step: RemediationStep): string {
+  const params = Object.keys(step.params ?? {}).length > 0 ? ` --params '${JSON.stringify(step.params)}'` : '';
+  return `gbrain jobs submit ${step.job}${params}`;
 }
 
 /**
@@ -171,12 +183,16 @@ export async function runRemediation(
   // Embeddings a budget stop left behind after re-sealing; the re-sealed pages no longer show up in a repair plan.
   let pendingEmbedSources = includeRepairs && manifest ? [...(cp?.pending_embed_sources ?? [])] : [];
   const initialHealth = await engine.getHealth();
-  const { freeRecs, jobStepsSkipped, recs: plannedJobSteps } = planJobSteps(computeRecommendations(initialHealth, ctx, extraRemediations), manifest,
+  const { freeRecs, jobStepsSkipped, recs: plannedJobSteps, manualOnly } = planJobSteps(computeRecommendations(initialHealth, ctx, extraRemediations), manifest,
     initialPlan.target_unreachable ? { target: targetScore, ceiling: initialPlan.max_reachable_score } : undefined);
+  const manualOnlySteps = manualOnly.length > 0
+    ? manualOnly.map((r) => ({ id: r.id, job: r.job, submit: manualOnlySubmitCommand(r) }))
+    : undefined;
   if (jobStepsSkipped && freeRecs.length === 0 && !(includeRepairs && (repairSteps.length || pendingEmbedSources.length))) {
     hooks.onTargetUnreachable?.(targetScore, initialPlan.max_reachable_score);
     return synthetic(initialPlan.brain_score_current, {
       target_unreachable: { target: targetScore, ceiling: initialPlan.max_reachable_score },
+      ...(manualOnlySteps ? { manual_only_steps: manualOnlySteps } : {}),
       ...(repairs && repairSteps.length ? { repairs: [], repairs_skipped: repairSteps } : {}),
     });
   }
@@ -190,6 +206,7 @@ export async function runRemediation(
       ...synthetic(initialHealth.brain_score),
       target_reached: initialHealth.brain_score >= targetScore,
       ...(jobStepsSkipped ? { job_steps_skipped: jobStepsSkipped } : {}),
+      ...(manualOnlySteps ? { manual_only_steps: manualOnlySteps } : {}),
       ...(repairs ? { repairs: [], repairs_skipped: skippedRepairs } : {}),
     };
   }
@@ -457,7 +474,7 @@ export async function runRemediation(
       // would resubmit completed extras every iteration, forever.
       const pendingExtras = extraRemediations.filter((r) => !attemptedIds.has(r.id));
       recs = computeRecommendations(freshHealth, ctx, pendingExtras)
-        .filter((r) => r.status === 'remediable' && !attemptedIds.has(r.id) && (!manifest || manifest.job_ids.includes(r.id))
+        .filter((r) => r.status === 'remediable' && !attemptedIds.has(r.id) && !isManualOnlyJobName(r.job) && (!manifest || manifest.job_ids.includes(r.id))
           && (!jobStepsSkipped || (r.est_usd_cost ?? 0) === 0));
     }
   };
@@ -516,6 +533,7 @@ export async function runRemediation(
     aborted_count: abortedIds.size,
     budget_exhausted: budgetAbort,
     ...(jobStepsSkipped ? { job_steps_skipped: jobStepsSkipped } : {}),
+    ...(manualOnlySteps ? { manual_only_steps: manualOnlySteps } : {}),
     ...(repairs ? {
       repairs: repairResults, repairs_skipped: skippedRepairs,
       budget: { max_usd: maxUsd ?? null, spent_usd: settledUsd(), include_repairs: includeRepairs, plan_hash: planHash },

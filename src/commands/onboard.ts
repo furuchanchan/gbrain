@@ -202,10 +202,11 @@ export async function runOnboard(engine: BrainEngine, args: string[]): Promise<v
 
   if (jsonOutput) {
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-  } else if (result.submitted.length > 0) {
+  } else if (result.submitted.length > 0 || result.manual_only_steps?.length) {
     process.stdout.write(
       `\nBrain score: ${result.brain_score_initial} → ${result.brain_score_final} (target ${targetScore})\n` +
-      `Submitted: ${result.submitted.length} job(s), ${result.aborted_count} aborted/failed\n`,
+      `Submitted: ${result.submitted.length} job(s), ${result.aborted_count} aborted/failed\n` +
+      (result.manual_only_steps?.map((s) => `Manual-only, not run (relay to user, do not run): ${s.submit}\n`).join('') ?? ''),
     );
   }
 
