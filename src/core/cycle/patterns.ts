@@ -136,6 +136,44 @@ export function clampSubagentBudgets(
   };
 }
 
+/**
+ * #2781 + #6177: resolve the child's budget gate in one place — the clamp to
+ * remaining parent-job time, then the recent-run-time guard. Returns the
+ * clamped budgets, or the skip result the phase returns.
+ */
+async function resolvePatternsBudget(
+  engine: BrainEngine,
+  config: { subagentTimeoutMs: number; subagentWaitTimeoutMs: number },
+  deadlineAtMs: number | null | undefined,
+  lastRunKey: string,
+): Promise<{ timeoutMs: number; waitTimeoutMs: number } | { skip: PhaseResult }> {
+  const budgets = clampSubagentBudgets(config, deadlineAtMs, Date.now());
+  if (budgets === null) {
+    return { skip: skipped(
+      'insufficient_cycle_budget',
+      `remaining cycle budget under ${Math.round(MIN_PATTERNS_SUBAGENT_BUDGET_MS / 1000)}s ` +
+      `(reserve ${Math.round(CYCLE_DEADLINE_RESERVE_MS / 1000)}s); next cycle retries with a fresh budget`,
+    ) };
+  }
+  // #6177: a patterns run that outgrew the clamped budget still submitted
+  // and died at the timeout after spending its tokens. The phase records
+  // its own wall time on every terminal outcome; when the budget this run
+  // would get is below that measured time, skip honestly instead of
+  // submitting a child that cannot finish. Absent/unparseable stamp fails
+  // open (first run or direct `gbrain dream` past data loss).
+  const lastRunMs = Number(await engine.getConfig(lastRunKey));
+  if (Number.isFinite(lastRunMs) && lastRunMs > 0 && budgets.timeoutMs < lastRunMs) {
+    return { skip: skipped(
+      'insufficient_cycle_budget',
+      `clamped subagent budget ${Math.round(budgets.timeoutMs / 1000)}s is below this phase's recent run time ` +
+      `(${Math.round(lastRunMs / 1000)}s) — a submitted run would die mid-flight; ` +
+      'raise autopilot.global_maintenance_timeout_ms or dream.patterns.subagent_timeout_ms, ' +
+      'or run `gbrain dream --phase patterns` directly',
+    ) };
+  }
+  return budgets;
+}
+
 export async function runPhasePatterns(
   engine: BrainEngine,
   opts: PatternsPhaseOpts,
@@ -159,6 +197,7 @@ export async function runPhasePatterns(
     const [source] = await managedPersistenceEnabled(engine)
       ? await engine.executeRaw<{ incarnation: string }>('SELECT incarnation FROM sources WHERE id=$1', [opts.sourceId ?? 'default']) : [];
     const evidenceKey = source ? `${LAST_EVIDENCE_KEY}.${opts.sourceId ?? 'default'}.${source.incarnation}` : LAST_EVIDENCE_KEY;
+    const lastRunKey = source ? `${LAST_RUN_KEY}.${opts.sourceId ?? 'default'}.${source.incarnation}` : LAST_RUN_KEY;
 
     // Gather reflections within lookback window.
     const reflections = await gatherReflections(engine, config.lookbackDays, config.sourceSlugPrefix, opts.sourceId ?? 'default');
@@ -229,18 +268,11 @@ export async function runPhasePatterns(
       allowedSlugPrefixes.push(outputGlob);
     }
 
-    // #2781: budget the subagent from the REMAINING parent-job time, not
-    // the fixed config default. Checked after the cheap gates (disabled /
-    // insufficient_evidence / no_provider) so a skip for budget reasons
-    // only fires when the phase would otherwise have submitted.
-    const budgets = clampSubagentBudgets(config, opts.deadlineAtMs, Date.now());
-    if (budgets === null) {
-      return skipped(
-        'insufficient_cycle_budget',
-        `remaining cycle budget under ${Math.round(MIN_PATTERNS_SUBAGENT_BUDGET_MS / 1000)}s ` +
-        `(reserve ${Math.round(CYCLE_DEADLINE_RESERVE_MS / 1000)}s); next cycle retries with a fresh budget`,
-      );
-    }
+    // #2781/#6177: budget gate AFTER the cheap skips, so it only fires when
+    // the phase would otherwise have submitted.
+    const gate = await resolvePatternsBudget(engine, config, opts.deadlineAtMs, lastRunKey);
+    if ('skip' in gate) return gate.skip;
+    const budgets = gate;
 
     const queue = new MinionQueue(engine);
     // #2050: children drain inline on BOTH engines (see runSubagentsInline),
@@ -376,6 +408,7 @@ export async function runPhasePatterns(
     // pattern pages were written — a silent no-op for days.
     if (outcome !== 'completed') {
       if (finalized.length === 0) {
+        await engine.setConfig(lastRunKey, String(Date.now() - start));
         return {
           phase: 'patterns',
           status: 'fail',
@@ -393,6 +426,7 @@ export async function runPhasePatterns(
         };
       }
       // Partial: the child died/timed out but some pages landed first.
+      await engine.setConfig(lastRunKey, String(Date.now() - start));
       return {
         phase: 'patterns',
         status: 'warn',
@@ -402,8 +436,11 @@ export async function runPhasePatterns(
       };
     }
     // A held output is unfinished: warn and leave the evidence watermark unstamped so the next cycle retries.
-    if (held > 0) return { phase: 'patterns', status: 'warn', duration_ms: 0, details,
-      summary: `${finalized.length} pattern page(s) written; ${held} publication(s) held by the writer (pending or contended), retried next cycle` };
+    if (held > 0) {
+      await engine.setConfig(lastRunKey, String(Date.now() - start));
+      return { phase: 'patterns', status: 'warn', duration_ms: 0, details,
+        summary: `${finalized.length} pattern page(s) written; ${held} publication(s) held by the writer (pending or contended), retried next cycle` };
+    }
 
     // #4879: stamp the EVIDENCE watermark (not now()) only on a completed
     // child — fail/warn/timeout above must retry next tick. A reflection
@@ -411,6 +448,7 @@ export async function runPhasePatterns(
     // still fires. Zero writes stamps too: the model saw this evidence and
     // named nothing; re-running it is exactly the spend bug.
     await engine.setConfig(evidenceKey, new Date(newestEvidenceMs).toISOString());
+    await engine.setConfig(lastRunKey, String(Date.now() - start));
 
     return ok(`${writtenRefs.length} pattern page(s) written/updated (${outcome})`, details);
   } catch (e) {
@@ -531,6 +569,14 @@ async function loadPatternsConfig(engine: BrainEngine): Promise<PatternsConfig> 
  *  reflection `updated_at` the last completed run consumed. Same class as
  *  `dream.synthesize.last_completion_ts`; `dream.` is already a known prefix. */
 const LAST_EVIDENCE_KEY = 'dream.patterns.last_evidence_ts';
+
+/** #6177: wall-clock ms of this phase's last submitted run (per
+ *  source/incarnation like the evidence watermark). Read before submission:
+ *  a clamped budget below it means the child would die mid-flight, so the
+ *  phase skips `insufficient_cycle_budget` instead of spending tokens on a
+ *  guaranteed timeout. Stamped on every terminal outcome — a dead child is
+ *  a real measurement of what the evidence costs to process. */
+const LAST_RUN_KEY = 'dream.patterns.last_run_ms';
 
 export interface ReflectionRef {
   slug: string;

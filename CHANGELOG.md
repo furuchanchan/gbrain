@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.114.0] - 2026-10-08
+
+**A patterns run that cannot fit inside the cycle budget no longer submits just to die.**
+
+On a brain whose reflections need about 30 minutes to process — the same as the maintenance job's default budget — every cycle attempt spent its tokens and died at the clamped timeout. The phase now records its own wall time on every terminal outcome (`dream.patterns.last_run_ms`, per source/incarnation like the evidence watermark) and skips honestly with `insufficient_cycle_budget` when the clamped budget is below that recent run time, naming `autopilot.global_maintenance_timeout_ms` and `dream.patterns.subagent_timeout_ms` as the knobs, or `gbrain dream --phase patterns` to run without a job deadline. Both keys are now documented in the troubleshooting guide.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

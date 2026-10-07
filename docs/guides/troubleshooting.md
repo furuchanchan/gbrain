@@ -266,6 +266,18 @@ at the deadline).
    Unset both to return to the default.
 3. Confirm with `gbrain doctor`: `global_maintenance_timeouts` is `ok` after the
    next job finishes within its deadline.
+
+A phase can also outgrow the job on its own. `patterns` submits one subagent
+bounded by `dream.patterns.subagent_timeout_ms` (default 30 minutes) with the
+wait capped by `dream.patterns.subagent_wait_timeout_ms` (default 35 minutes);
+inside a cycle both clamp to the job's remaining time, so a brain whose
+reflections need about 30 minutes sees every cycle attempt die after spending
+its tokens. The phase measures its own runs and skips honestly
+(`insufficient_cycle_budget`) when the clamped budget is below its recent run
+time rather than submitting a child that cannot finish. To give it more room:
+`gbrain config set dream.patterns.subagent_timeout_ms 3600000` (and the wait
+key likewise) plus a larger `autopilot.global_maintenance_timeout_ms`, or run
+it by hand — `gbrain dream --phase patterns` has no job deadline.
 ## auto_chronicle has no effect
 
 **Say to your agent:** *"Why aren't my meetings showing up as timeline events?"*
