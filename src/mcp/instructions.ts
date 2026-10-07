@@ -101,6 +101,15 @@ function readinessTail(entries: readonly ReadinessEntry[], callable: (op: string
 export function buildMcpInstructions(opts?: { writeback?: AmbientWritebackOpts | null; tools?: InstructionTools }): string {
   const tools = opts?.tools;
   const clauses = contractClauses(tools?.callable ?? ALL);
+  // #6170: Claude Code reads only the first 2,048 characters of initialize
+  // instructions, and the writeback section is appended past that — a
+  // registrar-mode client could never see its contract. When writeback is on
+  // and `remember` is callable, a one-line duty statement rides near the top
+  // (under the cap, like the prompt-critical lines); the full section still
+  // follows at the end.
+  if (opts?.writeback && (tools?.callable ?? ALL)('remember')) {
+    clauses.splice(2, 0, `Ambient writeback is ON (mode: ${opts.writeback.mode}): save durable facts the user states — preferences, corrections, decisions, commitments — with remember, unprompted. The full writeback contract follows at the end of these instructions.`);
+  }
   let text = `GBrain agent operating contract (apply on every cold start):\n${clauses.map((c, i) => `${i + 1}. ${c}`).join('\n')}`;
   if (tools?.statusLine) text += `\n${tools.statusLine}`;
   if (tools?.hiddenCallable && tools.callable('request_tools')) {

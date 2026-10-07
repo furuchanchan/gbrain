@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.113.0] - 2026-10-08
+
+**A registrar-mode Claude Code client now receives the ambient-writeback duty.**
+
+Claude Code reads only the first 2,048 characters of a server's initialize instructions, and `memory.auto_writeback`'s contract section is appended past that offset — a second machine connected with `gbrain bootstrap harness --url` saved only what was explicitly asked, while `doctor` reported the lane healthy. When writeback is on and `remember` is callable, a one-line duty statement now rides inside the first 2,048 characters (the same treatment the prompt-critical lines got), and the full contract section still follows at the end.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

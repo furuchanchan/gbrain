@@ -104,10 +104,56 @@ describe('buildMcpInstructions composition', () => {
     expect(buildMcpInstructions({})).toBe(GBRAIN_MCP_INSTRUCTIONS);
     expect(buildMcpInstructions({ writeback: null })).toBe(GBRAIN_MCP_INSTRUCTIONS);
   });
-  test('enabled → base + blank line + section, base untouched', () => {
+  test('enabled → pointer clause inside the contract + full section after; off renders unchanged', () => {
     const out = buildMcpInstructions({ writeback: BASE_OPTS });
-    expect(out.startsWith(GBRAIN_MCP_INSTRUCTIONS + '\n\n')).toBe(true);
+    expect(out).toContain('Ambient writeback is ON (mode: salient)');
     expect(out.endsWith(buildAmbientWritebackSection(BASE_OPTS))).toBe(true);
+    // The contract-only prefix (up to the writeback section) embeds the
+    // pointer clause; the base contract itself stays byte-identical.
+    expect(GBRAIN_MCP_INSTRUCTIONS).not.toContain('Ambient writeback is ON');
+  });
+});
+
+// #6170: Claude Code reads only the first 2,048 characters of initialize
+// instructions, and the writeback section is appended past that offset — a
+// registrar-mode Claude Code client never saw its contract. A one-line duty
+// statement now rides inside the first 2,048 characters (the same treatment
+// the prompt-critical lines got) whenever writeback is on and `remember` is
+// callable; the full section still follows at the end.
+describe('#6170 writeback pointer inside the Claude Code read limit', () => {
+  const HARNESS_READ_LIMIT = 2_048;
+  const POINTER = 'Ambient writeback is ON';
+
+  for (const surface of ['starter', 'full'] as const) {
+    test(`${surface}: the pointer line ends within the first ${HARNESS_READ_LIMIT} characters`, async () => {
+      const { operations } = await import('../src/core/operations.ts');
+      const { filterOpsForSurface } = await import('../src/mcp/surface.ts');
+      const listed = new Set(filterOpsForSurface(operations, surface).map(o => o.name));
+      const text = buildMcpInstructions({ writeback: BASE_OPTS, tools: { callable: n => listed.has(n) } });
+      const start = text.indexOf(POINTER);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const end = text.indexOf('\n', start);
+      expect(end === -1 ? text.length : end).toBeLessThanOrEqual(HARNESS_READ_LIMIT);
+    });
+  }
+
+  test('pointer absent when remember is not callable; full section still served', async () => {
+    const { operations } = await import('../src/core/operations.ts');
+    const { filterOpsForSurface } = await import('../src/mcp/surface.ts');
+    const listed = new Set(filterOpsForSurface(operations, 'starter').map(o => o.name));
+    listed.delete('remember');
+    const text = buildMcpInstructions({ writeback: BASE_OPTS, tools: { callable: n => listed.has(n) } });
+    expect(text).not.toContain(POINTER);
+    expect(text).toContain('Ambient memory writeback (enabled by this brain');
+  });
+
+  test('pointer absent when writeback is off', () => {
+    expect(buildMcpInstructions({ tools: { callable: () => true } })).not.toContain(POINTER);
+  });
+
+  test('pointer names the enabled mode', () => {
+    const out = buildMcpInstructions({ writeback: { ...BASE_OPTS, mode: 'all' } });
+    expect(out).toContain('Ambient writeback is ON (mode: all)');
   });
 });
 
