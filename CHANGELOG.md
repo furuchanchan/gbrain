@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.113.0] - 2026-10-07
+
+**Pages with legacy slugs can be deleted and restored again.**
+
+A brain upgraded from an older version can hold pages whose slugs the
+current create grammar rejects — `people/jane doe`, from old capture-cli
+imports. `delete_page`, `gbrain delete` and `restore_page` rejected them
+with `invalid_params` even though `get_page` could still read them, so
+doctor's `undeclared_db_only_pages` finding named a problem nothing could
+fix. The grammar now gates creation only: delete and restore address a
+row by its stored slug (file safety — traversal, leading `/`, backslashes,
+control and bidirectional characters — is still enforced), and `put_page`
+still refuses the shape.
+
+*Contributor: Devin (Cognition) — closes #6212.*
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

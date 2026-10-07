@@ -17,6 +17,7 @@ import type { AuthInfo, Operation, OperationContext } from './contract.ts';
 import type { Action } from '../agent-output.ts';
 import { hostFix, invalidParam, paramUse, readFix } from './op-fix.ts';
 import { CJK_SLUG_CHARS, SLUG_WORD_CHARS } from '../cjk.ts';
+import { validateSlug } from '../utils.ts';
 import { ALL_SOURCES, NO_SOURCES, isValidSourceId } from '../source-id.ts';
 import { encodeDeepResearchId } from '../deep-research-id.ts';
 import { isSearchMode } from '../search/mode.ts';
@@ -226,6 +227,29 @@ export function validatePageSlug(slug: string): void {
   if (!new RegExp(`^${OP_PAGE_SLUG_SEG}(\\/${OP_PAGE_SLUG_SEG})*$`, 'iu').test(slug)) {
     throw opError('invalid_params', `Invalid page_slug: ${slug} (allowed: letters/numbers in any script, with '.', '_', '-' after the first character of a part, optional colon-separated namespace parts, and forward-slash separated segments)`,
       'Use a slug shaped like people/alice-example or notes/v1.0.0: no spaces, backslashes, percent-encoding or dot-led segments.');
+  }
+}
+
+/**
+ * Lookup-safety slug check for ops that only address an existing row
+ * (#6212). Brains upgraded from older versions can hold rows whose slugs the
+ * current create grammar rejects (spaces, from older captures) — the grammar
+ * gates creation, not addressing, or those rows become un-deletable and
+ * un-restorable. File safety still applies: path traversal, backslashes,
+ * control and bidirectional characters are rejected by validateSlug.
+ */
+export function validateAddressableSlug(slug: string): void {
+  if (typeof slug !== 'string' || slug.length === 0) {
+    throw opError('invalid_params', 'page_slug must be a non-empty string', 'Pass the slug exactly as get_page reports it.');
+  }
+  if (slug.length > 255) {
+    throw opError('invalid_params', 'page_slug exceeds 255 characters', 'Pass the slug exactly as get_page reports it.');
+  }
+  try {
+    validateSlug(slug);
+  } catch {
+    throw opError('invalid_params', `Invalid page_slug: ${slug} (path traversal, leading /, backslashes, control and bidirectional characters are rejected for lookups too)`,
+      'Pass the slug exactly as get_page reports it.');
   }
 }
 

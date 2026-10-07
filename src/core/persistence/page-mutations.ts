@@ -5,7 +5,7 @@ import { realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { OperationContext } from '../ops/contract.ts';
 import { OperationError } from '../ops/contract.ts';
-import { enforceClientSlugFence, enforceSubagentSlugFence, normalizeSlugPrefix, parseSourceIdParam, requireWritablePage, validatePageSlug } from '../ops/context.ts';
+import { enforceClientSlugFence, enforceSubagentSlugFence, normalizeSlugPrefix, parseSourceIdParam, requireWritablePage, validateAddressableSlug, validatePageSlug } from '../ops/context.ts';
 import { suffixedSlugAdmission } from './suffixed-slug.ts';
 import { defaultSlug, detectBinaryNullByte, explicitCaptureType, mergeCaptureFrontmatter, normalizeForHash } from '../capture-content.ts';
 import { computeContentHash } from '../ingestion/types.ts';
@@ -242,7 +242,12 @@ export async function preparePageAdmission(ctx: OperationContext,
     }
     if (typeof intent.capture_path === 'string') intent.capture_file_hash = sha256(p.content);
   }
-  validatePageSlug(slug);
+  // #6212: delete/restore only address an existing row — legacy rows can
+  // carry slugs the create grammar rejects (e.g. spaces from older captures)
+  // and must not be un-removable. Every other mutation still gets the full
+  // create grammar.
+  if (input.operation === 'delete_page' || input.operation === 'restore_page') validateAddressableSlug(slug);
+  else validatePageSlug(slug);
   enforceClientSlugFence(ctx, slug, input.operation);
   enforceSubagentSlugFence(ctx, slug, input.operation);
   // Preserve same-source diagnostics for new timeline writes without making

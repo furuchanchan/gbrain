@@ -38,6 +38,7 @@ test/harness-skills-epoch.test.ts
 test/held-read-signals.test.ts
 test/import-frontmatter-key-order-5158.test.ts
 test/import-revision-concurrency.test.ts
+test/legacy-slug-delete.test.ts
 test/links-attendance-blocked.test.ts
 test/managed-cycle-pull-upstream.test.ts
 test/managed-lint.test.ts
