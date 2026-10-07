@@ -214,20 +214,9 @@ export async function runPhaseSynthesizeConcepts(
     };
   }
 
-  // 2. Group atoms by normalized concept slug; one atom counts once per concept.
-  const groups = new Map<string, { slugs: string[]; titles: string[]; bodies: string[]; visibilities: Visibility[] }>();
-  for (const atom of atoms) {
-    const conceptSlugs = new Set(atom.concept_refs.map(conceptStemFor).filter((s): s is string => s !== null));
-    for (const conceptSlug of conceptSlugs) {
-      const existing = groups.get(conceptSlug) ?? { slugs: [], titles: [], bodies: [], visibilities: [] };
-      existing.slugs.push(atom.slug);
-      existing.titles.push(atom.title);
-      existing.bodies.push(atom.body);
-      // An atom with no recorded visibility is private (derived pages fail closed).
-      existing.visibilities.push(atom.visibility ?? 'private');
-      groups.set(conceptSlug, existing);
-    }
-  }
+  // 2. Group atoms by normalized concept slug; one atom counts once per
+  //    concept (merged-away names resolve to their canonical stem, #6161).
+  const groups = await groupAtomsByConcept(engine, atoms, opts.sourceId ?? 'default');
 
   // 3. Filter to count ≥2, assign tier
   const atomGroups: AtomGroup[] = [];
@@ -634,6 +623,87 @@ export async function runPhaseSynthesizeConcepts(
       dry_run: opts.dryRun ?? false,
     },
   };
+}
+
+/**
+ * Group atoms by normalized concept stem, one atom counting once per
+ * concept. A merged-away name resolves through the merge markers the
+ * concept-synthesis skill leaves (#6161): the canonical page's frontmatter
+ * `aliases`, and `merged_into` on the `_merged/` archive copy or the
+ * tombstone. Without it atoms still tagged `concept-b` re-form a
+ * `concepts/concept-b` group the pre-check can't see (the tombstone needs
+ * includeDeleted) — publication defers on the stale revision until the
+ * purge removes it, then the absorbed page comes back.
+ */
+async function groupAtomsByConcept(
+  engine: BrainEngine,
+  atoms: Array<{ slug: string; title: string; body: string; concept_refs: string[]; visibility?: Visibility }>,
+  sourceId: string,
+): Promise<Map<string, { slugs: string[]; titles: string[]; bodies: string[]; visibilities: Visibility[] }>> {
+  const mergeMarkers = await loadConceptMergeMarkers(engine, sourceId);
+  const groups = new Map<string, { slugs: string[]; titles: string[]; bodies: string[]; visibilities: Visibility[] }>();
+  for (const atom of atoms) {
+    const conceptSlugs = new Set(atom.concept_refs
+      .map(conceptStemFor)
+      .filter((s): s is string => s !== null)
+      .map((stem) => (mergeMarkers.liveStems.has(stem) ? stem : (mergeMarkers.canonicalOf.get(stem) ?? stem))));
+    for (const conceptSlug of conceptSlugs) {
+      const existing = groups.get(conceptSlug) ?? { slugs: [], titles: [], bodies: [], visibilities: [] };
+      existing.slugs.push(atom.slug);
+      existing.titles.push(atom.title);
+      existing.bodies.push(atom.body);
+      // An atom with no recorded visibility is private (derived pages fail closed).
+      existing.visibilities.push(atom.visibility ?? 'private');
+      groups.set(conceptSlug, existing);
+    }
+  }
+  return groups;
+}
+
+/**
+ * Merge markers left by the concept-synthesis skill's Phase 1 merge (#6161):
+ * absorbed names that now belong to a canonical page's stem, plus the stems
+ * of live unabsorbed concept pages (a live page always keeps its own stem —
+ * an alias never steals an existing page's group). Scans every `concepts/`
+ * page once, tombstones included, so a merge recorded only on a soft-deleted
+ * original or its `_merged/` archive copy still resolves.
+ */
+async function loadConceptMergeMarkers(
+  engine: BrainEngine, sourceId: string,
+): Promise<{ canonicalOf: Map<string, string>; liveStems: Set<string> }> {
+  const raw = new Map<string, string>();
+  const liveStems = new Set<string>();
+  let pages: Awaited<ReturnType<BrainEngine['listPages']>>;
+  try {
+    pages = await engine.listPages({ slugPrefix: 'concepts/', sourceId, includeDeleted: true, sort: 'slug' });
+  } catch {
+    return { canonicalOf: raw, liveStems };
+  }
+  for (const page of pages) {
+    const fm = page.frontmatter ?? {};
+    const stem = conceptStemFor(page.slug);
+    const mergedInto = typeof fm.merged_into === 'string' ? conceptStemFor(fm.merged_into) : null;
+    if (mergedInto && stem && stem !== mergedInto && !raw.has(stem)) raw.set(stem, mergedInto);
+    if (!page.deleted_at && !page.slug.startsWith('concepts/_merged/')) {
+      if (stem && !mergedInto) liveStems.add(stem);
+      if (stem) {
+        for (const alias of Array.isArray(fm.aliases) ? fm.aliases : []) {
+          const aliasStem = typeof alias === 'string' ? conceptStemFor(alias) : null;
+          if (aliasStem && aliasStem !== stem && !raw.has(aliasStem)) raw.set(aliasStem, stem);
+        }
+      }
+    }
+  }
+  // Collapse chains (a canonical later merged into a third page) so every
+  // absorbed name lands on the final live stem.
+  const canonicalOf = new Map<string, string>();
+  for (const [absorbed, target] of raw) {
+    let cur = target;
+    const seen = new Set([absorbed]);
+    while (raw.has(cur) && !seen.has(cur)) { seen.add(cur); cur = raw.get(cur)!; }
+    if (cur !== absorbed) canonicalOf.set(absorbed, cur);
+  }
+  return { canonicalOf, liveStems };
 }
 
 /**

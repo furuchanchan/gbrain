@@ -344,8 +344,8 @@ metric. An idea independently re-derived N times isn't bloat; it's the
 corpus flagging *this matters* in N different contexts. Deleting dupes
 throws that signal away; merging captures it.
 
-Each merge grows three frontmatter fields plus one body section on the
-canonical:
+Each merge grows four frontmatter fields plus one body section plus one
+timeline entry on the canonical:
 
 - **`merge_count`** (int) — raw number of pages absorbed, including
   same-source re-extractions.
@@ -355,9 +355,24 @@ canonical:
 - **`backlinks`** (list of `{source, angle, date}`) — every absorbed page's
   source plus the *specific angle* it brought. All framings survive; they
   just stop being separate top-level pages.
+- **`merged_pages`** (list of slugs) — every absorbed page's slug, in merge
+  order. This is the durable merge ledger: `synthesize_concepts` republish
+  keeps all frontmatter but regenerates prose body sections, so a merge
+  trail that lives only in the body is lost on the next cycle.
 - **`## Facets`** (body) — the canonical mechanism up top, then one short
   "as seen in {source}: {angle}" line per absorbed page. The concept
-  becomes multi-angle, not redundant.
+  becomes multi-angle, not redundant. Readability only — provenance must
+  never live here alone (see `merged_pages`).
+- **timeline entry** — `gbrain timeline-add <canonical-slug> <date>
+  "Merged concepts/<absorbed-stub> (source: {source}, angle: {angle})"`.
+  The page timeline survives republication verbatim; the entry keeps the
+  merge auditable even when the body is rewritten.
+
+Also merge the absorbed page's `aliases` (and its own name) into the
+canonical page's `aliases`: `synthesize_concepts` resolves member atoms'
+concept refs through the canonical page's aliases and the archive copy's
+`merged_into`, so an atom still tagged with the absorbed name groups under
+the canonical instead of resurrecting the absorbed page after purge.
 
 **Merge-quality gate (reject incomplete merges):** a merge is only written
 if (a) the `## Facets` section has one line per absorbed page (source +
@@ -398,8 +413,12 @@ gbrain get concepts/absorbed-stub
 gbrain put concepts/_merged/cluster-name/absorbed-stub
 
 # 3. Grow the canonical head: merge_count, independent_sources,
-#    backlinks, and the ## Facets section
+#    backlinks, merged_pages, aliases, and the ## Facets section — durable
+#    provenance lives in frontmatter + timeline, never in the body alone
+#    (synthesize_concepts republish regenerates body prose)
 gbrain put concepts/canonical-slug
+gbrain timeline-add concepts/canonical-slug <date> \
+  "Merged concepts/absorbed-stub (source: {source}, angle: {angle})"
 
 # 4. Soft-delete the absorbed original (restorable until purge)
 gbrain delete concepts/absorbed-stub
