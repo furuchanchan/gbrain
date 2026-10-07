@@ -182,6 +182,9 @@ the write path:
   `auto_links: { created, removed, errors }`.
 - **MCP callers (stdio AND HTTP)** return `auto_links: { skipped: "remote", hint }`
   and `auto_timeline: { skipped: "remote" }`. Body wikilinks are saved as text.
+  The write still queues a `links` effect (`mention_links: queued` in the
+  outcome) that adds plain mention edges to existing pages the connection can
+  read; typed edges are NOT added by that effect.
   A stdio `gbrain serve` reconciles the edges asynchronously with its
   maintenance sweep (startup + 10-minute idle ticks).
   `gbrain serve --http` does not self-sweep — reconcile on demand with

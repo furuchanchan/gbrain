@@ -281,8 +281,11 @@ cross-references (updating related pages' compiled truth with new signal
 from this enrichment), not on creating links. On a trusted local write the
 put_page response carries `auto_links: { created, removed, errors }`; MCP
 writes (stdio and HTTP) return `auto_links: { skipped: "remote", hint }`
-instead — edges are reconciled by the serve maintenance sweep or
-`gbrain sweep --once`, and `add_link` covers an edge you need immediately.
+but still queue a `links` effect (`mention_links: queued`) that adds plain
+mention edges to existing pages the connection can read — typed edges are
+not added by that effect: they are reconciled by the serve maintenance
+sweep or `gbrain sweep --once`, and `add_link` covers an edge you need
+immediately.
 Timeline entries still need explicit `gbrain timeline-add` calls.
 
 ## Bulk Enrichment Rules

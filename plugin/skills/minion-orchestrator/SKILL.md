@@ -438,6 +438,13 @@ anchors for `--timeout-ms`, not promises.
 | `integrity auto` | 10-30 min | 1800000 |
 | `dream` | 5-15 min | 900000 |
 
+Paid operations carry their consent INSIDE the submitted command —
+`gbrain embed` exits 3 with a consent refusal in non-interactive contexts
+unless the command carries `--yes` (after the user approves the spend) or
+`--max-usd N`. Submit `"cmd":"gbrain embed --stale --max-usd 1.00"`, never
+bare `gbrain embed --stale`: a detached job that exits for consent leaves
+no useful work and only a refusal to tail.
+
 ### Appendix: content-addressed stage checkpoints
 
 For a multi-stage pipeline with an expensive middle (extract → score →

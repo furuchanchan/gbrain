@@ -352,17 +352,21 @@ person on the `Attendees:` line and in `attendees:` frontmatter (Phase 5) gets a
 page are not recorded as attendance; a pack that overrides attendance, such as
 the older `gbrain-base`, sets its own rule and direction. Leave attendance to
 auto-link rather than `gbrain link` or `add_link`: a hand-written `attended`
-edge can point the wrong way. Over MCP, `put_page` skips auto-link: a stdio
-`gbrain serve` reconciles the page on its maintenance sweep, and behind
-`gbrain serve --http` you run `gbrain sweep --once` or
-`gbrain extract links --source db`.
+edge can point the wrong way. Over MCP, a remote `put_page` does not run the
+inline auto-link pass — it queues a `links` effect (`mention_links: queued` in
+the write outcome) that adds plain mention edges to existing pages the
+connection can read; typed edges like `attended` are NOT added by that effect.
+A stdio `gbrain serve` reconciles the page on its maintenance sweep (startup +
+idle ticks), and behind `gbrain serve --http` you run `gbrain sweep --once` or
+`gbrain extract links --source db` for the typed-edge pass.
 
 A missing `attended` edge has one of two causes. Either the attendee record
 breaks a Phase 5 rule, or it names a person whose page did not exist when the
 meeting page was written; auto-link then reports an error and writes none of
 the page's links. This skill creates new people pages in Phase 7, after the
 meeting page, so once Phase 7 is done run `gbrain extract --stale` (over MCP,
-the sweep above) to link the page. You DO still need `gbrain timeline-add` for
+rely on the serve maintenance sweep — or `sweep --once` behind `--http` — as
+above) to link the page. You DO still need `gbrain timeline-add` for
 dated events (auto-link only handles links, not timeline entries).
 
 ### Phase 8: Entity propagation + timeline merge (MANDATORY)
@@ -385,7 +389,10 @@ itself, chain into `skills/signal-detector/SKILL.md` after ingestion.
 
 ### Phase 9: Sync
 
-`gbrain sync` to update the index.
+Update the index. On an unmanaged brain: `gbrain sync`. On a managed brain
+(managed persistence, Postgres), never plain sync — the checkout is
+fast-forwarded by `gbrain sources refresh <source-id>`, then
+`gbrain sync --no-pull` catches the index up to it.
 
 ## Verify before declaring done (HARD GATE)
 

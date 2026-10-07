@@ -394,9 +394,17 @@ and configuration improvements.
 
 ### Embedding freshness
 Chunks without embeddings, or chunks embedded with an old model.
-- For large embedding refreshes (>1000 chunks), use nohup:
-  `nohup gbrain embed refresh > /tmp/gbrain-embed.log 2>&1 &`
-- Then check progress: `tail -1 /tmp/gbrain-embed.log`
+- Preview first: `gbrain embed --stale --dry-run` shows the count and cost.
+- Paid embedding requires explicit approval: pass `--yes` (after the user
+  approves the spend) or `--max-usd N` for a bounded run. Without either in
+  a non-TTY shell the command exits 3 with a consent refusal and embeds
+  nothing.
+- For large embedding refreshes (>1000 chunks) run detached and capture the
+  exit code, not just the log:
+  `nohup gbrain embed --stale --max-usd 1.00 > /tmp/gbrain-embed.log 2>&1; echo "exit=$?" >> /tmp/gbrain-embed.log &`
+- Then check progress: `tail -1 /tmp/gbrain-embed.log`. A consent refusal
+  lands in the log as an agent refusal — surface it; do not report
+  completion from the tail alone.
 
 ### Security (RLS verification)
 Run `gbrain doctor --json` and check the RLS status.
@@ -452,9 +460,12 @@ staleness.
 ### Weekly maintenance
 
 Run `gbrain embed --stale` to refresh embeddings for pages that have changed since
-their last embedding. For large brains (>5000 pages), run this with nohup:
+their last embedding. Paid embedding needs explicit approval — `--yes` once the
+user approves the spend, or `--max-usd N` for a bounded run; in a non-TTY shell
+it exits 3 with a consent refusal otherwise. For large brains (>5000 pages), run
+this detached and record the exit code:
 ```bash
-nohup gbrain embed --stale > /tmp/gbrain-embed.log 2>&1 &
+nohup bash -c 'gbrain embed --stale --max-usd 1.00; echo "exit=$?"' > /tmp/gbrain-embed.log 2>&1 &
 ```
 
 ### Monthly backup check
