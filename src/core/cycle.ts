@@ -54,7 +54,7 @@ import { timeContainedPhase } from './cycle/phase-containment.ts';
 import { isManagedBrain } from './cycle/phase-table.ts';
 import { managedPullWarning, type UpstreamRefresh } from './sync-upstream.ts';
 import { assertValidSourceId } from './source-id.ts';
-import { PHASE_SCOPE, SOURCE_FRESHNESS_PHASES, type PhaseScope } from './cycle/phase-scope.ts';
+import { PHASE_SCOPE, SOURCE_FRESHNESS_PHASES, cycleLockSourceIdFor, type PhaseScope } from './cycle/phase-scope.ts';
 import { assertEmbedNotStalled } from './embed-stall.ts';
 import { anyAbortSignal } from './abort-signals.ts';
 import { maybeRefreshPlannerStats } from './planner-stats.ts';
@@ -1954,10 +1954,10 @@ export async function runCycle(
 
       let dbLock: LockHandle | null = null;
       try {
-        // v0.38: per-source lock ID when opts.sourceId is set; legacy
-        // `gbrain-cycle` otherwise (autopilot still passes nothing).
-        // cycleLockIdFor validates the sourceId via assertValidSourceId.
-        dbLock = await acquireDbCycleLock(engine, opts.sourceId);
+        // v0.38 + #6242: per-source lock ID for source-scoped selections,
+        // else the legacy `gbrain-cycle` lock (brain-wide work or no
+        // sourceId). cycleLockIdFor validates the id via assertValidSourceId.
+        dbLock = await acquireDbCycleLock(engine, cycleLockSourceIdFor(phases, opts.sourceId));
       } catch (e) {
         // Lock acquisition failed catastrophically (e.g., migration missing).
         // Release the PGLite file lock before returning so it doesn't strand
@@ -1992,7 +1992,7 @@ export async function runCycle(
         if (pgliteFileLock) {
           try { await pgliteFileLock.release(); } catch { /* best effort */ }
         }
-        const holder = await inspectLock(engine, cycleLockIdFor(opts.sourceId)).catch(() => null);
+        const holder = await inspectLock(engine, cycleLockIdFor(cycleLockSourceIdFor(phases, opts.sourceId))).catch(() => null);
         return {
           schema_version: '1',
           timestamp,
@@ -2082,7 +2082,7 @@ export async function runCycle(
   // lock-free phase selections where opts.sourceId was never validated (a
   // `cycleLockIdFor` throw here crashed `--source __all__` runs that never
   // needed a lock id). Real acquisition validated above via acquireDbCycleLock.
-  const cycleLockId = cycleLockIdLabelFor(opts.sourceId);
+  const cycleLockId = cycleLockIdLabelFor(cycleLockSourceIdFor(phases, opts.sourceId));
   // #4309: pass the caller's signal so an external abort stops lock renewal
   // even when a hung phase never lets the run reach the finally's stopRefresher.
   const stopRefresher: (() => void) | undefined = lock && stolen

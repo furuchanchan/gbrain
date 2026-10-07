@@ -54,3 +54,22 @@ export const SOURCE_FRESHNESS_PHASES: CyclePhase[] = [
  * connector cycle has no brain directory, so filesystem phases never run.
  */
 export const CONNECTOR_SOURCE_PHASES: CyclePhase[] = ['extract', 'extract_facts', 'recompute_emotional_weight'];
+
+/**
+ * #6242: the cycle lock follows the resolved phase set, not the requested
+ * source. Any mixed- or global-scoped phase means the run touches brain-wide
+ * rows, so it must serialize on the legacy `gbrain-cycle` lock (undefined
+ * here → `cycleLockIdFor(undefined)`) — whatever `sourceId` says. A bare
+ * `gbrain dream` derives sourceId 'default' and would otherwise take
+ * `gbrain-cycle:default` while autopilot's global maintenance holds
+ * `gbrain-cycle`, letting synthesize/patterns run twice at once. A
+ * source-scoped-only selection keeps its per-source lock so different
+ * sources' freshness cycles still overlap, including alongside the
+ * autopilot's global maintenance.
+ */
+export function cycleLockSourceIdFor(
+  phases: readonly CyclePhase[],
+  sourceId: string | undefined,
+): string | undefined {
+  return phases.some((p) => PHASE_SCOPE[p] !== 'source') ? undefined : sourceId;
+}

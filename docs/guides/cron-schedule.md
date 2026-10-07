@@ -115,6 +115,15 @@ it nightly and Phase 4 below (plus most of Phase 2's hygiene checks) is
 covered. The pseudocode that follows is the harness-side variant for agents
 that also do LLM-driven entity sweeps and memory consolidation on top.
 
+`gbrain dream` is meant to coexist with `gbrain autopilot`: on a multi-source
+brain the autopilot's own cycles do not run the per-source background work a
+nightly dream covers (source-scoped maintenance and synthesis), so keep both
+scheduled. They never fight — a cycle whose resolved phase set includes any
+brain-wide (mixed/global-scoped) phase takes the shared `gbrain-cycle` lock,
+so a dream and an autopilot maintenance run serialize rather than running
+synthesize/patterns twice at once; a purely source-scoped cycle keeps its
+per-source lock and can overlap other sources' cycles safely.
+
 Nightly summaries land on the calendar day you actually lived: the cycle
 buckets by explicit `--date` > `cycle.timezone` config > the host's IANA
 timezone > UTC, so a run scheduled after local midnight lands on the day

@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.118.0] - 2026-10-08
+
+**A nightly `gbrain dream` can no longer run at the same time as autopilot on the brain-wide work.**
+
+The dream cycle was locking a per-source row (`gbrain-cycle:default`) while the autopilot's maintenance locked the shared `gbrain-cycle` row, so both ran at once and their brain-wide phases — synthesize, patterns and the like — executed twice concurrently: doubled model calls, journal conflicts and a `SYNTH_PHASE_FAIL` on pages the other run had just advanced. The lock now follows the work: any run whose phase set includes brain-wide phases takes the shared lock and serializes with the autopilot, while a purely per-source cycle still overlaps other sources safely. A skipped run reports `cycle_already_running` as before — keep both the dream cron and the autopilot scheduled.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**
