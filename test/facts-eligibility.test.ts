@@ -80,6 +80,15 @@ describe('isFactsBackstopEligible — guards', () => {
     expect(isFactsBackstopEligible(f.slug, f.parsed)).toEqual({ ok: false, reason: 'subagent_namespace' });
   });
 
+  // #6232: the meeting-ingestion transcript sidecar is raw evidence —
+  // ineligible even though type 'source' and the meetings/ rescue both apply.
+  test('meeting transcript sidecars (sources/meetings/...) are rejected; the meeting page stays eligible', () => {
+    const sidecar = fixture({ slug: 'sources/meetings/2026-10-01-standup-transcript', type: 'source' });
+    expect(isFactsBackstopEligible(sidecar.slug, sidecar.parsed)).toEqual({ ok: false, reason: 'meeting_transcript' });
+    const meeting = fixture({ slug: 'meetings/2026-10-01-standup', type: 'meeting' });
+    expect(isFactsBackstopEligible(meeting.slug, meeting.parsed)).toEqual({ ok: true });
+  });
+
   test('dream_generated:true frontmatter is rejected (anti-loop)', () => {
     const f = fixture({
       slug: 'meetings/dream-output',

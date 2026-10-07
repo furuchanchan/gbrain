@@ -123,7 +123,10 @@ page with `type: source` at `sources/meetings/YYYY-MM-DD-{slug}-transcript`
 (the default pack files raw evidence as `source` under `sources/`; never
 invent `meeting-transcript`, and don't write the `transcript` alias) or keep
 the source file reachable, and link it from the meeting page. The transcript is the canonical
-evidence for every quote and claim check downstream.
+evidence for every quote and claim check downstream. Fact extraction runs
+automatically on the meeting page — the `sources/meetings/` sidecar is
+excluded from that backstop by design, so do not call `extract_facts` on it,
+and do not assume Phase-6 gating controls what gets stored from the page.
 
 **Redact before you retain.** A raw transcript routinely captures pasted
 secrets and PII (a read-aloud API key, a screen-shared token, a private phone

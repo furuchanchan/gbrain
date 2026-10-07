@@ -19,6 +19,9 @@
  *   - parsed is non-null
  *   - slug does NOT start with `wiki/agents/` (subagent scratch is its
  *     own world; not user-meaningful for hot memory)
+ *   - slug does NOT start with `sources/meetings/` (#6232: raw meeting
+ *     transcript sidecars — the meeting page extracts, the raw record's
+ *     unverified claims must not)
  *   - frontmatter.dream_generated is NOT `true` (anti-loop: never extract
  *     from dream-generated pages — they're already a digest)
  *   - body length >= 80 chars (skip TODO-style snippets)
@@ -87,6 +90,11 @@ export function isFactsBackstopEligible(
 ): EligibilityResult {
   if (!parsed) return { ok: false, reason: 'no_parsed_page' };
   if (slug.startsWith('wiki/agents/')) return { ok: false, reason: 'subagent_namespace' };
+  // #6232: meeting-ingestion files the raw transcript sidecar here. The
+  // meeting page itself stays eligible; the raw record must not extract
+  // (unverified claims — garbled names, banter read as commitments — would
+  // bypass the skill's verification gate and re-extract on every body edit).
+  if (slug.startsWith('sources/meetings/')) return { ok: false, reason: 'meeting_transcript' };
   if (parsed.frontmatter && parsed.frontmatter.dream_generated === true) {
     return { ok: false, reason: 'dream_generated' };
   }
