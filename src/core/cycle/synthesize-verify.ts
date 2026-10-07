@@ -194,8 +194,8 @@ export function emptyQuoteVerifyStats(): QuoteVerifyStats {
  * source char desynced every later offset and could slice garbage — or
  * nothing — back into a page as a "verbatim" repair).
  */
-export function normalizeForGrounding(s: string, opts: { tolerant?: boolean } = {}): { norm: string; map: number[] } {
-  return foldForGrounding(s, true, opts.tolerant === true) as { norm: string; map: number[] };
+export function normalizeForGrounding(s: string, opts: { tolerant?: boolean; markersAsSpace?: boolean } = {}): { norm: string; map: number[] } {
+  return foldForGrounding(s, true, opts.tolerant === true, opts.markersAsSpace === true) as { norm: string; map: number[] };
 }
 
 /**
@@ -208,7 +208,7 @@ export function normalizeForGrounding(s: string, opts: { tolerant?: boolean } = 
  * Parity matters: the rescue gate and the repair ladder must mean the same
  * thing by "normalized substring of the transcript".
  */
-function foldForGrounding(s: string, withMap: boolean, tolerant = false): { norm: string; map: number[] } | string {
+function foldForGrounding(s: string, withMap: boolean, tolerant = false, markersAsSpace = false): { norm: string; map: number[] } | string {
   const out: string[] = [];
   const map: number[] = [];
   const skip = tolerant ? bracketMask(s) : null;
@@ -234,6 +234,16 @@ function foldForGrounding(s: string, withMap: boolean, tolerant = false): { norm
     // grounding agree. One-to-many like the toLowerCase expansions below —
     // every emitted unit maps to the ellipsis' original index.
     else if (ch === '…') ch = '...';
+    // #6258: markdown emphasis/code markers carry no words — a source's
+    // `**bold**` or inline `code` is the same claim the writer repeats
+    // unmarked. Zero-width by default so `正确的**会话` and `b**o**ld`
+    // join; `markersAsSpace` is the second candidate the rung-2 check
+    // tries for the marker↔space ambiguity on the other side (`dbus**
+    // 重载` vs `dbus 重载`).
+    if (ch === '*' || ch === '`') {
+      if (markersAsSpace) pendingSpace = out.length > 0;
+      continue;
+    }
     if (tolerant && ch === '"') ch = "'";
     if (pendingSpace) {
       out.push(' ');
@@ -666,14 +676,31 @@ function groundQuoteSpan(inner: string, t: GroundedTranscript, near: boolean): G
   if (q.norm.length === 0) return { status: 'none', reason: 'not_found' };
 
   // Rung 2: normalized whole-span match → map back to the original slice.
+  // #6258: markdown markers fold away in norm space, but a marker may sit
+  // exactly where the other side has a space (`dbus**重载` in the source
+  // vs `dbus 重载` in the quote). Each candidate therefore retries with
+  // every space optional; candidates = the marker-free fold plus the
+  // markers-as-space fold for the mirror-image case.
   const normalized: Array<[number, number]> = [];
-  for (let pos = t.norm.indexOf(q.norm), n = 0; pos >= 0 && n < MAX_OCCURRENCES; pos = t.norm.indexOf(q.norm, pos + 1), n++) {
-    const start = t.map[pos];
-    const endIdx = t.map[pos + q.norm.length - 1];
-    // Defensive: a map hole must never become a "verbatim" repair.
-    if (start === undefined || endIdx === undefined) continue;
-    if (crossesTurn(t.turns, start, endIdx + 1)) crossed = true;
-    else normalized.push([start, endIdx + 1]);
+  const qNorms = [...new Set([q.norm, foldForGrounding(inner, false, t.tolerant === true, true) as string].filter(n => n.length > 0))];
+  for (const qn of qNorms) {
+    const hits: Array<[number, number]> = [];
+    for (let pos = t.norm.indexOf(qn), n = 0; pos >= 0 && n < MAX_OCCURRENCES; pos = t.norm.indexOf(qn, pos + 1), n++) {
+      hits.push([pos, qn.length]);
+    }
+    if (hits.length === 0) {
+      const re = new RegExp(qn.split(' ').map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' ?'), 'g');
+      for (let m; (m = re.exec(t.norm)) !== null && hits.length < MAX_OCCURRENCES;) hits.push([m.index, m[0].length]);
+    }
+    for (const [pos, len] of hits) {
+      const start = t.map[pos];
+      const endIdx = t.map[pos + len - 1];
+      // Defensive: a map hole must never become a "verbatim" repair.
+      if (start === undefined || endIdx === undefined) continue;
+      if (crossesTurn(t.turns, start, endIdx + 1)) crossed = true;
+      else normalized.push([start, endIdx + 1]);
+    }
+    if (normalized.length) break;
   }
   if (normalized.length) {
     const [start, end] = normalized[0];
@@ -798,8 +825,11 @@ function numericClaims(text: string): Array<{ raw: string; claim: string; keys: 
  * is supported when any of its canonical keys appears among a source's
  * numbers, or its normalized text occurs in a source or its file name.
  */
-export function unsupportedNumericClaims(text: string, sources: GroundedSource[]): string[] {
+export function unsupportedNumericClaims(text: string, sources: GroundedSource[], exemptKeys?: ReadonlySet<string>): string[] {
   return numericClaims(text)
+    // #6258: a page's own recorded dates can never appear in the source
+    // transcripts — flagging them is a guaranteed false positive.
+    .filter(({ keys }) => !(exemptKeys && keys.length > 0 && keys.every(k => exemptKeys.has(k))))
     .filter(({ claim, keys }) => !sources.some(src =>
       keys.some(k => src.numbers.has(k)) || src.norm.includes(claim) || src.nameNorm.includes(claim)))
     .map(({ raw }) => raw);
@@ -991,7 +1021,7 @@ function clip(s: string, n = PROVENANCE_TEXT_CHARS): string {
  * their speaker attribution only (no number, date or decision checks), for
  * writers whose prose legitimately derives numbers from its sources.
  */
-export function verifyBody(body: string, sources: GroundedSource[], opts: { priorNorm?: string; checks?: 'all' | 'quotes' } = {}): BodyVerification {
+export function verifyBody(body: string, sources: GroundedSource[], opts: { priorNorm?: string; checks?: 'all' | 'quotes'; exemptNumericKeys?: ReadonlySet<string> } = {}): BodyVerification {
   const { spans, unbalanced } = extractQuoteSpans(body);
   const masked = maskNonProse(body);
   const failures: Record<ClaimFailure, number> = { quote_not_in_source: 0, quote_crosses_speakers: 0, speaker_mismatch: 0, number_not_in_source: 0, decision_misattributed: 0 };
@@ -1051,7 +1081,7 @@ export function verifyBody(body: string, sources: GroundedSource[], opts: { prio
     }
     const unquoted = blank(masked.slice(u.start, u.end), quoteRanges);
     // Quotes-only mode (answers that legitimately compute numbers): no number or decision checks.
-    const numbers = opts.checks === 'quotes' ? [] : unsupportedNumericClaims(unquoted, sources);
+    const numbers = opts.checks === 'quotes' ? [] : unsupportedNumericClaims(unquoted, sources, opts.exemptNumericKeys);
     for (const n of numbers) fail('number_not_in_source', n);
     if (numbers.length === 0 && opts.checks !== 'quotes') {
       for (const n of misattributedDecisionClaims(unquoted, attribution, sources, [...mentioned.keys()])) {
@@ -1149,8 +1179,17 @@ export function verifyDreamPage(
   stats: QuoteVerifyStats,
 ): VerifiedDreamPage {
   const priorNorm = opts.prior ? normForGrounding(`${opts.prior.compiled_truth}\n${opts.prior.timeline ?? ''}`) : undefined;
-  const truth = verifyBody(page.compiled_truth ?? '', sources, { priorNorm });
-  const timeline = verifyBody(page.timeline ?? '', sources, { priorNorm });
+  // #6258: housekeeping dates the writer legitimately repeats on the page
+  // (its own cycle/created date) are exempt from the numeric-claim check —
+  // they are not transcript claims.
+  const ownDateKeys = new Set<string>();
+  for (const f of ['created', 'updated', 'date', 'dream_cycle_date', 'dream_created_cycle_date']) {
+    const v = page.frontmatter?.[f];
+    if (typeof v === 'string') for (const c of numericClaims(v)) for (const k of c.keys) ownDateKeys.add(k);
+  }
+  const verifyOpts = { priorNorm, exemptNumericKeys: ownDateKeys };
+  const truth = verifyBody(page.compiled_truth ?? '', sources, verifyOpts);
+  const timeline = verifyBody(page.timeline ?? '', sources, verifyOpts);
   stats.pages_checked++;
   for (const r of [truth, timeline]) {
     stats.quotes_total += r.quotes;
