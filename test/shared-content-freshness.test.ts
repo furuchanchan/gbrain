@@ -115,3 +115,37 @@ test('pending and recovering canonical writes remain visible separately and remo
     expect(remote?.status).toBe('fail');
   }
 }), 120_000);
+
+test('a dedicated adopted skill-pack source is exempt from freshness without a content receipt (#6076)', async () => withEnv({ GBRAIN_HOME: home }, async () => {
+  for (const engine of engines) {
+    // Disabled persistence lifts the managed-writer guards for fixture seeding,
+    // matching how fixture() stages its sources above.
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    await engine.executeRaw('TRUNCATE shared_skill_packs');
+    await engine.executeRaw("DELETE FROM sources WHERE id <> 'default'");
+    const sourceId = `pack-${randomUUID().slice(0, 8)}`, root = join(home, sourceId); mkdirSync(root);
+    await engine.executeRaw('INSERT INTO sources(id,name,local_path) VALUES($1,$1,$2)', [sourceId, root]);
+    // Never synced and no owned-content receipt: an ordinary source fails here.
+    expect((await checkSyncFreshness(engine)).message).toContain(`'${sourceId}' has never been synced`);
+    // A sealed v0.53-style pack adoption (shared_skill_packs row for the live
+    // incarnation) makes the zero-page source pack-only: canonical publication
+    // delivers its content, so upstream-sync freshness does not apply. The
+    // canonical publish path guards the table, so the seed runs under the
+    // replica role the repo's reset helpers already use.
+    await engine.transaction(async tx => {
+      await tx.executeRaw("SELECT set_config('session_replication_role','replica',true)");
+      await tx.executeRaw(`INSERT INTO shared_skill_packs (source_id,source_incarnation,pack_id,revision,manifest,manifest_hash)
+        SELECT id,incarnation,'pack',gen_random_uuid(),'{}'::jsonb,'sealed' FROM sources WHERE id=$1`, [sourceId]);
+    });
+    expect(await checkSyncFreshness(engine)).toMatchObject({ status: 'ok', details: { writer_owned_count: 1, stale_count: 0 } });
+    // A pack-adopted source that also holds pages keeps the freshness check.
+    await engine.executeRaw(`INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline)
+      VALUES ('p', $1, 'note', 'p', '', '')`, [sourceId]);
+    expect((await checkSyncFreshness(engine)).message).toContain(`'${sourceId}' has never been synced`);
+    // A stale incarnation's pack does not exempt the recreated source.
+    await engine.executeRaw('DELETE FROM pages WHERE source_id=$1', [sourceId]);
+    await engine.executeRaw('UPDATE sources SET incarnation=$2::uuid WHERE id=$1', [sourceId, randomUUID()]);
+    expect((await checkSyncFreshness(engine)).message).toContain(`'${sourceId}' has never been synced`);
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+  }
+}), 120_000);

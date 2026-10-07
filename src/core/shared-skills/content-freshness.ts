@@ -45,3 +45,42 @@ export async function ownedContentFreshness(engine: BrainEngine, sourceIds?: str
   }
   return result;
 }
+
+/**
+ * Sources whose entire content is a sealed shared-skill pack adopted through
+ * the canonical publisher (a `shared_skill_packs` row for the live
+ * incarnation, zero pages). A dedicated pack source registered with
+ * `gbrain sources add` and adopted via `apply-migrations --migration 0.53.0`
+ * has no `shared_skills.content.v1` setup receipt — only `gbrain init`
+ * writes one — and nothing to sync under managed persistence, so
+ * `sync_freshness` staleness and `source_routing_health`'s zero-page warn
+ * are false alarms for it (#6076). A pack-adopted source that DOES hold
+ * pages is excluded here: its file content still needs freshness checks.
+ */
+export async function adoptedSkillPackOnlySourceIds(engine: BrainEngine, sourceIds?: string[]): Promise<Set<string>> {
+  const rows = await engine.executeRaw<{ id: string; pack_sealed: number }>(
+    `SELECT s.id, 1 AS pack_sealed FROM sources s
+       JOIN shared_skill_packs p ON p.source_id = s.id AND p.source_incarnation = s.incarnation
+     WHERE NOT s.archived
+       AND NOT EXISTS (SELECT 1 FROM pages pg WHERE pg.source_id = s.id)
+       AND ($1::text[] IS NULL OR s.id = ANY($1::text[]))`, [sourceIds ?? null]);
+  // The literal marker column guards stub engines that answer every query
+  // with their source fixture rows (the same defensive shape check
+  // ownedContentFreshness applies above).
+  return new Set(rows.filter(row => row.pack_sealed === 1).map(row => row.id));
+}
+
+/**
+ * Sources `sync_freshness` must not judge by upstream-sync staleness:
+ * writer-owned content roots (receipt-proven) plus dedicated adopted
+ * skill-pack sources (#6076). Missing shared-skills tables on older brains
+ * degrade each query to an empty set, exactly as the previous inline loads.
+ */
+export async function syncFreshnessExemptSourceIds(engine: BrainEngine): Promise<Set<string>> {
+  const exempt = new Set<string>();
+  try { for (const source of await ownedContentFreshness(engine)) exempt.add(source.sourceId); }
+  catch (error) { if (!/does not exist|no such table/i.test(String(error))) throw error; }
+  try { for (const id of await adoptedSkillPackOnlySourceIds(engine)) exempt.add(id); }
+  catch (error) { if (!/does not exist|no such table/i.test(String(error))) throw error; }
+  return exempt;
+}

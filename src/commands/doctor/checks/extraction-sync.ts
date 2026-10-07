@@ -30,7 +30,7 @@ import { quarantineFilterFragment } from '../../../core/quarantine.ts';
 import { managedPersistenceEnabled } from '../../../core/persistence/ownership.ts';
 import { upstreamFreshness } from '../../../core/sync-upstream.ts';
 import type { Check } from '../../doctor.ts';
-import { ownedContentFreshness } from '../../../core/shared-skills/content-freshness.ts';
+import { syncFreshnessExemptSourceIds } from '../../../core/shared-skills/content-freshness.ts';
 import { connectorAuthorities } from '../../../core/persistence/connector-authority.ts';
 import { parseSourceConfig } from '../../../core/sources-load.ts';
 import { checkError } from '../check-fix.ts';
@@ -1238,9 +1238,8 @@ export async function checkSyncFreshness(
     const currentChunkerVersion = String(CHUNKER_VERSION);
 
     const issues: string[] = [];
-    let ownedContent = new Set<string>();
-    try { ownedContent = new Set((await ownedContentFreshness(engine)).map(source => source.sourceId)); }
-    catch (error) { if (!/does not exist|no such table/i.test(String(error))) throw error; }
+    // Writer-owned roots + adopted skill-pack sources share this bucket (#6076).
+    const ownedContent = await syncFreshnessExemptSourceIds(engine);
     let writer_owned_count = 0;
     // v0.41.27.0: D6 count math. Every source falls into
     // EXACTLY ONE bucket per iteration. Invariant pinned by unit test:

@@ -40,7 +40,22 @@ async function truncate(): Promise<void> {
   for (const t of ['pages', 'oauth_tokens', 'oauth_codes', 'oauth_clients']) {
     await (engine as any).db.exec(`DELETE FROM ${t}`);
   }
+  await (engine as any).db.exec(`TRUNCATE shared_skill_packs`);
   await (engine as any).db.exec(`DELETE FROM sources WHERE id <> 'default'`);
+}
+
+// Seeds the sealed adoption row a completed v0.53 migration leaves behind.
+// The canonical publish path guards these tables, so the fixture seals the
+// row under the replica role the repo's reset helpers already use for seeds.
+async function sealPack(engine: PGLiteEngine, sourceId: string): Promise<void> {
+  await engine.transaction(async tx => {
+    await tx.executeRaw("SELECT set_config('session_replication_role','replica',true)");
+    await tx.executeRaw(
+      `INSERT INTO shared_skill_packs (source_id, source_incarnation, pack_id, revision, manifest, manifest_hash)
+       SELECT id, incarnation, 'pack', gen_random_uuid(), '{}'::jsonb, 'sealed' FROM sources WHERE id = $1`,
+      [sourceId],
+    );
+  });
 }
 
 describe('checkSourceRoutingHealth (#1167)', () => {
@@ -70,6 +85,22 @@ describe('checkSourceRoutingHealth (#1167)', () => {
     expect(r.message).toMatch(/lonely/);
     expect(r.message).toMatch(/--source-id/);
     expect(r.message).toMatch(/gbrain sources current/);
+  });
+
+  test('adopted skill-pack source with zero pages → not an empty-source warn (#6076)', async () => {
+    await engine.executeRaw(`INSERT INTO sources (id, name) VALUES ('shared-skills', 'shared-skills')`);
+    await sealPack(engine, 'shared-skills');
+    const r = await checkSourceRoutingHealth(engine);
+    expect(r.status).toBe('ok');
+  });
+
+  test('pack-adopted source is skipped while a genuinely empty source still warns (#6076)', async () => {
+    await engine.executeRaw(`INSERT INTO sources (id, name) VALUES ('shared-skills', 'shared-skills'), ('lonely', 'lonely')`);
+    await sealPack(engine, 'shared-skills');
+    const r = await checkSourceRoutingHealth(engine);
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/lonely/);
+    expect(r.message).not.toMatch(/shared-skills/);
   });
 });
 

@@ -9,6 +9,7 @@ import type { BrainEngine } from '../../../core/engine.ts';
 import { gbrainPath } from '../../../core/config.ts';
 import { embedBackfillWorkerSurface } from '../../../core/minions/embed-backfill-admission.ts';
 import { isUndefinedTableError, isUndefinedColumnError } from '../../../core/utils.ts';
+import { adoptedSkillPackOnlySourceIds } from '../../../core/shared-skills/content-freshness.ts';
 import { ALLOWED_SCOPES_LIST, DCR_REGISTRABLE_SCOPES } from '../../../core/scope.ts';
 import type { Check } from '../../doctor.ts';
 
@@ -45,13 +46,20 @@ export async function checkSourceRoutingHealth(engine: BrainEngine): Promise<Che
       return { name: 'source_routing_health', status: 'ok', message: 'Single-source brain (no federation to check)' };
     }
     const perSourceCap = Math.min(50, Math.ceil(200 / Math.max(1, sources.length)));
+    // #6076: a dedicated adopted skill-pack source holds zero pages by design
+    // (its catalog lives in shared_skill_* tables, not pages) — not the
+    // misrouted-import fingerprint this warn exists for. Pre-v0.53 brains
+    // lack the pack tables; the throw degrades to an empty set.
+    let packSources = new Set<string>();
+    try { packSources = await adoptedSkillPackOnlySourceIds(engine); }
+    catch (e) { if (!isUndefinedTableError(e) && !/does not exist|no such table/i.test(String(e))) throw e; }
     const emptySources: string[] = [];
     for (const s of sources) {
       const rows = await engine.executeRaw<{ n: string }>(
         `SELECT COUNT(*)::text AS n FROM pages WHERE source_id = $1 LIMIT $2`,
         [s.id, perSourceCap],
       );
-      if (Number(rows[0]?.n ?? 0) === 0) {
+      if (Number(rows[0]?.n ?? 0) === 0 && !packSources.has(s.id)) {
         emptySources.push(s.id);
       }
     }

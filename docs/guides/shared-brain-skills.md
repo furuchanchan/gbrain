@@ -61,6 +61,12 @@ does not exempt a source. No `last_sync_at` timestamp is fabricated. The separat
 for these roots. Both checks classify ownership from database records; remote
 doctor does not inspect or execute commands against stored filesystem paths.
 
+A dedicated pack source adopted through the v0.53 migration — a sealed
+`shared_skill_packs` row for the live incarnation and zero pages — is exempt
+without a setup receipt: its catalog is published through the canonical writer,
+not upstream sync, so staleness and the zero-page routing warn do not apply. A
+pack-adopted source that also holds pages keeps the ordinary checks.
+
 ## Discover the authorized catalog
 
 Use `list_skills` with `{"schema_version":2}` over MCP, or:
