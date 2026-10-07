@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.119.0] - 2026-10-07
+
+**A `sync --strategy code` refused forever by leftover claim markers now cleans them up and syncs.**
+
+A managed-worktree claim writes its marker files inside its own transaction, so a claim that crashed or rolled back left `.gbrain-owner-*` residue behind that fenced every legacy write — while `gbrain sources writer status` showed the coordination system disabled with no worktrees, so nothing named the cause. The marker cleanup now also drains markers whose recorded worktree never committed in this brain: this host's markers are removed once they are outside the in-flight claim window, another host's files and live claims are still kept, and each file is re-read before it is unlinked. The legacy-writer check that sync, skill-pack writes and fact absorption share runs the same drain once before refusing, so a plain `gbrain sync` of a fenced directory heals itself and proceeds instead of dying with zero progress.
+
 ## [0.60.102.0] - 2026-10-07
 
 **Broken facts and takes tables in your notes now get repaired by themselves.**

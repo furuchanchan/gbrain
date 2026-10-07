@@ -75,5 +75,12 @@ export async function withFilesystemPublication<T>(roots: string[], fn: () => Pr
 }
 export async function assertLegacyFilesystemWriter(engine: SqlEngine, path: string): Promise<void> {
   await refreshManagedFilesystemRoots(engine);
+  if (isManagedFilesystemPath(path)) {
+    // A claim that never committed leaves marker/registry residue that keeps
+    // fencing this path while writer status reports nothing (#2920); the marker
+    // cleanup is the verified drain and re-reads each file before unlinking.
+    const { cleanupRetiredManagedMarkers } = await import('./deactivation.ts');
+    await cleanupRetiredManagedMarkers(engine);
+  }
   assertManagedFilesystemWrite(path);
 }

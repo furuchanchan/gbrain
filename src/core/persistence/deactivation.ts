@@ -20,12 +20,15 @@
  * `.gbrain-owner.json` and its reservation) are removed by
  * `cleanupRetiredManagedMarkers` only when they name this brain and a retired
  * epoch (or, without an epoch, a retired worktree id or root) recorded by a
- * committed deactivation; a newer or unknown one is kept and reported pending.
+ * committed deactivation, or when they record a worktree claim this brain never
+ * committed (a rolled-back or interrupted claim's residue); a newer or unknown
+ * one is kept and reported pending.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
+import type { SqlEngine } from './model.ts';
 import { configDir } from '../config.ts';
 import { opError, OperationError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
@@ -243,7 +246,7 @@ export async function deactivatePersistence(engine: BrainEngine, opts: { dryRun?
 
 interface RetiredRecord { epochs: Set<number>; worktrees: Set<string>; roots: Set<string> }
 
-async function readRetired(engine: BrainEngine, brainId: string): Promise<RetiredRecord> {
+async function readRetired(engine: SqlEngine, brainId: string): Promise<RetiredRecord> {
   const rows = await engine.executeRaw<{ outcome: { brain_id?: string; retired_mode_epoch?: number; worktrees?: Array<{ id: string; roots: string[] }>; source_roots?: string[] } }>(
     "SELECT outcome FROM persistence_topology_changes WHERE operation='writer_deactivate' AND state='committed'");
   const retired: RetiredRecord = { epochs: new Set(), worktrees: new Set(), roots: new Set() };
@@ -263,14 +266,21 @@ function readJson(path: string): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
+/** A claim's files land inside its transaction; a live one commits within this window. */
+const CLAIM_IN_FLIGHT_MS = 60_000;
+
 /**
  * Remove this host's managed markers and registry records of retired epochs of
- * the connected brain. Runs on connect before any filesystem guard check, after
- * deactivate on the deactivating host, and on a rerun of deactivate. Each file
- * is re-read before unlinking; other brains' files and a newer prepared claim
- * are never touched; a filesystem error keeps the file and reports it pending.
+ * the connected brain, plus marker residue of claims that never committed (the
+ * worktree row is the committed claim; a rolled-back or interrupted claim
+ * leaves files that fence every legacy write while writer status reports the
+ * coordination system disabled — #2920). Runs on connect before any filesystem
+ * guard check, after deactivate on the deactivating host, and on a rerun of
+ * deactivate. Each file is re-read before unlinking; other brains' files,
+ * other hosts' claims, and any claim still inside its commit window are never
+ * touched; a filesystem error keeps the file and reports it pending.
  */
-export async function cleanupRetiredManagedMarkers(engine: BrainEngine): Promise<LocalMarkerReport> {
+export async function cleanupRetiredManagedMarkers(engine: SqlEngine): Promise<LocalMarkerReport> {
   const report: LocalMarkerReport = { state: 'cleared', removed: [], pending: [] };
   const [present] = await engine.executeRaw<{ present: boolean }>("SELECT to_regclass('persistence_topology_changes') IS NOT NULL AS present");
   if (!present?.present) return report;
@@ -279,21 +289,33 @@ export async function cleanupRetiredManagedMarkers(engine: BrainEngine): Promise
   if (!brain) return report;
   const current = Number(brain.mode_epoch ?? 1);
   const retired = await readRetired(engine, brain.brain_id);
-  if (!retired.epochs.size && !retired.worktrees.size) return report;
+  const liveWorktrees = new Set((await engine.executeRaw<{ id: string }>('SELECT id::text AS id FROM persistence_worktrees'))
+    .map(row => row.id));
+  const hostId = existingLocalHostId();
   const activeRoots = new Set(brain.enabled ? (await engine.executeRaw<{ local_path: string }>('SELECT local_path FROM persistence_host_bindings'))
     .map(row => { try { return canonicalFilesystemPath(row.local_path); } catch { return row.local_path; } }) : []);
   const known = retired.epochs.size > 0;
   /** removable, keep (normal), or a pending reason. */
-  const judge = (value: Record<string, unknown>, root: string | null): 'remove' | 'keep' | string => {
+  const judge = (value: Record<string, unknown>, root: string | null, mtimeMs: number): 'remove' | 'keep' | string => {
     const epoch = value.mode_epoch === undefined ? null : Number(value.mode_epoch);
     if (epoch !== null) {
       if (retired.epochs.has(epoch) && epoch < current) return 'remove';
       if (brain.enabled && epoch === current) return 'keep';
       return epoch > current ? 'newer_mode_epoch' : 'unknown_mode_epoch';
     }
-    // Worktree ids never repeat: a retired one is removed, any other (a newer prepared claim) is kept.
+    // Worktree ids never repeat: a retired one is removed, a live one is kept.
     const worktree = typeof value.worktree_id === 'string' ? value.worktree_id : typeof value.worktreeId === 'string' ? value.worktreeId : null;
-    if (worktree) return retired.worktrees.has(worktree) ? 'remove' : 'keep';
+    if (worktree) {
+      if (retired.worktrees.has(worktree)) return 'remove';
+      if (liveWorktrees.has(worktree)) return 'keep';
+      // Recorded nowhere in this brain: residue of a claim that never
+      // committed, not live ownership. Only a claimant that could still be
+      // writing is kept — another host's file, or a marker inside the
+      // in-flight claim window.
+      if (typeof value.hostId === 'string' && value.hostId !== hostId) return 'keep';
+      if (Date.now() - mtimeMs < CLAIM_IN_FLIGHT_MS) return 'keep';
+      return 'remove';
+    }
     if (root !== null && retired.roots.has(root) && !activeRoots.has(root)) return 'remove';
     return brain.enabled || !known ? 'keep' : 'unrecorded_pre_epoch_marker';
   };
@@ -307,7 +329,7 @@ export async function cleanupRetiredManagedMarkers(engine: BrainEngine): Promise
     try {
       const value = readJson(path);
       if (!value || !owns(value)) return;
-      const verdict = judge(value, root);
+      const verdict = judge(value, root, statSync(path).mtimeMs);
       if (verdict === 'remove') remove(path, value);
       else if (verdict !== 'keep') report.pending.push({ path, reason: verdict });
     } catch (error) {
@@ -316,6 +338,12 @@ export async function cleanupRetiredManagedMarkers(engine: BrainEngine): Promise
   };
   const ours = (value: Record<string, unknown>) => value.brain_id === brain.brain_id || value.brainId === brain.brain_id;
   const roots = new Set(retired.roots);
+  // A claim that never committed left no retired knowledge; its residue still
+  // sits beside the sources it was claimed over.
+  for (const row of await engine.executeRaw<{ local_path: string }>(
+    'SELECT local_path FROM sources WHERE local_path IS NOT NULL UNION SELECT local_path FROM persistence_host_bindings')) {
+    try { roots.add(canonicalFilesystemPath(row.local_path)); } catch { roots.add(row.local_path); }
+  }
   const registry = join(configDir(), 'persistence', 'managed-roots');
   let files: string[] = [];
   try { files = readdirSync(registry).filter(file => file.startsWith(`${brain.brain_id}.`) && file.endsWith('.json')); }
