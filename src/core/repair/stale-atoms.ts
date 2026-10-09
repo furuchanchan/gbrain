@@ -134,7 +134,7 @@ export const staleAtomsRepair: RepairHandler = {
     if (!opts?.apply) {
       const atoms = (await staleAtoms(engine, scope.source_ids)).map(({ chars: _chars, ...atom }) => atom);
       const hash = previewHash(await hashParts(engine, scope, atoms));
-      if (atoms.length) await saveApprovedSet<ApprovedStaleAtom>(engine, { command: 'stale-atoms', hash }, atoms.map(atom => ({ ...atom, selection: scope.source_ids })));
+      await saveApprovedSet<ApprovedStaleAtom>(engine, { command: 'stale-atoms', hash }, atoms.map(atom => ({ ...atom, selection: scope.source_ids })));
       return { items: atoms.map((atom, index) => item(atom, hash, index === atoms.length - 1)), preview_hash: hash,
         residuals: { origin_gone: atoms.filter(atom => atom.class === 'origin_gone').length,
           origin_changed: atoms.filter(atom => atom.class === 'origin_changed').length },
@@ -149,8 +149,10 @@ export const staleAtomsRepair: RepairHandler = {
     }
     const approved = await loadApprovedSet<ApprovedStaleAtom>(engine, { command: 'stale-atoms', hash: opts.expect, previewCommand: command });
     if (approved.items.some(atom => JSON.stringify(atom.selection) !== JSON.stringify(scope.source_ids))) throw previewChangedError(opts.expect, command);
-    const items = approved.items.map(({ selection: _selection, ...atom }, index) => item(atom, opts.expect!, index === approved.items.length - 1));
-    return { items: items.filter(entry => afterCursor(entry.cursor, after)), preview_hash: opts.expect, residuals: {} };
+    const items = approved.items.map(({ selection: _selection, ...atom }, index) => item(atom, opts.expect!, index === approved.items.length - 1))
+      .filter(entry => afterCursor(entry.cursor, after));
+    if (!items.length) await clearApprovedSet(engine, { command: 'stale-atoms', hash: opts.expect });
+    return { items, preview_hash: opts.expect, residuals: {} };
   },
   async apply(ctx, entry): Promise<RepairItemOutcome> {
     const { atom, hash, last } = entry as StaleAtomItem;

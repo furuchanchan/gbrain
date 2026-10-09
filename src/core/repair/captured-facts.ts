@@ -256,7 +256,7 @@ export const capturedFactsRepair: RepairHandler = {
         pages.set(key, page);
       }
       const approved = [...pages.values()];
-      if (approved.length) await saveApprovedSet(engine, { command: 'captured-facts', hash }, approved);
+      await saveApprovedSet(engine, { command: 'captured-facts', hash }, approved);
       const count = (klass: CapturedFactClass) => candidates.filter(c => c.class === klass).length;
       const listing: RepairListing[] = candidates.map(c => ({ item: `${c.source_id}:${c.slug}#${c.id}`,
         class: c.class === 'excluded' ? c.reason : c.class, detail: `${c.reason === 'paste_heuristic' ? 'paste candidate' : c.reason}; session ${c.session}; ${c.evidence}` }));
