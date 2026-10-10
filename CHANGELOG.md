@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.167.0] - 2026-10-10
+
+### Fixed
+
+- `backlinks check`/`fix` no longer holds every page's full text in memory
+  during the gap scan. Full file contents are retained only for people/ and
+  companies/ pages (the only possible gap targets); every other page keeps
+  just its canonical refs, outgoing-slug set and title. On bulk-record
+  brains (tens of GB of markdown) the check command previously exceeded the
+  serve watchdog's RSS ceiling — #6438.
+
+
 ## [0.60.152.0] - 2026-10-10
 
 **Remote fact writes apply the same visibility filter as reads.**

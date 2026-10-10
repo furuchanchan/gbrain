@@ -94,8 +94,22 @@ export function buildBacklinkEntry(sourceTitle: string, sourcePath: string): str
 export function findBacklinkGaps(brainDir: string): BacklinkGap[] {
   const gaps: BacklinkGap[] = [];
 
-  // Collect all markdown files
-  const allPages: { path: string; relPath: string; content: string }[] = [];
+  // #6438: gap targets are always people/ or companies/ pages, so full text
+  // is kept only for those — every other page keeps just what the checks
+  // need (canonical refs, the outgoing-slug credit set, the title). Holding
+  // the whole brain's markdown made the scan's memory grow with total file
+  // size (tens of GB on bulk-record brains), and because the walk is
+  // synchronous the watchdog's periodic RSS check cannot preempt it.
+  type ScannedPage = {
+    path: string;
+    relPath: string;
+    slug: string;
+    refs: { name: string; slug: string; dir: string }[];
+    outgoingSlugs: Set<string>;
+    title: string;
+    content?: string;
+  };
+  const allPages: ScannedPage[] = [];
   function walk(dir: string) {
     for (const entry of readdirSync(dir)) {
       if (entry.startsWith('.')) continue;
@@ -105,7 +119,19 @@ export function findBacklinkGaps(brainDir: string): BacklinkGap[] {
       } else if (entry.endsWith('.md') && !entry.startsWith('_')) {
         const relPath = relative(brainDir, full);
         try {
-          allPages.push({ path: full, relPath, content: readFileSync(full, 'utf-8') });
+          const content = readFileSync(full, 'utf-8');
+          const refs = canonicalExtractEntityRefs(content);
+          const slug = relPath.replace('.md', '');
+          const topDir = relPath.split('/')[0];
+          allPages.push({
+            path: full,
+            relPath,
+            slug,
+            refs,
+            outgoingSlugs: new Set(refs.map(r => r.slug)),
+            title: extractPageTitle(content),
+            content: topDir === 'people' || topDir === 'companies' ? content : undefined,
+          });
         } catch { /* skip unreadable */ }
       }
     }
@@ -113,25 +139,17 @@ export function findBacklinkGaps(brainDir: string): BacklinkGap[] {
   walk(brainDir);
 
   // Build a lookup of existing pages by directory/slug. #1776: extract each
-  // page's canonical refs ONCE here — they feed both the gap candidates
-  // (people/companies projection) and the backlink-credit slug set, so
-  // extension-less convention links ([Alice](../people/alice),
+  // page's canonical refs ONCE (in the walk above) — they feed both the gap
+  // candidates (people/companies projection) and the backlink-credit slug
+  // set, so extension-less convention links ([Alice](../people/alice),
   // [[people/alice]]) count as backlinks even though the legacy
   // `<basename>.md` substring check can't see them.
-  const pagesBySlug = new Map<string, { path: string; content: string }>();
-  const refsByRelPath = new Map<string, { name: string; slug: string; dir: string }[]>();
-  const outgoingSlugsBySlug = new Map<string, Set<string>>();
-  for (const page of allPages) {
-    const slug = page.relPath.replace('.md', '');
-    pagesBySlug.set(slug, { path: page.path, content: page.content });
-    const canonical = canonicalExtractEntityRefs(page.content);
-    refsByRelPath.set(page.relPath, canonical);
-    outgoingSlugsBySlug.set(slug, new Set(canonical.map(r => r.slug)));
-  }
+  const pagesBySlug = new Map<string, ScannedPage>();
+  for (const page of allPages) pagesBySlug.set(page.slug, page);
 
   // For each page, check entity references
   for (const page of allPages) {
-    const refs = projectPeopleCompaniesRefs(refsByRelPath.get(page.relPath) ?? []);
+    const refs = projectPeopleCompaniesRefs(page.refs);
     const sourceFilename = basename(page.relPath);
     const sourceSlug = page.relPath.replace(/\.md$/, '');
     // LOCAL PATCH (paolo, 2026-05-12): dedupe (source, target) pairs within
@@ -149,7 +167,7 @@ export function findBacklinkGaps(brainDir: string): BacklinkGap[] {
       if (seen.has(targetSlug)) continue;
       seen.add(targetSlug);
       const target = pagesBySlug.get(targetSlug);
-      if (!target) continue; // target page doesn't exist
+      if (!target?.content) continue; // target page doesn't exist (people/companies targets always keep their content)
 
       // Check if the target already has a back-link to this source page.
       // Credited two ways (#1776): the legacy `<basename>.md` substring
@@ -157,12 +175,12 @@ export function findBacklinkGaps(brainDir: string): BacklinkGap[] {
       // outgoing refs containing the source slug (extension-less
       // convention links and wikilinks the substring check misses).
       if (hasBacklink(target.content, sourceFilename)) continue;
-      if (outgoingSlugsBySlug.get(targetSlug)?.has(sourceSlug)) continue;
+      if (target.outgoingSlugs.has(sourceSlug)) continue;
       gaps.push({
         sourcePage: page.relPath,
         targetPage: targetSlug + '.md',
         entityName: ref.name,
-        sourceTitle: extractPageTitle(page.content),
+        sourceTitle: page.title,
       });
     }
   }
