@@ -14,12 +14,16 @@
  *   nor the search evidence-delivery graph; configuring the AI gateway loads
  *   no AI SDK until a provider call runs.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
 import { resolve } from 'path';
+import { resetGateway } from '../src/core/ai/gateway.ts';
 import { loadOperation } from '../src/core/operation-load.ts';
 import { operations, operationsByName } from '../src/core/operations.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '..');
+// The gateway probe configures only its own subprocess; reset anyway so this
+// file never leaves a configured gateway behind in its shard.
+afterAll(() => resetGateway());
 
 function probe(lines: string[]): unknown {
   const out = Bun.spawnSync([process.execPath, '-e', lines.join('\n')], {

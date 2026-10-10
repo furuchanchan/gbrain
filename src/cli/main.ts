@@ -799,8 +799,7 @@ async function runThinClientRouted(
     checkHostHonoredParams(op, params, raw);
     const result = unpackToolResult(raw);
     hintAmbientNarrowing(op, params, result, ambientScope);
-    const { deliveryVersionSkewWarning } = await import('../core/search/evidence-delivery.ts');
-    const skew = deliveryVersionSkewWarning(op.name, params, envelopeMeta?.retrieval as Record<string, unknown> | undefined, result);
+    const skew = (await import('../core/search/evidence-delivery.ts')).deliveryVersionSkewWarning(op.name, params, envelopeMeta?.retrieval as Record<string, unknown> | undefined, result);
     if (skew) process.stderr.write(skew + '\n');
     const output = formatResult(op.name, result, params);
     // Awaited delivery (#3423) — same contract as the local-engine path.
