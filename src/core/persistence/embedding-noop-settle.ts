@@ -57,8 +57,9 @@ export async function settleNoopEmbeddingEffects(engine: BrainEngine, hostId: st
   const key = `${column.name}\0${expectedModel ?? ''}\0${signature}`;
   const from = after?.key === key ? after.through : '0';
   // A drain with nothing new to consider costs one indexed read and opens no transaction.
-  const [due] = await engine.executeRaw(`SELECT 1 FROM persistence_effects WHERE id>$1::bigint AND kind='embedding' AND state='queued' AND attempts=0
-    AND recovery IS NULL LIMIT 1`, [from]);
+  // Ordered by id so a generic plan (a prepared statement past its first runs) still walks the primary key from `from`.
+  const [due] = await engine.executeRaw(`SELECT 1 FROM persistence_effects e WHERE e.id>$1::bigint AND e.kind='embedding' AND e.state='queued'
+    AND e.attempts=0 AND e.recovery IS NULL ORDER BY e.id LIMIT 1`, [from]);
   if (!due) return { settled: 0, cursor: { key, through: from }, done: true };
   return engine.transaction(async tx => {
     await declarePersistenceProtocol(tx);
