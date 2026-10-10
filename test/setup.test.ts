@@ -87,7 +87,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(second.doc.steps.map((s: any) => s.action)).toEqual(['keep', 'keep', 'keep']);
     expect([readFileSync(claudeJson(b), 'utf8'), readFileSync(settings(b), 'utf8'), readFileSync(receipt(b), 'utf8')]).toEqual(before);
     expect(existsSync(`${settings(b)}.bak`)).toBe(false);
-  }, 60_000);
+  });
 
   test('--remove deletes exactly the owned entries; foreign hooks, other MCP servers and the brain stay', async () => {
     const b = box();
@@ -113,7 +113,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(s.hooks).toEqual({ SessionStart: [{ hooks: [foreign] }] });
     expect(existsSync(receipt(b))).toBe(false);
     expect(existsSync(join(b.gbrainHome, '.gbrain', 'brain.pglite'))).toBe(true);
-  }, 60_000);
+  });
 
   test('a crash after the MCP write and before the hook write resumes without duplicating anything', async () => {
     const b = box();
@@ -135,7 +135,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(entries(b, 'UserPromptSubmit')).toHaveLength(1);
     expect(readJson(receipt(b)).status).toBe('installed');
     expect(readJson(receipt(b)).brain_created_by_setup).toBe(true);
-  }, 60_000);
+  });
 
   test('a user-edited owned hook survives --remove, is reported, and a later setup leaves it alone', async () => {
     const b = box();
@@ -158,7 +158,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(again.doc.preserved).toEqual([{ kind: 'hook', event: 'SessionStart', reason: 'edited' }]);
     expect(entries(b, 'SessionStart')).toEqual([edited]);
     expect(entries(b, 'UserPromptSubmit')).toHaveLength(1);
-  }, 60_000);
+  });
 
   test('an MCP entry setup did not write is refused (setup_owner_conflict), an identical one is adopted and kept on --remove', async () => {
     const b = box();
@@ -178,7 +178,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     const removed = await setup(b, ['claude-code', '--remove', '--json']);
     expect(removed.exitCode).toBe(0);
     expect(readJson(claudeJson(b)).mcpServers.gbrain).toEqual(same);
-  }, 60_000);
+  });
 
   test('two installs on one machine each own their own entries; removing one leaves the other', async () => {
     const a = box();
@@ -199,7 +199,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(entries(a, 'SessionStart')).toEqual(aOnly);
     expect(existsSync(receipt(a))).toBe(true);
     expect(existsSync(receipt(a, 'gbrain-b'))).toBe(false);
-  }, 60_000);
+  });
 });
 
 describe('gbrain setup claude-code: target first', () => {
@@ -211,7 +211,7 @@ describe('gbrain setup claude-code: target first', () => {
     expect(r.doc.steps.find((s: any) => s.step === 'brain').detail).toContain('--no-embedding');
     expect(existsSync(claudeJson(b))).toBe(false);
     expect(existsSync(join(b.gbrainHome, '.gbrain'))).toBe(false);
-  }, 60_000);
+  });
 
   test('a hosted connection never falls back to a new local brain', async () => {
     const thin = box();
@@ -234,7 +234,7 @@ describe('gbrain setup claude-code: target first', () => {
     expect(w.doc.code).toBe('setup_hosted_connection');
     expect(readFileSync(claudeJson(wired), 'utf8')).toBe(hostedCfg);
     expect(existsSync(join(wired.gbrainHome, '.gbrain'))).toBe(false);
-  }, 60_000);
+  });
 
   test('a live PGLite owner that this setup did not register is an owner conflict; setup writes nothing', async () => {
     const b = box();
@@ -258,7 +258,7 @@ describe('gbrain setup claude-code: target first', () => {
       serve.kill();
       await serve.exited;
     }
-  }, 60_000);
+  });
 
   test('a live stdio serve started by this setup\'s own registration is reused, not a conflict', async () => {
     const b = box();
@@ -279,7 +279,7 @@ describe('gbrain setup claude-code: target first', () => {
       serve.kill();
       await serve.exited;
     }
-  }, 60_000);
+  });
 });
 
 describe('gbrain setup: consent and refusals', () => {
@@ -317,7 +317,7 @@ describe('gbrain setup: consent and refusals', () => {
     } finally {
       recorder.close();
     }
-  }, 60_000);
+  });
 
   test('--capture, accepted and not opted out, adds Stop and SessionEnd; --no-hooks then removes every owned hook', async () => {
     const b = box();
@@ -328,7 +328,7 @@ describe('gbrain setup: consent and refusals', () => {
     expect(off.exitCode).toBe(0);
     expect(readJson(settings(b)).hooks ?? {}).toEqual({});
     expect(readJson(claudeJson(b)).mcpServers.gbrain).toBeDefined();
-  }, 60_000);
+  });
 
   for (const [harness, guide] of [['codex', 'docs/mcp/CODEX.md'], ['openclaw', 'docs/mcp/OPENCLAW.md'], ['hermes', 'docs/mcp/HERMES.md']] as const) {
     test(`${harness} is a coded refusal that names its guide`, async () => {
@@ -338,7 +338,7 @@ describe('gbrain setup: consent and refusals', () => {
       expect(r.doc.code).toBe('setup_harness_unsupported');
       expect(r.doc.message).toContain(guide);
       expect(existsSync(claudeJson(b))).toBe(false);
-    }, 30_000);
+    });
   }
 });
 

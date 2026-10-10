@@ -90,6 +90,10 @@ Flags:
 States: configured (entries written), connection-verified (the smoke answered),
 native-pending (no observed push into a native session yet), native-verified.
 
+Refusals: setup never starts a second owner or a second brain. A hosted brain is
+wired with gbrain connect <url> --harness claude-code --install; a running
+serve --http owner with gbrain bootstrap harness --harness claude-code --yes.
+
 Supported harnesses: claude-code. codex, openclaw and hermes print their guide.
 setup and onboard differ: setup wires a harness to a brain; onboard (post-connect)
 improves an existing brain's content.
