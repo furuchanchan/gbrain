@@ -12,15 +12,22 @@ identifiers and attribution are available in the pre-removal Git revision
 
 ## [0.60.156.0] - 2026-10-10
 
-**`engine.transaction(fn, { signal })` and `engine.transactionDirect(fn, { signal })`: an `AbortSignal` that cancels a running Postgres transaction. No behavior changes for callers that pass no signal.**
+**`gbrain setup claude-code` gives Claude Code memory in one command.** It finds or creates your brain, wires the MCP server and the read-context hooks, and checks that they answer. A second run changes nothing, and `--remove` takes out only what setup wrote.
 
-The publication deadline planned in #6288 / #6352 needs to end a specific publish transaction when its ceiling passes, so that its promise rejects and the caller's `finally` releases the request-row lock, page locks, worktree lock and capacity. Until now nothing could cancel one transaction's connection.
+### What you get
 
-### Itemized changes
+- **One command after install.** `bun install -g github:garrytan/gbrain`, then `gbrain setup claude-code`. With no brain configured it creates a keyless local one (`gbrain init --pglite --no-embedding`). It then writes the stdio MCP entry to `~/.claude.json` and the `SessionStart` and `UserPromptSubmit` hooks to `~/.claude/settings.json`, and runs the same stdio smoke as `gbrain doctor --only harness_wiring`.
+- **Target first.** Before any write, setup prints the brain, source, launcher, MCP surface and registration owner it chose. `--dry-run` stops there; `--json` prints one document.
+- **Three separate decisions.** Wiring scope (`--scope user|project`, `--no-hooks`), automatic capture (`--capture` adds the `Stop` and `SessionEnd` hooks) and provider use (`--providers`). Capture and providers are off unless you accept them. An existing `memory.auto_writeback: off` or `GBRAIN_HOOKS=0` wins over a flag.
+- **Owned by hash.** A connection receipt beside `~/.claude.json` records the exact hash of each entry setup wrote. An entry you edited afterwards is kept and reported, never overwritten or removed. An interrupted run resumes without duplicating anything. Two installs on one machine each remove only their own entries.
+- **Refuses instead of guessing.** A hosted brain is never shadowed by a new local one (`setup_hosted_connection`). A live PGLite server, an MCP entry setup did not write, another install's receipt or an existing `bootstrap harness` wiring refuses with `setup_owner_conflict` and the exact next step. `codex`, `openclaw` and `hermes` print their per-harness guide (`setup_harness_unsupported`). `gbrain errors <code>` explains each.
+- **Honest states.** Setup reports `configured`, `connection-verified` and `native-pending` separately; it never claims that memory reaches a fresh session on its own until that is observed.
 
-- **`TransactionOptions.signal`** (`src/core/engine.ts`, `src/core/postgres-engine.ts`, `src/core/postgres-engine/transaction-abort.ts`). On Postgres an abort discards the transaction's connection through the begin handle's `discard()` (the connection-ownership hunk from #5466 / #5560): the socket closes, the server rolls the transaction back on its own whether a statement is in flight or not, directly or through a transaction-mode pooler, and the pool reconnects on its next checkout. The transaction rejects with an `AbortError` whose `message` is the signal's reason and whose `cause` is the driver's `CONNECTION_CLOSED` error; every `finally` on the way out runs and the `tx` gauge is released. An already-aborted signal rejects before `BEGIN` is sent. An abort after `COMMIT` returned changes nothing. A nested transaction shares its parent's connection, so aborting it aborts the parent too.
-- **PGLite** (`src/core/pglite-engine.ts`): one in-process connection cannot interrupt a statement, so only the pre-`BEGIN` check applies; a mid-flight abort is ignored and the transaction commits.
-- Tests: `test/e2e/postgres-transaction-abort-postgres.test.ts` (5 cases: mid-flight abort on `transaction` and `transactionDirect` with `finally`, rollback checked again after the in-flight statement would have finished, pool and gauge freed; pre-aborted signal sends no `BEGIN`; abort after `COMMIT`; no signal), 3 of 5 fail on master (the option is ignored and the transaction commits); `test/transaction-abort.test.ts` (8 cases: the abort-before-and-after-attach paths, error mapping, listener removal, and PGLite's two behaviors).
+### For contributors
+
+- `writeClaudeHooksAt` and `removeClaudeHooksAt` accept an opt-in `ownedEntryHashes` set (`hookEntryHash`: sha256 over type, command and timeout). With it, a marker match alone never replaces or removes an entry, and edited entries come back in `preserved`. Existing callers are unchanged.
+- `src/core/setup/capabilities.ts` is the versioned harness × transport capability table that setup reads.
+- Guide: `docs/guides/setup.md`. Refusals: `docs/guides/repair.md#setup-refusals`.
 
 ## [0.60.155.0] - 2026-10-10
 
