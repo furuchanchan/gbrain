@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.168.0] - 2026-10-10
+
+### Fixed
+
+- `facts relink`'s model tier no longer returns `model_unparseable` on
+  thinking-by-default models: the judge's `chat()` call now passes
+  `thinking: 'off'` (the same switch #5331 applied to the other
+  small-budget judges), so the compact output cap is not consumed by
+  reasoning before the JSON starts — #6419.
+
+
 ## [0.60.153.0] - 2026-10-10
 
 **A repeated query in a long-running `gbrain serve` no longer waits on the embedding provider: about 110–150 ms faster per repeat, and 75 of 100 provider embed calls avoided on a realistic mix. Cold `search`, `query` and `stats` start 100–175 ms faster on both engines. Doctor's `eval_drift` stops paying 0.2–0.4 s per run on a freshly cloned or just-pulled source checkout. Rankings and output are unchanged.**

@@ -345,6 +345,18 @@ describe('relink model tier', () => {
     await relink({ llm: false });
     expect(calls.length).toBe(0);
   });
+
+  test('the judge call asks for thinking off so the small cap is not spent on reasoning (#6419)', async () => {
+    for (let i = 0; i < 16; i++) await unlinked(`note number ${i} mentions taylor bishop`);
+    const seen: Array<ChatOpts['thinking']> = [];
+    __setChatTransportForTests(async (o: ChatOpts) => {
+      seen.push(o.thinking);
+      return answer(String(o.messages[0]!.content).split('\n').map(() => null));
+    });
+    await relink({ llm: true });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(t => t === 'off')).toBe(true);
+  });
 });
 
 describe('relink reasons', () => {
