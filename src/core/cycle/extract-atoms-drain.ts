@@ -108,6 +108,16 @@ export interface ExtractAtomsDrainDeps {
     failureCount?: number;
     firstError?: string;
     failures?: Array<{ source: string; reason: string }>;
+    /**
+     * #6425: items this batch skipped only because the run's budget was spent.
+     * Budget skips are not progress AND not a stuck backlog — the drain stops
+     * with `stopped: 'budget'` instead of the misleading `no_progress`.
+     */
+    budgetSkipped?: number;
+    /** The configured per-run budget cap (cycle.extract_atoms.budget_usd), when the phase reports it. */
+    budgetUsd?: number;
+    /** USD this batch estimates it spent. */
+    budgetSpentUsd?: number;
   }>;
   /**
    * Count remaining eligible-but-unextracted pages, or null on query error.
@@ -145,7 +155,7 @@ export interface ExtractAtomsDrainOpts {
  */
 export type DrainStop =
   | 'drained' | 'window' | 'deadline' | 'lock_lost' | 'aborted'
-  | 'no_progress' | 'max_batches' | 'provider_failure';
+  | 'no_progress' | 'max_batches' | 'provider_failure' | 'budget';
 
 export const DRAIN_COUNT_TIMEOUT_MS = 60_000;
 
@@ -181,6 +191,16 @@ export interface ExtractAtomsDrainResult {
   /** Batches actually processed. */
   batches: number;
   stopped: DrainStop;
+  /**
+   * #6425: items skipped across the run because the per-run budget
+   * (cycle.extract_atoms.budget_usd) was spent — the real reason behind what
+   * used to read `stopped: 'no_progress'`.
+   */
+  budget_skipped: number;
+  /** The configured per-run cap when a batch reported it, else null. */
+  budget_usd: number | null;
+  /** Estimated USD the run spent across its batches. */
+  budget_usd_spent: number;
   /**
    * #4539: total per-item failures across every batch in this run. 0 for a
    * clean run. Included in `--json` verbatim; dream.ts prints a stderr line
@@ -244,6 +264,10 @@ export async function runExtractAtomsDrain(
   const failures: ExtractAtomsDrainFailure[] = [];
   let lastError: string | null = null;
   let lastCount: number | null = null;
+  // #6425: budget-skip visibility — a run spent against its cap reports WHY.
+  let budgetSkipped = 0;
+  let budgetUsd: number | null = null;
+  let budgetUsdSpent = 0;
   let lockSignal: AbortSignal | null = null;
   const result = (stopped: DrainStop, remaining: number | null): ExtractAtomsDrainResult => ({
     phase: 'extract_atoms',
@@ -253,6 +277,9 @@ export async function runExtractAtomsDrain(
     remaining,
     batches,
     stopped,
+    budget_skipped: budgetSkipped,
+    budget_usd: budgetUsd,
+    budget_usd_spent: budgetUsdSpent,
     failure_count: failureCount,
     failures,
     omitted_failure_count: failureCount - failures.length,
@@ -312,6 +339,9 @@ export async function runExtractAtomsDrain(
           extracted += r.extracted;
           skipped += r.skipped;
           batches++;
+          budgetSkipped += r.budgetSkipped ?? 0;
+          if (typeof r.budgetUsd === 'number' && Number.isFinite(r.budgetUsd)) budgetUsd = r.budgetUsd;
+          budgetUsdSpent += r.budgetSpentUsd ?? 0;
           // #4730: preserve typed per-item records (bounded, sanitized) while
           // keeping failure_count exact and reconcilable — count-only adapters
           // (the #4539 shape) still contribute to the total via failureCount.
@@ -374,6 +404,10 @@ export async function runExtractAtomsDrain(
           // zero-yield pages shrink the backlog without producing atoms. Only
           // stop when the backlog count genuinely didn't move.
           if (r.extracted === 0 && r.skipped === 0) {
+            // #6425: a batch that only budget-skipped did not stall — the
+            // run's `cycle.extract_atoms.budget_usd` is spent. Name that stop
+            // so `no_progress` (and the resume hint) isn't reported for it.
+            if ((r.budgetSkipped ?? 0) > 0) { stopped = 'budget'; break; }
             const after = await count();
             if (hard.signal.aborted) break;
             if (after !== null) lastCount = after;
@@ -513,6 +547,13 @@ export async function runExtractAtomsDrainForSource(
           providerFailure: failures.length > 0 && itemsSucceeded === 0,
           failureCount: failures.length,
           failures: typedFailures,
+          // #6425: the phase counts items it skipped only because the run
+          // budget was spent — forward both kinds so a spent budget stops as
+          // 'budget', not the misleading 'no_progress'.
+          budgetSkipped:
+            Number(d.pages_skipped_budget ?? 0) + Number(d.transcripts_skipped_budget ?? 0),
+          budgetUsd: typeof d.budget_usd === 'number' ? d.budget_usd : undefined,
+          budgetSpentUsd: Number(d.estimated_spend_usd ?? 0),
         };
       },
       countRemaining: (signal) => countExtractAtomsBacklog(engine, extractionSourceId, { signal }),

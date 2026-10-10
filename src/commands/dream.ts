@@ -602,7 +602,7 @@ async function runDrain(
   if (opts.dryRun) {
     const remaining = await countExtractAtomsBacklog(engine, extractionSourceId);
     if (opts.json) {
-      await writeJsonDocument(JSON.stringify({ phase: 'extract_atoms', status: 'ok', dry_run: true, extracted: 0, skipped: 0, remaining, batches: 0, stopped: 'window', failure_count: 0, failures: [], omitted_failure_count: 0, last_error: null, resume_command: drainCommand(opts) }, null, 2));
+      await writeJsonDocument(JSON.stringify({ phase: 'extract_atoms', status: 'ok', dry_run: true, extracted: 0, skipped: 0, remaining, batches: 0, stopped: 'window', budget_skipped: 0, budget_usd: null, budget_usd_spent: 0, failure_count: 0, failures: [], omitted_failure_count: 0, last_error: null, resume_command: drainCommand(opts) }, null, 2));
     } else {
       console.log(`[drain] dry-run: ${remaining ?? '?'} page(s) eligible for atom extraction (no work done)`);
     }
@@ -661,8 +661,13 @@ async function runDrain(
   }
   // null remaining = the final count query failed; do not report success.
   if (result.stopped === 'drained' && result.remaining === 0) return;
+  // #6425: a 'budget' stop names its control and spend so the operator knows
+  // raising cycle.extract_atoms.budget_usd (or re-running) is the unstick.
+  const budgetDetail = result.stopped === 'budget'
+    ? ` cycle.extract_atoms.budget_usd=${result.budget_usd ?? '?'} spent ~$${result.budget_usd_spent.toFixed(4)} (${result.budget_skipped} item(s) budget-skipped).`
+    : '';
   process.stderr.write(
-    `[drain] stopped: ${result.stopped}; ${result.remaining ?? '?'} page(s) remaining. ` +
+    `[drain] stopped: ${result.stopped}; ${result.remaining ?? '?'} page(s) remaining.${budgetDetail} ` +
     `Rerun: ${drainCommand(opts)}\n`,
   );
   process.exit(EXIT_DRAIN_INCOMPLETE);

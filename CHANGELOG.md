@@ -36,6 +36,12 @@ Efficiency wave 9 (GBRA-75). Base is master at wave 8 (310371559). Measured on 4
   - `managed-sync-foreground-priority.test.ts` (Postgres arm) flake fixed. "a stream of writes from another process" now boots and connects its writer process before the drain starts. Before, the drain's lead depended on how fast a cold process started, so a slow runner could commit most groups before the first write. Forcing a 600 ms boot fails the old test 4 of 4 times and passes the new one 4 of 4.
   - Crash robot: 600 s on each engine, every seam, with PgBouncer and `pooler_disconnect` on Postgres.
 
+## [0.60.163.0] - 2026-10-10
+
+**`gbrain dream --drain` now says `stopped: "budget"` when the run's `cycle.extract_atoms.budget_usd` is spent — with the cap and estimated spend named in `--json` (`budget_skipped`, `budget_usd`, `budget_usd_spent`) and in the `[drain]` line — instead of the misleading `no_progress` that made a spent budget read as a stuck backlog (#6425).**
+
+The drain adapter forwarded only `atoms_extracted` and `duplicates_skipped`, so a batch that skipped every item on the spent budget read as {0, 0} and the unchanged backlog classified `no_progress`. The phase's `pages_skipped_budget` / `transcripts_skipped_budget` / `estimated_spend_usd` / `budget_usd` now ride the batch result; a batch whose only outcome is budget skips stops the drain with the new `budget` reason. A batch that also extracted keeps draining, and a genuinely stuck backlog still reports `no_progress`.
+
 ## [0.60.146.0] - 2026-10-10
 
 **On PGLite at 50,000 pages, the vector index now builds (11 minutes, where it used to run out of memory) and vector search drops from 1.7 s to 27 ms. A 50,000-page import no longer leaves about 30,000 Git effects queued, so `gbrain serve`'s first call is 189 ms instead of 640 ms and the first write after it 266 ms instead of 758 ms. The first sync of an already-imported 3,700-file source takes 22 s instead of 96 s on Postgres and 28 s instead of 60 s on PGLite.**
