@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.165.0] - 2026-10-10
+
+**Schema pack mutations no longer double backslashes in quoted YAML scalars (#6432).** `parseYamlMini` read double-quoted scalars literally — `emitYamlScalar`'s `JSON.stringify` wrote `"a\\b"` (valid YAML for `a\b`) and the reader kept both backslashes, so every `add-alias`/`add-type`/… round-trip doubled every `\` in the pack (regexes, path aliases). A few dozen mutations could turn a 19 KB `pack.yaml` into a gigabyte file that made every CLI process balloon to tens of GB. Double-quoted scalars now unescape YAML's escape set (JSON's `\\ \" \n \t \r \b \f \uXXXX` plus the YAML extras), single-quoted `''` resolves to `'`, and `\"` inside a double-quoted string no longer opens a trailing `#` as a comment. Packs already corrupted by doubled backslashes stay corrupted at the file level — the fix stops growth, it does not shrink existing files.
+
 ## [0.60.147.0] - 2026-10-10
 
 **A write that arrives while a brain folder with the Git durability hook is committing a backlog of Git effects now publishes after the group in flight, inside its 5 s wait. Before, it waited out the whole backlog and came back pending. On Postgres, a first sync of an already-imported source now issues 40 statements per unchanged file instead of 82.**

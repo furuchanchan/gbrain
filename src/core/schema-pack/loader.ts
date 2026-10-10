@@ -90,6 +90,28 @@ export function loadPackFromString(content: string, hint: string): SchemaPackMan
  * use similar hand-rolled patterns; this one is shape-customized for pack
  * manifests (4-level nest, sequences-of-maps for page_types/link_types).
  */
+const YAML_DOUBLE_ESCAPES: Record<string, string> = {
+  '0': '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n', v: '\x0b',
+  f: '\f', r: '\r', e: '\x1b', '"': '"', '/': '/', '\\': '\\',
+  // N=NEL(U+0085) _=NBSP(U+00A0) L=LS(U+2028) P=PS(U+2029) ' '=space
+  N: '', _: ' ', L: ' ', P: ' ', ' ': ' ',
+};
+
+/**
+ * Unescape a YAML double-quoted scalar's interior: JSON's escape set
+ * (`\\ \" \n \t \r \b \f \uXXXX` — what `emitYamlScalar`'s
+ * `JSON.stringify` writes) plus the rest of YAML 1.1's. Unknown escapes
+ * keep their backslash rather than throwing, matching permissive readers.
+ */
+function unescapeDoubleQuoted(s: string): string {
+  if (!s.includes('\\')) return s;
+  return s.replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|.)/g,
+    (_m, esc: string) => {
+      if (esc.length > 1) return String.fromCodePoint(parseInt(esc.slice(1), 16));
+      return YAML_DOUBLE_ESCAPES[esc] ?? '\\' + esc;
+    });
+}
+
 export function parseYamlMini(content: string): unknown {
   const lines = content.split(/\r?\n/);
   let i = 0;
@@ -101,6 +123,13 @@ export function parseYamlMini(content: string): unknown {
     let inDouble = false;
     for (let j = 0; j < line.length; j++) {
       const c = line[j];
+      // An escaped character inside a double-quoted string carries no
+      // syntactic meaning — a \" must not close the string.
+      if (c === '\\' && inDouble) {
+        result += c + (line[j + 1] ?? '');
+        j++;
+        continue;
+      }
       if (c === "'" && !inDouble) inSingle = !inSingle;
       else if (c === '"' && !inSingle) inDouble = !inDouble;
       else if (c === '#' && !inSingle && !inDouble) break;
@@ -125,10 +154,14 @@ export function parseYamlMini(content: string): unknown {
         return inner.split(',').map(item => parseScalar(item.trim()));
       }
     }
-    // Quoted string
-    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-        (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-      return trimmed.slice(1, -1);
+    // Quoted string. Double-quoted scalars carry YAML's escape sequences
+    // (same set JSON.stringify emits, plus the YAML extras); a
+    // single-quoted scalar escapes only '' → '.
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return unescapeDoubleQuoted(trimmed.slice(1, -1));
+    }
+    if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+      return trimmed.slice(1, -1).replace(/''/g, "'");
     }
     // Number
     if (/^-?\d+$/.test(trimmed)) return parseInt(trimmed, 10);

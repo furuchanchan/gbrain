@@ -487,6 +487,72 @@ filing_rules: []
       expect(after.page_types.find((t) => t.name === 'researcher')).toBeDefined();
     });
   });
+
+  it('repeated mutations keep backslashes stable in quoted scalars (#6432)', async () => {
+    await withEnv({ GBRAIN_HOME: tmpDir, GBRAIN_AUDIT_DIR: auditDir }, async () => {
+      const dir = join(tmpDir, '.gbrain', 'schema-packs', 'yaml-pack');
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, 'pack.yaml');
+      const regex = 'people/(r|s)/.*';
+      const yamlBody = `api_version: gbrain-schema-pack-v1
+name: yaml-pack
+version: 1.0.0
+description: ""
+gbrain_min_version: 0.38.0
+extends: null
+borrow_from: []
+page_types:
+  - name: person
+    primitive: entity
+    path_prefixes:
+      - people/
+    aliases:
+      - "folders\\\\team\\\\*"
+    extractable: false
+    expert_routing: false
+link_types:
+  - name: reviews
+    inference:
+      regex: "a\\\\b|c"
+frontmatter_links: []
+takes_kinds:
+  - fact
+enrichable_types: []
+filing_rules: []
+`;
+      writeFileSync(path, yamlBody, 'utf-8');
+
+      // Three mutations; each read+emit round-trip must leave the
+      // escaped scalars byte-stable rather than doubling backslashes.
+      for (let k = 0; k < 3; k++) {
+        await addTypeToPack('yaml-pack', {
+          name: `t${k}`, primitive: 'entity', prefix: `people/t${k}/`,
+        } as never, { lockDir });
+      }
+
+      const final = readFileSync(path, 'utf-8');
+      expect(final).toContain('"folders\\\\team\\\\*"');
+      expect(final).toContain('"a\\\\b|c"');
+      expect(final).not.toContain('\\\\\\\\');
+
+      const parsed = parseYamlMini(final) as {
+        page_types: Array<{ aliases: string[] }>;
+        link_types: Array<{ inference: { regex: string } }>;
+      };
+      expect(parsed.page_types[0]!.aliases[0]).toBe('folders\\team\\*');
+      expect(parsed.link_types[0]!.inference.regex).toBe('a\\b|c');
+      expect(regex).toContain('|');
+    });
+  });
+
+  it('double-quoted parse unescapes and an escaped quote keeps trailing comments out', () => {
+    const result = parseYamlMini(
+      'regex: "a\\\\b" # note\nq: "x\\"y # not a comment"\nsingle: \'it\'\'s\'',
+    ) as Record<string, unknown>;
+    expect(result.regex).toBe('a\\b');
+    expect(result.q).toBe('x"y # not a comment');
+    expect(result.single).toBe("it's");
+  });
 });
 
 // ─── atomicity ────────────────────────────────────────────────────────
