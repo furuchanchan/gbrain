@@ -110,26 +110,58 @@ async function failedWrites(engine: BrainEngine, sourceIds: string[], id?: strin
 
 /**
  * #6429: the caller writes this command would still replay, counted per source, operation and refusal reason for
- * doctor's `lost_caller_writes`. Distinct intents, so a caller's retry counts its write once; a refused replay
- * attempt is the original write (its rows are dropped and its attempts walked as `disposition` does), a write whose
- * replay or retry committed or whose page was later deleted (for put_page: written again) is not lost. Owner-produced
- * writes are not counted: their producer runs them again. Reads no intents.
+ * doctor's `lost_caller_writes`, plus the refused receipts compaction already emptied (unreplayable). Distinct
+ * intents, so a caller's retry counts its write once; a refused replay attempt is the original write (its rows are
+ * dropped and its attempts walked as `disposition` does); a write whose replay or retry committed or whose page was
+ * later deleted (for put_page: written again) is not lost. Owner-produced writes are not counted: their producer
+ * runs them again. Reads no intents, and every read is one pass over the table, never one probe per candidate:
+ * doctor runs this on every call.
  */
 export async function lostCallerWrites(engine: BrainEngine, sourceIds: string[]):
-Promise<{ source_id: string; operation: string; reason: 'file_database_drift' | 'writer_guard'; count: number }[]> {
-  type Lost = { id: string; request_id: string; source_id: string; slug: string; operation: string; digest: string; reason: 'file_database_drift' | 'writer_guard' };
-  const rows = await engine.executeRaw<Lost>(
-    `SELECT r.id::text, r.request_id::text, r.source_id, r.slug, r.operation, r.digest, CASE WHEN r.state='conflict' THEN 'file_database_drift' ELSE 'writer_guard' END AS reason
-    FROM persistence_requests r
-    WHERE r.source_id = ANY($1::text[]) AND NOT r.compacted AND r.intent IS NOT NULL AND (${GUARD_REFUSAL} OR ${DRIFT_REFUSAL})
-      AND r.operation = ANY($2::text[]) AND NOT (r.operation='put_page' AND r.intent ? 'kind')
-      AND NOT EXISTS (SELECT 1 FROM persistence_requests c WHERE c.source_id=r.source_id AND c.slug=r.slug AND c.state='committed' AND c.sequence > r.sequence
-        AND (c.digest=r.digest OR c.operation = ANY($3::text[]) OR r.operation='put_page'))
-    ORDER BY r.sequence`, [sourceIds, REPLAYABLE, PAGE_REMOVALS]);
+Promise<{ lost: { source_id: string; operation: string; reason: 'source_changed' | 'writer_guard'; count: number }[]; compacted: number }> {
+  type Lost = { id: string; request_id: string; source_id: string; slug: string; operation: string; digest: string; sequence: string; reason: 'source_changed' | 'writer_guard' };
+  const caller = `r.operation = ANY($2::text[]) AND NOT (r.operation='put_page' AND r.intent ? 'kind')`;
+  const refused = `(${GUARD_REFUSAL} OR ${DRIFT_REFUSAL})`;
+  const [rows, [compacted]] = await Promise.all([
+    engine.executeRaw<Lost>(
+      `SELECT r.id::text, r.request_id::text, r.source_id, r.slug, r.operation, r.digest, r.sequence::text,
+        CASE WHEN r.state='conflict' THEN 'source_changed' ELSE 'writer_guard' END AS reason
+      FROM persistence_requests r
+      WHERE r.source_id = ANY($1::text[]) AND NOT r.compacted AND r.intent IS NOT NULL AND ${refused} AND ${caller}
+      ORDER BY r.sequence`, [sourceIds, REPLAYABLE]),
+    // A compacted receipt keeps no intent, so an owner-produced put_page cannot be told from a caller's; remember and
+    // add_timeline_entry are always caller writes.
+    engine.executeRaw<{ count: number }>(
+      `SELECT count(*)::int AS count FROM persistence_requests r
+      WHERE r.source_id = ANY($1::text[]) AND r.compacted AND (${GUARD_REFUSAL} OR ${DRIFT_REFUSAL}) AND r.operation = ANY($2::text[])`,
+      [sourceIds, REPLAYABLE.filter(operation => operation !== 'put_page')]),
+  ]);
+  if (!rows.length) return { lost: [], compacted: Number(compacted?.count ?? 0) };
+  // Attempt rows this command submitted belong to their original (walked below), not to the listing.
   const requestIds = new Set(rows.map(row => row.request_id));
   const replays = new Set<string>();
   for (const row of rows) for (let attempt = 0; requestIds.has(replayId(row.id, attempt)); attempt++) replays.add(replayId(row.id, attempt));
-  let pending = rows.filter(row => !replays.has(row.request_id));
+  const originals = rows.filter(row => !replays.has(row.request_id));
+  // Supersession, set-based: per slug the newest committed removal and write, per (slug, digest) the newest committed same intent.
+  const slugs = [...new Set(originals.map(row => row.slug))];
+  const [bySlug, byDigest] = await Promise.all([
+    engine.executeRaw<{ source_id: string; slug: string; removal: string | null; write: string | null }>(
+      `SELECT c.source_id, c.slug, max(c.sequence) FILTER (WHERE c.operation = ANY($3::text[]))::text AS removal, max(c.sequence)::text AS write
+      FROM persistence_requests c WHERE c.source_id = ANY($1::text[]) AND c.slug = ANY($2::text[]) AND c.state='committed' GROUP BY c.source_id, c.slug`,
+      [sourceIds, slugs, PAGE_REMOVALS]),
+    engine.executeRaw<{ source_id: string; slug: string; digest: string; same: string }>(
+      `SELECT c.source_id, c.slug, c.digest, max(c.sequence)::text AS same FROM persistence_requests c
+      WHERE c.source_id = ANY($1::text[]) AND c.slug = ANY($2::text[]) AND c.digest = ANY($3::text[]) AND c.state='committed' GROUP BY c.source_id, c.slug, c.digest`,
+      [sourceIds, slugs, [...new Set(originals.map(row => row.digest))]]),
+  ]);
+  const later = (a: string | null | undefined, b: string) => a != null && BigInt(a) > BigInt(b);
+  const slugKey = (row: { source_id: string; slug: string }) => `${row.source_id}\0${row.slug}`;
+  const removalBy = new Map(bySlug.map(row => [slugKey(row), row.removal]));
+  const writeBy = new Map(bySlug.map(row => [slugKey(row), row.write]));
+  const sameBy = new Map(byDigest.map(row => [`${slugKey(row)}\0${row.digest}`, row.same]));
+  let pending = originals.filter(row => !later(sameBy.get(`${slugKey(row)}\0${row.digest}`), row.sequence)
+    && !later(removalBy.get(slugKey(row)), row.sequence) && !(row.operation === 'put_page' && later(writeBy.get(slugKey(row)), row.sequence)));
+  // Replay attempts whose row is not a refusal (committed, or still live): one read per attempt round, rounds are few.
   const lost: Lost[] = [];
   for (let attempt = 0; pending.length; attempt++) {
     const states = new Map((await engine.executeRaw<{ request_id: string; state: string }>(
@@ -150,8 +182,8 @@ Promise<{ source_id: string; operation: string; reason: 'file_database_drift' | 
     group.digests.add(row.digest);
     groups.set(key, group);
   }
-  return [...groups.values()].sort((a, b) => a.source_id.localeCompare(b.source_id) || a.operation.localeCompare(b.operation) || a.reason.localeCompare(b.reason))
-    .map(group => ({ source_id: group.source_id, operation: group.operation, reason: group.reason, count: group.digests.size }));
+  const sorted = [...groups.values()].sort((a, b) => a.source_id.localeCompare(b.source_id) || a.operation.localeCompare(b.operation) || a.reason.localeCompare(b.reason));
+  return { lost: sorted.map(group => ({ source_id: group.source_id, operation: group.operation, reason: group.reason, count: group.digests.size })), compacted: Number(compacted?.count ?? 0) };
 }
 
 async function pageRevision(engine: BrainEngine, sourceId: string, slug: string): Promise<string | null> {
@@ -196,13 +228,14 @@ function driftDetail(sourceId: string, slug: string): string {
 /**
  * #6429: whether the page's canonical file still differs from its database copy, the same check the replay's
  * preparation applies. A reconcile that rewrites only the file leaves the page row untouched, so the row's
- * `updated_at` alone cannot tell that the drift is gone. Without the page or its owner binding on this host the
- * drift is assumed to remain.
+ * `updated_at` alone cannot tell that the drift is gone. A page that no longer exists has no file to drift (the
+ * supersession rules below decide); without the owner binding on this host the drift is assumed to remain.
  */
 async function stillDrifted(engine: BrainEngine, write: FailedWrite): Promise<boolean> {
   const snapshot = await engine.readPageSnapshot(write.slug, { sourceId: write.source_id });
+  if (!snapshot) return false;
   const binding = await getWorktreeBinding(engine, write.source_id);
-  if (!snapshot || !binding) return true;
+  if (!binding) return true;
   try {
     await prepareFileTarget(engine, { source_id: write.source_id, worktree_id: binding.worktree_id, slug: write.slug }, snapshot, null);
     return false;

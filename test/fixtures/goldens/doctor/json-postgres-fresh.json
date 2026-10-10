@@ -835,6 +835,7 @@
         {
           "category": "ops",
           "details": {
+            "compacted_unreplayable": 0,
             "count": 0,
             "docs": "docs/guides/repair.md#failed-writes",
             "repair": "failed-writes",

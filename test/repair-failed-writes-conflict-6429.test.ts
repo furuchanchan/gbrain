@@ -52,6 +52,51 @@ test('a remember refused as file/database drift is listed and replayed by repair
   for (const engine of engines) await conflictCase(engine);
 }, 240_000);
 
+test('a caller retry that commits clears the original and its refused replay attempt from the lost count', async () => {
+  for (const engine of engines) await retryCase(engine);
+}, 240_000);
+
+async function retryCase(engine: BrainEngine): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'gbrain-replay-6429r-'));
+  const root = join(dir, 'brain'); mkdirSync(root);
+  const sourceId = `r6429-${randomUUID().slice(0, 8)}`;
+  const slug = 'people/dana-example';
+  try {
+    await withEnv({ GBRAIN_HOME: join(dir, 'home') }, async () => {
+      await engine.executeRaw('INSERT INTO sources(id,name,local_path) VALUES($1,$1,$2)', [sourceId, root]);
+      await engine.setConfig('sync.write_through', 'true');
+      await claimWorktree(engine, sourceId, root);
+      await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+      const ctx = { engine, sourceId, remote: false, config: { engine: engine.kind, embedding_disabled: true } as never, dryRun: false, logger } as OperationContext;
+      await submitPageMutation(ctx, { operation: 'put_page', params: { slug, content: '---\ntitle: Dana Example\ntype: person\n---\nDana.', request_id: randomUUID() } });
+      const file = join(root, 'people', 'dana-example.md');
+      const published = readFileSync(file, 'utf8');
+      appendFileSync(file, '\nEdited in the file only.\n');
+      const params = { fact: 'Dana Example runs marathons', entity: slug, provenance: 'test', visibility: 'world' };
+      await submitRememberMutation(ctx, { ...params, request_id: randomUUID() }).catch(() => undefined);
+      const scope = await resolveRepairScope(engine, sourceId);
+      const preview = await (await repairRunner(engine, { apply: false, logger })).run('failed-writes', scope, { explicit: true, sourceFlag: sourceId });
+      // The replay attempt is refused too: two conflict rows (the original and its attempt, which carries a different digest).
+      await (await repairRunner(engine, { apply: true, logger })).run('failed-writes', scope, { explicit: true, sourceFlag: sourceId, expect: preview.apply_command.split('--expect ')[1] });
+      const [conflicts] = await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM persistence_requests WHERE source_id=$1 AND operation='remember' AND state='conflict'`, [sourceId]);
+      expect(conflicts.n).toBe(2);
+      expect((await lostCallerWritesCheck(engine, [sourceId])).details).toMatchObject({ count: 1 });
+
+      // The file is reconciled and the caller sends the same remember again (same intent, new request id): it commits.
+      writeFileSync(file, published);
+      await submitRememberMutation(ctx, { ...params, request_id: randomUUID() });
+      expect((await lostCallerWritesCheck(engine, [sourceId])).status).toBe('ok');
+      const again = await (await repairRunner(engine, { apply: false, logger })).run('failed-writes', scope, { explicit: true, sourceFlag: sourceId });
+      expect(again.affected).toBe(0);
+      expect(again.residuals).toEqual({ already_written: 1 });
+    });
+  } finally {
+    await disposePersistenceConsumer(engine);
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function conflictCase(engine: BrainEngine): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'gbrain-replay-6429-'));
   const root = join(dir, 'brain'); mkdirSync(root);
@@ -79,8 +124,9 @@ async function conflictCase(engine: BrainEngine): Promise<void> {
       const lost = await lostCallerWritesCheck(engine, [sourceId]);
       expect(lost.status).toBe('warn');
       expect(lost.message).toContain(`1 caller write(s) never landed (1 remember; 1 refused source_changed`);
+      expect(lost.message).not.toContain('compacted');
       expect(lost.message).toContain(`gbrain repair failed-writes --source ${sourceId}`);
-      expect(lost.details).toMatchObject({ count: 1, repair: 'failed-writes', writes: [{ source_id: sourceId, operation: 'remember', reason: 'file_database_drift', count: 1 }] });
+      expect(lost.details).toMatchObject({ count: 1, repair: 'failed-writes', writes: [{ source_id: sourceId, operation: 'remember', reason: 'source_changed', count: 1 }], compacted_unreplayable: 0 });
 
       const scope = await resolveRepairScope(engine, sourceId);
       const preview = await (await repairRunner(engine, { apply: false, logger })).run('failed-writes', scope, { explicit: true, sourceFlag: sourceId });

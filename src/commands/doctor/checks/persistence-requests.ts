@@ -209,19 +209,20 @@ export async function lostCallerWritesCheck(engine: BrainEngine, sourceIds?: str
   const docs = 'docs/guides/repair.md#failed-writes';
   try {
     const sources = sourceIds ?? (await engine.executeRaw<{ id: string }>('SELECT id FROM sources WHERE archived IS NOT TRUE ORDER BY id')).map(row => row.id);
-    const rows = await lostCallerWrites(engine, sources);
-    const count = rows.reduce((sum, row) => sum + row.count, 0);
-    const details = { count, writes: rows, repair: 'failed-writes', docs };
-    if (!count) return { name: 'lost_caller_writes', status: 'ok', details, message: 'Every caller write with a retained receipt committed or was superseded.' };
+    const { lost, compacted } = await lostCallerWrites(engine, sources);
+    const count = lost.reduce((sum, row) => sum + row.count, 0);
+    const details = { count, writes: lost, compacted_unreplayable: compacted, repair: 'failed-writes', docs };
+    const compactedNote = compacted ? ` ${compacted} older refused receipt(s) were compacted (persistence.receipt_retention_days) and cannot be replayed.` : '';
+    if (!count) return { name: 'lost_caller_writes', status: 'ok', details, message: `Every caller write with a retained receipt committed or was superseded.${compactedNote}` };
     const bySource = new Map<string, number>();
-    for (const row of rows) bySource.set(row.source_id, (bySource.get(row.source_id) ?? 0) + row.count);
+    for (const row of lost) bySource.set(row.source_id, (bySource.get(row.source_id) ?? 0) + row.count);
     const first = [...bySource.keys()][0]!;
-    const drift = rows.filter(row => row.reason === 'file_database_drift').reduce((sum, row) => sum + row.count, 0);
-    const memory = rows.filter(row => row.operation === 'remember').reduce((sum, row) => sum + row.count, 0);
+    const drift = lost.filter(row => row.reason === 'source_changed').reduce((sum, row) => sum + row.count, 0);
+    const memory = lost.filter(row => row.operation === 'remember').reduce((sum, row) => sum + row.count, 0);
     return { name: 'lost_caller_writes', status: 'warn', details,
-      message: `${count} caller write(s) never landed (${memory} remember; ${drift} refused source_changed because the page's file and database differed, `
-        + `${count - drift} refused by the managed writer guard): ${[...bySource].map(([source, n]) => `${source}: ${n}`).join(', ')}. The callers saw an error and `
-        + `the fact or page edit was dropped. Preview the replay on the brain host: gbrain repair failed-writes --source ${first} — then run the apply command it prints after the user agrees.`,
+      message: `${count} caller write(s) never landed (${memory} remember; ${drift} refused source_changed because the page's canonical file did not match its database copy `
+        + `or was missing, ${count - drift} refused by the managed writer guard): ${[...bySource].map(([source, n]) => `${source}: ${n}`).join(', ')}. The callers saw an error and `
+        + `the fact or page edit was dropped. Preview the replay on the brain host: gbrain repair failed-writes --source ${first} — then run the apply command it prints after the user agrees.${compactedNote}`,
       fix: agentFix(['gbrain', 'repair', 'failed-writes', '--source', first],
         'Read-only preview: lists each lost write with its disposition (replay, already_written, duplicate, superseded) and prints the apply command.', 'lost_caller_writes', { docs }) };
   } catch (error) {
