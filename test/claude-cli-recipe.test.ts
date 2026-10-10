@@ -863,7 +863,7 @@ describe('claude-cli LanguageModel — maxTokens propagation', () => {
 
         await model.doGenerate({
           prompt: [userMessage('hi')],
-          maxTokens: 16384,
+          maxOutputTokens: 16384,
         } as LanguageModelV2CallOptions);
         expect(fs.readFileSync(envLog, 'utf8')).toContain('maxOut=16384');
 
