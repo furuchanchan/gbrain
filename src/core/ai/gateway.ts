@@ -74,6 +74,7 @@ import { reportEmbeddingAuthFailure } from './key-warnings.ts';
 import { buildGatewayConfig, foldNativeBaseUrlsFromFilePlane } from './build-gateway-config.ts';
 import { invokeAI, sdkInvocationUsage, responseInvocationUsage, hasAIInvocationGuard, isAIInvocationPolicyError } from './invocation-guard.ts';
 import { installAICallLogFromEnv } from './call-log.ts';
+import { cachedQueryEmbedding, clearQueryEmbedCache, queryEmbedCacheKey, queryEmbedGeneration, storeQueryEmbedding } from './query-embed-cache.ts';
 import { createGuardedGeneration, chatInvocation } from './guarded-generation.ts';
 installAiSdkWarningWriter();
 const guardedGeneration = createGuardedGeneration(() => DEFAULT_MAX_OUTPUT_TOKENS);
@@ -471,6 +472,7 @@ export function configureGateway(config: AIGatewayConfig): void {
   };
   stashGatewayAnthropicKeyFromEnv(config.env); // #2119: filter + rationale in anthropic-key.ts
   _modelCache.clear();
+  clearQueryEmbedCache();
   _shrinkState.clear();
   // A (re)configure is a new env snapshot: a key that appeared or vanished
   // since the last no_key audit row deserves a fresh once-per-process row.
@@ -502,6 +504,7 @@ export function refreshGatewayEnvFromFilePlane(): void {
   // DB-plane base_urls never steer native keys.
   _config = { ..._config, env: foldNativeBaseUrlsFromFilePlane(cfg, mergedProviderEnv(cfg, process.env)) };
   _modelCache.clear();
+  clearQueryEmbedCache();
 }
 
 /**
@@ -602,6 +605,7 @@ export async function reconfigureGatewayWithEngine(engine: BrainEngine): Promise
   setGatewayModelSource('expansion', expansionFull, gatewayModelSource('expansion', expansionDetailed, expansionEffective));
   setGatewayModelSource('chat', chatFull, gatewayModelSource('chat', chatDetailed, chatEffective));
   _modelCache.clear();
+  clearQueryEmbedCache();
   _shrinkState.clear();
   return _config;
 }
@@ -684,6 +688,7 @@ function clearGatewayState(): void {
   clearGatewayModelSources();
   stashGatewayAnthropicKeyFromEnv(undefined); // gateway-owned snapshot dies with the config
   _modelCache.clear();
+  clearQueryEmbedCache();
   _shrinkState.clear();
   _embedTransport = sdkEmbedMany;
   _generateTextTransport = sdkGenerateText;
@@ -742,7 +747,11 @@ export function __unconfigureGatewayForTests(): void {
 export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
   _embedTransport = fn ?? sdkEmbedMany;
   _embedTransportInstalled = fn !== null;
+  clearQueryEmbedCache();
 }
+
+/** @internal exported for tests: drop every cached query embedding. */
+export const __clearQueryEmbedCacheForTests = clearQueryEmbedCache;
 
 /**
  * Test-only seam for the chat() SDK call. Unlike __setChatTransportForTests,
@@ -1806,7 +1815,15 @@ export async function embedQuery(
   // #5691: instruction-style models (Qwen3-Embedding, e5, BGE, nomic) take a
   // query instruction. The caller resolves it per brain (search/query-prefix.ts);
   // documents are never prefixed.
-  const [v] = await embed([(opts?.queryPrefix ?? '') + text], {
+  const input = (opts?.queryPrefix ?? '') + text;
+  const cfg = requireConfig();
+  const { recipe, modelId } = await resolveEmbeddingProvider(opts?.embeddingModel ?? getEmbeddingModel());
+  const dims = opts?.dimensions ?? cfg.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
+  const key = queryEmbedCacheKey(recipe.id, modelId, cfg.base_urls?.[recipe.id] ?? '', dims, input);
+  const cached = hasAIInvocationGuard() ? undefined : cachedQueryEmbedding(key);
+  if (cached) return cached;
+  const generation = queryEmbedGeneration();
+  const [v] = await embed([input], {
     inputType: 'query',
     embeddingModel: opts?.embeddingModel,
     dimensions: opts?.dimensions,
@@ -1815,6 +1832,7 @@ export async function embedQuery(
     // default via withDefaultTimeout (shorter wins).
     abortSignal: opts?.abortSignal,
   });
+  if (v) storeQueryEmbedding(key, v, generation);
   return v;
 }
 
