@@ -67,7 +67,16 @@ export interface ContextEngine {
   }): Promise<AssembleResult>;
   compact(params: {
     sessionId: string;
-    sessionFile: string;
+    // Optional since OpenClaw 2026.9.7: the SQLite transcript store removed it
+    // from the contract in favor of the storage-neutral sessionTarget.
+    sessionFile?: string;
+    sessionTarget?: {
+      agentId?: string;
+      sessionId?: string;
+      sessionKey?: string;
+      storePath?: string;
+      threadId?: string;
+    };
     tokenBudget?: number;
     force?: boolean;
     [key: string]: unknown;
@@ -789,12 +798,12 @@ export function sanitizeEngineSessionId(raw: unknown): string | null {
  * heartbeat as a degraded `compact` entry with its fixed recovery hint, the
  * way the hook lane reports it.
  */
-async function recordOpenclawSeat(dir: string, sessionId: string, sessionFile: string): Promise<void> {
+async function recordOpenclawSeat(dir: string, sessionId: string, transcriptPath: string | null): Promise<void> {
   try {
     const { resolveSeat, writeSeatSidecar } = await import('./context/seat.ts');
     let reasons: string[];
     try {
-      const seat = resolveSeat({ env: process.env, harness: 'openclaw', transcriptPath: sessionFile });
+      const seat = resolveSeat({ env: process.env, harness: 'openclaw', transcriptPath });
       reasons = seat ? writeSeatSidecar(dir, sessionId, seat, { harness: 'openclaw', hookLane: 'context-engine' }) : [];
     } catch {
       reasons = ['seat_write_failed'];
@@ -805,6 +814,33 @@ async function recordOpenclawSeat(dir: string, sessionId: string, sessionFile: s
     // trim:false: the gateway process is long-lived; only short-lived hooks trim the heartbeat file. The entry gets the reason's hint.
     await writeHeartbeat({ ts: new Date().toISOString(), event: 'compact', outcome: 'degraded', reason, duration_ms: 0 }, { trim: false });
   } catch { /* provenance and telemetry never fail the checkpoint */ }
+}
+
+/**
+ * #6316 store lane: OpenClaw ≥2026.9.7 keeps transcripts in SQLite and passes
+ * compact() a storage-neutral `sessionTarget` (agentId/sessionId/sessionKey?/
+ * storePath?/threadId?) instead of a file path. The plugin-sdk's
+ * session-transcript-runtime reads the same `type`-keyed records the JSONL
+ * tail maps (the store persists the JSONL record schema, incl. `type:
+ * 'compaction'` boundaries), resolved at runtime by the OpenClaw host — never
+ * a build-time dependency. Any failure returns null, which the caller reads
+ * as 'unparseable': the checkpoint stays fail-open and never breaks
+ * compaction.
+ */
+async function readOpenclawStoreTail(
+  segs: typeof import('./context/corpus-segments.ts'),
+  sessionTarget: Record<string, unknown>,
+): Promise<ReturnType<typeof segs.mapOpenclawEntries>> {
+  try {
+    // @ts-ignore — openclaw/plugin-sdk is resolved at runtime by the OpenClaw host; not a build-time dep.
+    const st = await import('openclaw/plugin-sdk/session-transcript-runtime');
+    if (typeof st.readSessionTranscriptEvents !== 'function') return null;
+    const events = await st.readSessionTranscriptEvents(sessionTarget);
+    if (!Array.isArray(events)) return null;
+    return segs.mapOpenclawEntries(events);
+  } catch {
+    return null;
+  }
 }
 
 // ── Engine Implementation ───────────────────────────────────────────────
@@ -948,7 +984,7 @@ export function createGBrainContextEngine(ctx: {
 
   /** compact()-side: spool-first checkpoint over the ladder. Never throws. */
   async function runCompactCheckpoint(params: {
-    sessionId?: unknown; sessionFile?: unknown;
+    sessionId?: unknown; sessionFile?: unknown; sessionTarget?: unknown;
   }, deadlineHit: () => boolean = () => false): Promise<Record<string, unknown>> {
     // Host-supplied id, sanitized to the hook lane's charset before ANY
     // filename/key use (pre-landing review, security: OpenClaw session keys
@@ -962,11 +998,22 @@ export function createGBrainContextEngine(ctx: {
     // equivalent root for OpenClaw's session store. Content is sniffed
     // structurally: a non-JSONL/boundary-less file is a typed skip below.
     const sessionFile = typeof params.sessionFile === 'string' && params.sessionFile ? params.sessionFile : null;
-    if (!sessionId || !sessionFile) return { status: 'skipped', reason: 'no_session' };
+    // #6316: OpenClaw ≥2026.9.7 removed sessionFile from the compact()
+    // contract (transcripts live in SQLite) and passes a storage-neutral
+    // sessionTarget ({agentId, sessionId, sessionKey?, storePath?, threadId?})
+    // instead — the store lane below reads the same boundary window through
+    // the SDK's identity-keyed transcript readers.
+    const sessionTarget =
+      params.sessionTarget && typeof params.sessionTarget === 'object' && !Array.isArray(params.sessionTarget)
+        ? (params.sessionTarget as Record<string, unknown>)
+        : null;
+    if (!sessionId || (!sessionFile && !sessionTarget)) return { status: 'skipped', reason: 'no_session' };
 
     const segs = await import('./context/corpus-segments.ts');
     if (deadlineHit()) return { status: 'skipped', reason: 'deadline' };
-    const tail = segs.readOpenclawBoundaryTail(sessionFile, { maxBytes: 2 * 1024 * 1024 });
+    const tail = sessionFile
+      ? segs.readOpenclawBoundaryTail(sessionFile, { maxBytes: 2 * 1024 * 1024 })
+      : await readOpenclawStoreTail(segs, sessionTarget as Record<string, unknown>);
     if (!tail) return { status: 'skipped', reason: 'unparseable' };
     const windowTurns = segs.sliceBoundaryWindow(tail.turns, tail.boundaryTurnIndexes, {
       maxTurns: OPENCLAW_SEGMENT_MAX_TURNS,
@@ -980,7 +1027,8 @@ export function createGBrainContextEngine(ctx: {
     const { loadConfig } = await import('./config.ts');
     const cfg = loadConfig();
     const dir = await engineCorpusDir(cfg);
-    await recordOpenclawSeat(dir, sessionId, sessionFile);
+    await recordOpenclawSeat(dir, sessionId, sessionFile
+      ?? (typeof sessionTarget?.storePath === 'string' && sessionTarget.storePath ? sessionTarget.storePath : null));
     (await import('./context/capture-consent.ts')).recordCaptureIfOff(cfg, `${dir}/${segs.segmentFileName(sessionId, segs.segmentHash(rendered.text))}`, rendered.text);
     const w = segs.writeSegment(dir, sessionId, rendered.text);
     const ordinal = segs.appendSegmentLedger(dir, sessionId, w.hash);

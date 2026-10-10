@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.149.0] - 2026-10-10
+
+**`gbrain-context`'s `compact()` checkpoint now banks the pre-compaction window on OpenClaw ≥2026.9.7, which removed `sessionFile` from the plugin contract (live transcripts moved to SQLite).**
+
+`runCompactCheckpoint` required a JSONL `sessionFile`; newer OpenClaw passes a storage-neutral `sessionTarget` ({agentId, sessionId, sessionKey?, storePath?, threadId?}) instead, so every compaction skipped `no_session`. When `sessionFile` is absent the checkpoint now reads the transcript through the plugin-sdk's `session-transcript-runtime` (`readSessionTranscriptEvents`, resolved at runtime by the host) and maps the same `type`-keyed records — including `type:'compaction'` boundaries — via the shared `mapOpenclawEntries` extractor the JSONL tail read now delegates to. Any store-read failure degrades to the existing `unparseable` skip; the checkpoint stays fail-open and never breaks compaction.
+
 ## [0.60.144.0] - 2026-10-10
 
 **A managed import writes about 12% less WAL on Postgres (200 → 176 KB per page at 50,000 pages) and spends 3-13% less time executing SQL, with the same rows: each imported, synced or put page is sealed by one closing write instead of two, the import's crash checkpoint no longer stores the page text, and the write claim looks up its root's earlier rows by index.**

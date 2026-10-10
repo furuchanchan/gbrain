@@ -250,14 +250,51 @@ export async function coverageComplete(
 }
 
 /**
+ * Maps already-parsed transcript records through `mapOpenclawLine` into the
+ * boundary-window shape. Shared by the JSONL tail read and the SQLite
+ * session-store lane (#6316): OpenClaw persists the same `type`-keyed
+ * records as transcript events, so one mapping serves both storage forms.
+ */
+export function mapOpenclawEntries(
+  entries: unknown[],
+): { turns: WindowTurn[]; boundaryTurnIndexes: number[]; toolCalls: ToolCallRecord[]; toolCallTurnIndexes: number[] } | null {
+  const turns: WindowTurn[] = [];
+  const boundaryTurnIndexes: number[] = [];
+  // Memorable integration: tool calls stamped with the turn slot they sit at
+  // (turns.length BEFORE the line's own turn is pushed — same semantics as the
+  // claude-code parser), so a caller writing only a window span can filter the
+  // calls to the same origin. A `skip` line can still carry calls (a
+  // placeholder-only message has no text but its calls are real work).
+  const toolCalls: ToolCallRecord[] = [];
+  const toolCallTurnIndexes: number[] = [];
+  let mappedAnything = false;
+  for (const entry of entries) {
+    const mapped = mapOpenclawLine(entry);
+    if (mapped.kind === 'message' || mapped.kind === 'skip') {
+      for (const c of mapped.toolCalls ?? []) {
+        toolCalls.push(c);
+        toolCallTurnIndexes.push(turns.length);
+      }
+    }
+    if (mapped.kind === 'session') {
+      mappedAnything = true;
+    } else if (mapped.kind === 'boundary') {
+      mappedAnything = true;
+      boundaryTurnIndexes.push(turns.length);
+    } else if (mapped.kind === 'message') {
+      mappedAnything = true;
+      turns.push({ role: mapped.message.role, text: mapped.message.text });
+    }
+  }
+  return mappedAnything ? { turns, boundaryTurnIndexes, toolCalls, toolCallTurnIndexes } : null;
+}
+
+/**
  * Tail-capable openclaw boundary reader (cathedral 5): the import adapter
  * REJECTS over-cap files and whole-file-reads under the cap — too heavy for
  * a compaction boundary — so this reads the newest `maxBytes`, drops the
  * partial first line on tail reads, and delegates line→message mapping to
- * the mapper EXPORTED from the adapter (the dated SPEC_TARGET stays the
- * single source of truth). Boundary positions in turns-index space, exactly
- * like the claude-code parser. Returns null when nothing maps (not an
- * openclaw session file) or on fs errors — callers fail open.
+ * `mapOpenclawEntries`. Returns null on fs errors — callers fail open.
  */
 export function readOpenclawBoundaryTail(
   path: string,
@@ -282,43 +319,17 @@ export function readOpenclawBoundaryTail(
   } catch {
     return null;
   }
-  const turns: WindowTurn[] = [];
-  const boundaryTurnIndexes: number[] = [];
-  // Memorable integration: tool calls stamped with the turn slot they sit at
-  // (turns.length BEFORE the line's own turn is pushed — same semantics as the
-  // claude-code parser), so a caller writing only a window span can filter the
-  // calls to the same origin. A `skip` line can still carry calls (a
-  // placeholder-only message has no text but its calls are real work).
-  const toolCalls: ToolCallRecord[] = [];
-  const toolCallTurnIndexes: number[] = [];
-  let mappedAnything = false;
+  const entries: unknown[] = [];
   for (const line of raw.split('\n')) {
     const t = line.trim();
     if (!t) continue;
-    let entry: unknown;
     try {
-      entry = JSON.parse(t);
+      entries.push(JSON.parse(t));
     } catch {
       continue; // includes a tail read's partial first line
     }
-    const mapped = mapOpenclawLine(entry);
-    if (mapped.kind === 'message' || mapped.kind === 'skip') {
-      for (const c of mapped.toolCalls ?? []) {
-        toolCalls.push(c);
-        toolCallTurnIndexes.push(turns.length);
-      }
-    }
-    if (mapped.kind === 'session') {
-      mappedAnything = true;
-    } else if (mapped.kind === 'boundary') {
-      mappedAnything = true;
-      boundaryTurnIndexes.push(turns.length);
-    } else if (mapped.kind === 'message') {
-      mappedAnything = true;
-      turns.push({ role: mapped.message.role, text: mapped.message.text });
-    }
   }
-  return mappedAnything ? { turns, boundaryTurnIndexes, toolCalls, toolCallTurnIndexes } : null;
+  return mapOpenclawEntries(entries);
 }
 
 /**

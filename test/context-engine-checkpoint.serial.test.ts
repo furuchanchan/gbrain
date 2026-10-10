@@ -3,7 +3,7 @@
  * assemble block). SERIAL: mutates GBRAIN_HOME and binds an in-process IPC
  * server (check-test-isolation R1 quarantine).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -48,6 +48,7 @@ describe('checkpoint compaction (cathedral 5)', () => {
     home = undefined;
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = undefined;
+    mock.restore();
   });
 
   const sessionLine = JSON.stringify({ type: 'session', id: 'oc-sess', cwd: '/w', timestamp: '2026-08-01T10:00:00Z' });
@@ -99,6 +100,48 @@ describe('checkpoint compaction (cathedral 5)', () => {
     tmpDir = makeWorkspace();
     const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
     const result = await engine.compact({ sessionId: 's', sessionFile: join(home!, 'missing.jsonl') });
+    expect(result.ok).toBe(true);
+    const bag = (result.result ?? {}) as { gbrain_checkpoint?: { status: string; reason?: string } };
+    expect(bag.gbrain_checkpoint?.status).toBe('skipped');
+    expect(bag.gbrain_checkpoint?.reason).toBe('unparseable');
+    expect(existsSync(join(home!, '.gbrain', 'transcripts', 'corpus'))).toBe(false);
+  });
+
+  it('#6316: sessionTarget store lane banks the since-last-boundary window when sessionFile is absent', async () => {
+    tmpDir = makeWorkspace();
+    const events = [
+      JSON.parse(sessionLine), JSON.parse(msg('PRE-BOUNDARY text')),
+      JSON.parse(boundary), JSON.parse(msg('POST-BOUNDARY window text')),
+    ];
+    mock.module('openclaw/plugin-sdk/session-transcript-runtime', () => ({
+      readSessionTranscriptEvents: async () => events,
+    }));
+    const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
+    const result = await engine.compact({
+      sessionId: 'oc-sess',
+      sessionTarget: { agentId: 'main', sessionId: 'oc-sess' },
+    });
+    expect(result.ok).toBe(true);
+    const bag = (result.result ?? {}) as { gbrain_checkpoint?: { status: string; reason?: string } };
+    expect(bag.gbrain_checkpoint?.status).toBe('banked');
+    const corpus = join(home!, '.gbrain', 'transcripts', 'corpus');
+    const segs = readdirSync(corpus).filter((f) => f.startsWith('oc-sess.seg-') && f.endsWith('.txt'));
+    expect(segs).toHaveLength(1);
+    const body = readFileSync(join(corpus, segs[0]), 'utf8');
+    expect(body).toContain('POST-BOUNDARY');
+    expect(body).not.toContain('PRE-BOUNDARY');
+  });
+
+  it('#6316: store read failure degrades to typed skip, delegation unaffected', async () => {
+    tmpDir = makeWorkspace();
+    mock.module('openclaw/plugin-sdk/session-transcript-runtime', () => ({
+      readSessionTranscriptEvents: async () => { throw new Error('store unavailable'); },
+    }));
+    const engine = createGBrainContextEngine({ workspaceDir: tmpDir });
+    const result = await engine.compact({
+      sessionId: 'oc-sess',
+      sessionTarget: { agentId: 'main', sessionId: 'oc-sess' },
+    });
     expect(result.ok).toBe(true);
     const bag = (result.result ?? {}) as { gbrain_checkpoint?: { status: string; reason?: string } };
     expect(bag.gbrain_checkpoint?.status).toBe('skipped');
@@ -404,6 +447,7 @@ describe('memorable receipts from compact() (openclaw lane)', () => {
     home = undefined;
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = undefined;
+    mock.restore();
   });
 
   const sessionLine = JSON.stringify({ type: 'session', id: 'oc-mem', cwd: '/w', timestamp: 't0' });
