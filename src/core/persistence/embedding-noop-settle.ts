@@ -26,6 +26,7 @@ import { OperationError } from '../ops/contract.ts';
 import { embeddingWriteTarget } from '../page-state/projections.ts';
 import { quoteIdentifier } from '../search/embedding-column.ts';
 import { guardEffectSource } from './effect-recovery.ts';
+import { embeddingCompletionModel } from './effects.ts';
 import type { PersistenceEffect } from './effect-model.ts';
 import { faultPoint } from './fault-points.ts';
 import { declarePersistenceProtocol, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
@@ -39,24 +40,48 @@ const LEFT_FOR_RUNNER = new Set(['owner_unavailable', 'source_changed', 'recover
 
 type Candidate = Pick<PersistenceEffect, 'id' | 'kind' | 'source_id' | 'source_incarnation' | 'worktree_id'>;
 
-/** Settles up to `limit` no-op embedding effects claimable by `hostId`; resolves with how many it settled. */
-export async function settleNoopEmbeddingEffects(engine: BrainEngine, hostId: string, signature: string, limit = NOOP_SETTLE_BATCH): Promise<number> {
-  // Most drains have no unattempted embedding effect at all: one indexed probe, no transaction.
-  const [due] = await engine.executeRaw(`SELECT 1 FROM persistence_effects WHERE kind='embedding' AND state='queued' AND attempts=0
-    AND next_attempt_at<=now() AND recovery IS NULL LIMIT 1`);
-  if (!due) return 0;
+/**
+ * How far a process's settle passes have looked, for one write column, model and signature. Effects at or below
+ * `through` were each considered once; one that becomes a no-op later (vectors installed while it waited) takes the
+ * runner path. Without it, a backlog that cannot settle (stale vectors, an unconfigured provider) would be walked in
+ * full on every drain.
+ */
+export interface NoopSettleCursor { key: string; through: string }
+export interface NoopSettlePass { settled: number; cursor: NoopSettleCursor; done: boolean }
+
+/** One settle pass over effects past `after`, in id order; `done` once it reached the newest effect. */
+export async function settleNoopEmbeddingEffects(engine: BrainEngine, hostId: string, signature: string,
+  after?: NoopSettleCursor, limit = NOOP_SETTLE_BATCH): Promise<NoopSettlePass> {
+  const { column } = await embeddingWriteTarget(engine);
+  const expectedModel = embeddingCompletionModel(column, signature) ?? null;
+  const key = `${column.name}\0${expectedModel ?? ''}\0${signature}`;
+  const from = after?.key === key ? after.through : '0';
+  // A drain with nothing new to consider costs one indexed read and opens no transaction.
+  const [due] = await engine.executeRaw(`SELECT 1 FROM persistence_effects WHERE id>$1::bigint AND kind='embedding' AND state='queued' AND attempts=0
+    AND recovery IS NULL LIMIT 1`, [from]);
+  if (!due) return { settled: 0, cursor: { key, through: from }, done: true };
   return engine.transaction(async tx => {
     await declarePersistenceProtocol(tx);
-    const { column, model } = await embeddingWriteTarget(tx);
-    const expectedModel = column.name === 'embedding' ? signature.slice(0, signature.lastIndexOf(':')) : column.embeddingModel ?? model;
+    const [{ newest }] = await tx.executeRaw<{ newest: string }>('SELECT COALESCE(max(id),0)::text AS newest FROM persistence_effects');
+    // The window is the next `limit` unattempted embedding effects by id, read from the primary key and locked;
+    // the per-effect tests then run on that window only, so a pass costs at most `limit` effects whatever the
+    // backlog holds and whatever the planner estimates for it.
+    const rows = await tx.executeRaw<{ id: string; page_id: number | null }>(`SELECT e.id::text AS id, (e.data->>'page_id')::int AS page_id
+      FROM persistence_effects e WHERE e.id>$1::bigint AND e.kind='embedding' AND e.state='queued' AND e.attempts=0 AND e.recovery IS NULL
+      ORDER BY e.id LIMIT $2 FOR UPDATE SKIP LOCKED`, [from, limit]);
+    const window = rows.map(row => row.id);
+    // A short window reached the newest effect; a full one continues after its last effect.
+    const done = window.length < limit;
+    const cursor = { key, through: done ? newest : window[window.length - 1]! };
+    if (!window.length) return { settled: 0, cursor, done };
     const vector = quoteIdentifier(column.name);
-    const candidates = await tx.executeRaw<Candidate>(`SELECT e.id, e.kind, e.source_id, e.source_incarnation, e.worktree_id
+    const candidates = await tx.executeRaw<Candidate>(`SELECT e.id::text AS id, e.kind, e.source_id, e.source_incarnation, e.worktree_id
       FROM persistence_effects e
-      LEFT JOIN persistence_worktrees w ON w.id=e.worktree_id
       JOIN pages p ON p.id=(e.data->>'page_id')::int AND p.source_id=e.source_id
-      WHERE e.kind='embedding' AND e.state='queued' AND e.attempts=0 AND e.next_attempt_at<=now() AND e.recovery IS NULL
+      WHERE e.id=ANY($4::text[]::bigint[]) AND p.id=ANY($5::int[]) AND e.next_attempt_at<=now()
         AND NOT (e.data ? 'targets') AND NOT (e.data ? 'source_scan') AND NOT (e.data ? 'retry_slugs') AND NOT (e.data ? 'parked')
-        AND (e.worktree_id IS NULL OR w.owner_host_id=$1::uuid) AND (e.worktree_id IS NULL OR ${refreshFenceClear('e')})
+        AND (e.worktree_id IS NULL OR (EXISTS (SELECT 1 FROM persistence_worktrees w WHERE w.id=e.worktree_id AND w.owner_host_id=$1::uuid)
+          AND ${refreshFenceClear('e')}))
         AND NOT EXISTS (SELECT 1 FROM persistence_effects blocked WHERE blocked.worktree_id=e.worktree_id AND blocked.recovery IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM persistence_requests blocked WHERE blocked.worktree_id=e.worktree_id AND blocked.recovery IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM persistence_effects mirror
@@ -65,26 +90,26 @@ export async function settleNoopEmbeddingEffects(engine: BrainEngine, hostId: st
         AND p.embedding_signature=$2
         AND NOT EXISTS (SELECT 1 FROM content_chunks cc WHERE cc.page_id=p.id AND NOT (cc.${vector} IS NOT NULL
           AND cc.embedded_at IS NOT NULL AND cc.embedded_text_hash IS NOT DISTINCT FROM md5(cc.chunk_text) AND cc.model IS NOT DISTINCT FROM $3))
-      ORDER BY e.next_attempt_at, e.id LIMIT $4
-      FOR UPDATE OF e SKIP LOCKED FOR SHARE OF p`, [hostId, signature, expectedModel, limit]);
-    if (!candidates.length) return 0;
+      ORDER BY e.id
+      FOR SHARE OF p`, [hostId, signature, expectedModel, window, rows.flatMap(row => row.page_id === null ? [] : [row.page_id])]);
+    if (!candidates.length) return { settled: 0, cursor, done };
     const guarded = new Map<string, boolean>();
     const ids: string[] = [];
     for (const effect of candidates) {
-      const key = `${effect.source_id}\0${effect.source_incarnation}\0${effect.worktree_id ?? ''}`;
-      if (!guarded.has(key)) {
-        guarded.set(key, await guardEffectSource(tx, effect as PersistenceEffect, hostId).then(() => true, error => {
+      const scope = `${effect.source_id}\0${effect.source_incarnation}\0${effect.worktree_id ?? ''}`;
+      if (!guarded.has(scope)) {
+        guarded.set(scope, await guardEffectSource(tx, effect as PersistenceEffect, hostId).then(() => true, error => {
           if (error instanceof OperationError && LEFT_FOR_RUNNER.has(error.code)) return false;
           throw error;
         }));
       }
-      if (guarded.get(key)) ids.push(String(effect.id));
+      if (guarded.get(scope)) ids.push(String(effect.id));
     }
-    if (!ids.length) return 0;
+    if (!ids.length) return { settled: 0, cursor, done };
     const settled = await tx.executeRaw(`UPDATE persistence_effects SET state='committed', error_code=NULL, attempts=attempts+1,
         data=data-'retry_slugs'-'target_failures'-'failing_target', execution_token=NULL, claim_expires_at=NULL, outcome='{}'::jsonb, updated_at=now()
       WHERE id=ANY($1::text[]::bigint[]) AND state='queued' AND recovery IS NULL AND ${PERSISTENCE_PROTOCOL_PREDICATE} RETURNING id`, [ids]);
     await faultPoint('effect:embedding:settle', { effectId: ids[0] });
-    return settled.length;
+    return { settled: settled.length, cursor, done };
   });
 }

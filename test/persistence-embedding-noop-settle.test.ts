@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import type { OperationContext } from '../src/core/ops/contract.ts';
-import { runPersistenceEffects, type EffectWorkerOptions } from '../src/core/persistence/effects.ts';
+import { embeddingCompletionModel, runPersistenceEffects, type EffectWorkerOptions } from '../src/core/persistence/effects.ts';
 import { settleNoopEmbeddingEffects } from '../src/core/persistence/embedding-noop-settle.ts';
 import { installFaultHook } from '../src/core/persistence/fault-points.ts';
 import { localHostId, registerLocalWriter } from '../src/core/persistence/identity.ts';
@@ -108,7 +108,7 @@ for (const kind of testBackends()) {
         [[...noop, pending, ...Object.values(stale)].map(p => p.effectId)]);
       const gitBefore = await engine.executeRaw<{ id: string; state: string; attempts: number }>("SELECT id::text AS id,state,attempts FROM persistence_effects WHERE kind='git' ORDER BY id");
 
-      expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature)).toBe(2);
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature)).settled).toBe(2);
       for (const p of noop) expect(await row(p.effectId)).toMatchObject({ state: 'committed', attempts: 1, outcome: {} });
       for (const p of [pending, ...Object.values(stale)]) expect((await row(p.effectId)).state).toBe('queued');
       // The settle never touches another kind.
@@ -130,7 +130,7 @@ for (const kind of testBackends()) {
       const slow = await page('rows/slow', true);
       await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now()+interval \'1 hour\' WHERE id=$1', [slow.effectId]);
       await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=$1', [bulk.effectId]);
-      expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature)).toBe(1);
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature)).settled).toBe(1);
       await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=$1', [slow.effectId]);
       let calls = 0;
       await drainAll(async texts => { calls++; return texts.map(() => vector()); });
@@ -153,7 +153,7 @@ for (const kind of testBackends()) {
       expect(await engine.executeRaw("SELECT kind FROM persistence_effects WHERE request_id=ANY($1::uuid[]) AND state<>'committed' ORDER BY kind", [ids]))
         .toEqual([{ kind: 'embedding' }, { kind: 'embedding' }]);
       await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=$1', [bulk.effectId]);
-      expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature)).toBe(1);
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature)).settled).toBe(1);
       await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=$1', [slow.effectId]);
       let calls = 0;
       await drainAll(async texts => { calls++; return texts.map(() => vector()); });
@@ -178,6 +178,71 @@ for (const kind of testBackends()) {
         .toEqual([{ compacted: true }, { compacted: true }]);
     });
 
+    check('a backlog that cannot settle is considered once per process, and a new no-op past it still settles', async () => {
+      await reset();
+      const stale = [await page('cursor/stale-a', false), await page('cursor/stale-b', false)];
+      await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=ANY($1::text[]::bigint[])', [stale.map(p => p.effectId)]);
+      const second = await settleNoopEmbeddingEffects(engine, localHostId(), signature);
+      expect(second).toMatchObject({ settled: 0, done: true });
+      const [{ newest }] = await engine.executeRaw<{ newest: string }>('SELECT max(id)::text AS newest FROM persistence_effects');
+      expect(second.cursor.through).toBe(newest);
+      // The next drain finds nothing past the cursor and opens no transaction.
+      const transaction = engine.transaction.bind(engine);
+      let opened = 0;
+      engine.transaction = ((fn: never) => { opened++; return transaction(fn); }) as typeof engine.transaction;
+      try { expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature, second.cursor)).toEqual({ settled: 0, cursor: second.cursor, done: true }); }
+      finally { delete (engine as { transaction?: unknown }).transaction; }
+      expect(opened).toBe(0);
+      // A stale effect that becomes a no-op behind the cursor is the runner's; a new no-op past it settles here.
+      const sealed = (await readProjectionSnapshot(engine, stale[0]!.slug, stale[0]!.sourceId))!;
+      expect(await installPageEmbeddings(engine, sealed, [{ chunk_index: 0, chunk_source: 'compiled_truth', chunk_text: `Body of ${stale[0]!.slug}`, embedding: vector(), model }], signature)).toBe(true);
+      const fresh = await page('cursor/fresh', true);
+      await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=ANY($1::text[]::bigint[])', [[stale[0]!.effectId, fresh.effectId]]);
+      expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature, second.cursor)).toMatchObject({ settled: 1, done: true });
+      expect((await row(fresh.effectId)).state).toBe('committed');
+      expect((await row(stale[0]!.effectId)).state).toBe('queued');
+      // A different signature or write column starts over from the oldest effect.
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature, { ...second.cursor, key: 'other' })).settled).toBe(1);
+      expect((await row(stale[0]!.effectId)).state).toBe('committed');
+    });
+
+    check('a full pass moves the cursor to its last candidate and the next pass continues past it', async () => {
+      await reset();
+      // Sweep the earlier cases' effects (none due) so the cursor starts at the newest effect.
+      let start = await settleNoopEmbeddingEffects(engine, localHostId(), signature);
+      while (!start.done) start = await settleNoopEmbeddingEffects(engine, localHostId(), signature, start.cursor);
+      expect(start.settled).toBe(0);
+      const noops = [await page('paged/a', true), await page('paged/b', true), await page('paged/c', true)];
+      await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=ANY($1::text[]::bigint[])', [noops.map(p => p.effectId)]);
+      const first = await settleNoopEmbeddingEffects(engine, localHostId(), signature, start.cursor, 2);
+      expect(first).toMatchObject({ settled: 2, done: false, cursor: { through: noops[1]!.effectId } });
+      const next = await settleNoopEmbeddingEffects(engine, localHostId(), signature, first.cursor, 2);
+      expect(next).toMatchObject({ settled: 1, done: true });
+      for (const p of noops) expect((await row(p.effectId)).state).toBe('committed');
+    });
+
+    check('a sweep one effect at a time visits every unattempted embedding effect in numeric id order', async () => {
+      await reset();
+      // The next effect ids cross a power of ten, so a text ordering of ids would visit them out of order.
+      await engine.executeRaw(`SELECT setval(pg_get_serial_sequence('persistence_effects','id'),
+        (10::numeric ^ ceil(log(10, COALESCE(max(id),0)+20)))::bigint - 10) FROM persistence_effects`);
+      for (let i = 0; i < 12; i++) await page(`sweep/n${i}`, false);
+      const expected = (await engine.executeRaw<{ id: string }>(
+        "SELECT e.id::text AS id FROM persistence_effects e WHERE e.kind='embedding' AND e.state='queued' AND e.attempts=0 AND e.recovery IS NULL ORDER BY e.id")).map(r => r.id);
+      // Ids of different lengths: a text ordering would skip some of them.
+      expect(new Set(expected.map(id => id.length)).size).toBeGreaterThan(1);
+      const seen: string[] = [];
+      let pass = await settleNoopEmbeddingEffects(engine, localHostId(), signature, undefined, 1);
+      while (!pass.done) { seen.push(pass.cursor.through); pass = await settleNoopEmbeddingEffects(engine, localHostId(), signature, pass.cursor, 1); }
+      expect(seen).toEqual(expected);
+    });
+
+    check('the completion model matches the runner for the legacy column and a named column, model names with colons included', async () => {
+      expect(embeddingCompletionModel({ name: 'embedding', embeddingModel: undefined } as never, 'acme:embed:v2:1536')).toBe('acme:embed:v2');
+      expect(embeddingCompletionModel({ name: 'embedding_voyage', embeddingModel: 'voyage:voyage-3' } as never, 'acme:embed:v2:1536')).toBe('voyage:voyage-3');
+      expect(embeddingCompletionModel({ name: 'embedding', embeddingModel: undefined } as never, 'acme:embed:v2:1536', 'explicit:model')).toBe('explicit:model');
+    });
+
     check('a crash inside the settle leaves every row queued and unattempted', async () => {
       await reset();
       const a = await page('crash/a', true);
@@ -187,7 +252,7 @@ for (const kind of testBackends()) {
       await expect(settleNoopEmbeddingEffects(engine, localHostId(), signature)).rejects.toThrow('crash inside the settle');
       installFaultHook(undefined);
       for (const p of [a, b]) expect(await row(p.effectId)).toMatchObject({ state: 'queued', attempts: 0, outcome: null, execution_token: null });
-      expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature)).toBe(2);
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature)).settled).toBe(2);
     });
 
     check('an archived or replaced source and a deleted page are left for the runner', async () => {
@@ -197,7 +262,7 @@ for (const kind of testBackends()) {
       await engine.executeRaw('UPDATE sources SET archived=true WHERE id=$1', [archived.sourceId]);
       await engine.executeRaw('UPDATE pages SET deleted_at=now() WHERE id=$1', [deleted.pageId]);
       await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=ANY($1::text[]::bigint[])', [[archived.effectId, deleted.effectId]]);
-      expect(await settleNoopEmbeddingEffects(engine, localHostId(), signature)).toBe(0);
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature)).settled).toBe(0);
       for (const p of [archived, deleted]) expect((await row(p.effectId)).state).toBe('queued');
     });
   });

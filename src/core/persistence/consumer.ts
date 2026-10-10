@@ -16,7 +16,7 @@ import { publicationConcurrency } from './pool-capacity.ts';
 import { claimedHeadOrder } from './sync-window.ts';
 import { laneClaim, laneOf, laneRoots, laneTask } from './sync-lanes.ts';
 import { runPersistenceEffects } from './effects.ts';
-import { NOOP_SETTLE_BATCH, settleNoopEmbeddingEffects } from './embedding-noop-settle.ts';
+import { settleNoopEmbeddingEffects, type NoopSettleCursor } from './embedding-noop-settle.ts';
 import { currentEmbeddingSignature } from '../embedding.ts';
 import { PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
 import { isWriteErrorCode } from './types.ts';
@@ -175,6 +175,7 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
   private projectionWorker: Promise<unknown> | undefined;
   private effectsWorker: Promise<void> | undefined;
   private draining: { since: number; settled: number; ran: number; noticedAt: number } | undefined;
+  private settleCursor: NoopSettleCursor | undefined;
   private topologyWorker: Promise<unknown> | undefined;
   private maintenanceWorker: Promise<unknown> | undefined;
   private nextMaintenance = 0;
@@ -622,11 +623,13 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
     const signature = currentEmbeddingSignature();
     const drain = this.draining = { since: Date.now(), settled: 0, ran: 0, noticedAt: 0 };
     try {
-      for (let settled = signature ? NOOP_SETTLE_BATCH : 0; settled >= NOOP_SETTLE_BATCH && !this.stopping;) {
-        settled = await settleNoopEmbeddingEffects(this.engine, this.hostId, signature!);
-        drain.settled += settled;
+      for (let done = !signature; !done && !this.stopping;) {
+        const pass = await settleNoopEmbeddingEffects(this.engine, this.hostId, signature!, this.settleCursor);
+        this.settleCursor = pass.cursor;
+        done = pass.done;
+        drain.settled += pass.settled;
         this.drainNotice(drain);
-        await yieldToEventLoop();
+        if (!done) await yieldToEventLoop();
       }
       for (let ran = limit; ran >= limit && !this.stopping;) {
         ran = await runPersistenceEffects(this.engine, this.config, { hostId: this.hostId, limit, signal: this.abort.signal });
