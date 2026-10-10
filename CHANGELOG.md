@@ -10,6 +10,19 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.154.0] - 2026-10-10
+
+**The Postgres E2E test for filtered HNSW recall under iterative scan no longer fails at random. It averages four index builds instead of trusting one.** Product code is unchanged.
+
+`test/e2e/hnsw-iterative-scan-recall-postgres.test.ts` builds a deliberately sparse HNSW index (m 4, ef_construction 8, 20k vectors) and asserts that default recall stays at or above 0.6. pgvector draws each element's graph level from the server's own unseeded random generator, so every build is a different graph. One build failed on CI with 0.5825.
+
+| measure (local pg16, pgvector 0.8.7) | one build | mean of four builds |
+|---|---|---|
+| default recall: mean / sd / min (200 builds) | 0.714 / 0.037 / 0.629 | 0.714 / 0.018 / 0.674 (50 groups) |
+| forced probe: runs failing at a 0.67 bar, 30 fresh runs each | 3 / 30 | 0 / 30 |
+
+Both bounds are unchanged (default ≥ 0.6, default − strict ≥ 0.1). The test takes about 5 s instead of 3 s.
+
 ## [0.60.153.0] - 2026-10-10
 
 **A repeated query in a long-running `gbrain serve` no longer waits on the embedding provider: about 110–150 ms faster per repeat, and 75 of 100 provider embed calls avoided on a realistic mix. Cold `search`, `query` and `stats` start 100–175 ms faster on both engines. Doctor's `eval_drift` stops paying 0.2–0.4 s per run on a freshly cloned or just-pulled source checkout. Rankings and output are unchanged.**
