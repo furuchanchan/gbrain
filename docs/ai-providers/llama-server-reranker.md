@@ -43,17 +43,28 @@ across releases. The recipe sends to `/v1/rerank`.
 
 ### 2. Pull a reranker GGUF
 
-For Qwen3-Reranker-4B (quantized Q4_K_M is the sweet spot for CPU),
-pull a community GGUF conversion. Qwen ships no official reranker GGUF
-repos (the official `Qwen/Qwen3-Reranker-4B` repo carries the raw
-weights only), so the conversion below is **community-maintained** —
-verify scores against your own eval before trusting it in production:
+For Qwen3-Reranker-4B, pull a conversion built with llama.cpp's own
+`convert_hf_to_gguf.py`. Qwen ships no official reranker GGUF repos
+(the official `Qwen/Qwen3-Reranker-4B` repo carries the raw weights
+only), so conversions are community-maintained — and most community
+GGUFs are missing `cls.output.weight` (the classifier head Qwen3
+reranking needs), the rank pooling metadata and the rerank template.
+Those files load, answer `/v1/rerank` and pass `models doctor`, but
+score almost at random:
 
 ```bash
-# Pick a quant level — Q4_K_M is the usual CPU sweet spot.
+# Converter-built GGUF (llama.cpp's convert_hf_to_gguf.py output):
 huggingface-cli download \
-  mradermacher/Qwen3-Reranker-4B-GGUF Qwen3-Reranker-4B.Q4_K_M.gguf \
+  Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp Qwen3-Reranker-4B.Q8_0.gguf \
   --local-dir ./models
+```
+
+Verify the file carries the classifier head before trusting it — any
+GGUF reader works:
+
+```bash
+python3 -c "from gguf import GGUFReader; r = GGUFReader('./models/Qwen3-Reranker-4B.Q8_0.gguf'); print(any(t.name == 'cls.output.weight' for t in r.tensors))"
+# must print True — a GGUF without cls.output.weight returns meaningless scores
 ```
 
 Prefer official provenance? Convert the real `Qwen/Qwen3-Reranker-4B`
@@ -63,9 +74,10 @@ weights yourself with llama.cpp's `convert_hf_to_gguf.py`, then quantize.
 
 ```bash
 ./build/bin/llama-server \
-  --model ./models/Qwen3-Reranker-4B.Q4_K_M.gguf \
+  --model ./models/Qwen3-Reranker-4B.Q8_0.gguf \
   --alias qwen3-reranker-4b \
   --reranking \
+  --pooling rank \
   --port 8081
 ```
 
