@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.60.155.0] - 2026-10-10
+## [0.60.156.0] - 2026-10-10
 
 **`engine.transaction(fn, { signal })` and `engine.transactionDirect(fn, { signal })`: an `AbortSignal` that cancels a running Postgres transaction. No behavior changes for callers that pass no signal.**
 
@@ -21,6 +21,19 @@ The publication deadline planned in #6288 / #6352 needs to end a specific publis
 - **`TransactionOptions.signal`** (`src/core/engine.ts`, `src/core/postgres-engine.ts`, `src/core/postgres-engine/transaction-abort.ts`). On Postgres an abort discards the transaction's connection through the begin handle's `discard()` (the connection-ownership hunk from #5466 / #5560): the socket closes, the server rolls the transaction back on its own whether a statement is in flight or not, directly or through a transaction-mode pooler, and the pool reconnects on its next checkout. The transaction rejects with an `AbortError` whose `message` is the signal's reason and whose `cause` is the driver's `CONNECTION_CLOSED` error; every `finally` on the way out runs and the `tx` gauge is released. An already-aborted signal rejects before `BEGIN` is sent. An abort after `COMMIT` returned changes nothing. A nested transaction shares its parent's connection, so aborting it aborts the parent too.
 - **PGLite** (`src/core/pglite-engine.ts`): one in-process connection cannot interrupt a statement, so only the pre-`BEGIN` check applies; a mid-flight abort is ignored and the transaction commits.
 - Tests: `test/e2e/postgres-transaction-abort-postgres.test.ts` (5 cases: mid-flight abort on `transaction` and `transactionDirect` with `finally`, rollback checked again after the in-flight statement would have finished, pool and gauge freed; pre-aborted signal sends no `BEGIN`; abort after `COMMIT`; no signal), 3 of 5 fail on master (the option is ignored and the transaction commits); `test/transaction-abort.test.ts` (8 cases: the abort-before-and-after-attach paths, error mapping, listener removal, and PGLite's two behaviors).
+
+## [0.60.155.0] - 2026-10-10
+
+**The Postgres E2E test for filtered HNSW recall under iterative scan no longer fails at random. It averages four index builds instead of trusting one.** Product code is unchanged.
+
+`test/e2e/hnsw-iterative-scan-recall-postgres.test.ts` builds a deliberately sparse HNSW index (m 4, ef_construction 8, 20k vectors) and asserts that default recall stays at or above 0.6. pgvector draws each element's graph level from the server's own unseeded random generator, so every build is a different graph. One build failed on CI with 0.5825.
+
+| measure (local pg16, pgvector 0.8.7) | one build | mean of four builds |
+|---|---|---|
+| default recall: mean / sd / min (200 builds) | 0.714 / 0.037 / 0.629 | 0.714 / 0.018 / 0.674 (50 groups) |
+| forced probe: runs failing at a 0.67 bar, 30 fresh runs each | 3 / 30 | 0 / 30 |
+
+Both bounds are unchanged (default ≥ 0.6, default − strict ≥ 0.1). The test takes about 5 s instead of 3 s.
 
 ## [0.60.154.0] - 2026-10-10
 
