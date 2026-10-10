@@ -12,19 +12,30 @@ identifiers and attribution are available in the pre-removal Git revision
 
 ## [0.60.153.0] - 2026-10-10
 
-**A database-only `validate: false` stamp no longer refuses every write; lost memory writes are counted and replayable.**
+**A repeated query in a long-running `gbrain serve` no longer waits on the embedding provider: about 110–150 ms faster per repeat, and 75 of 100 provider embed calls avoided on a realistic mix. Cold `search`, `query` and `stats` start 100–175 ms faster on both engines. Doctor's `eval_drift` stops paying 0.2–0.4 s per run on a freshly cloned or just-pulled source checkout. Rankings and output are unchanged.**
 
-The v0.13.1 grandfather stamped `validate: false` into the database. On an unmanaged brain that migration never wrote the file (by design), so once the brain was managed every page with the stamp looked hand-edited and every coordinated write on it, `remember` included, was refused `source_changed` (#6429: 209k of 304k pages on one brain, 68 facts dropped silently). The stamp is now read as what it is, a mechanical database-side annotation, and the next write publishes it to the file. Nothing needs doing after you upgrade; to recover facts that were refused, run `gbrain repair failed-writes --source <id>` on the brain host and apply the set it prints after you agree.
+Efficiency wave 11 (GBRA-75). Base is master at wave 10 (c8d513eeb). Measured on 4-vCPU / 16 GiB cloud machines with synthetic brains, base and branch interleaved in one session, p50 / p95.
+
+| Path | Engine, brain, N | Before | After |
+|---|---|---|---|
+| MCP `query`, repeat of an earlier query (live Voyage embed + rerank) | Postgres 5k, N=25 | 483 / 530 ms | 370 / 427 ms |
+| same | Postgres 50k, N=25 | 504 / 557 ms | 359 / 441 ms |
+| same | PGLite 5k, N=25 | 462 / 531 ms | 312 / 399 ms |
+| provider embed calls, 100-query Zipf mix of 40 queries | all three brains | 100 | 25 |
+| cold `gbrain search` | PGLite 5k / 50k, N=20 | 704 / 754, 739 / 769 ms | 604 / 642, 622 / 655 ms |
+| same | Postgres 5k / 50k, N=20 | 477 / 550, 515 / 579 ms | 355 / 429, 392 / 442 ms |
+| cold `gbrain stats` | PGLite 50k / Postgres 50k, N=20 | 987 / 1061, 584 / 633 ms | 855 / 902, 437 / 499 ms |
+| modules loaded before connect, `search` | PGLite 5k | 1021 | 667 |
+| `eval_drift` probe, racy index (fresh 10.5k-file clone) | 3 clones × 6 runs | 224–457 ms every run | one 400–1045 ms run, then 18–35 ms |
+| same, settled index | 6 runs | 22–32 ms | 17–28 ms |
+
+PGLite cold start stays about 170–200 ms above Postgres: `PGlite.create` boots the WASM backend and its vector and pg_trgm extensions on the main thread, and the catalog needs those extensions at boot.
 
 ### Itemized changes
 
-- `prepareFileTarget` (`fileMatchesSnapshot`) treats a stored `validate: false` the way #5943 treats a pack-inferred `subtype`: a canonical file without a `validate:` key keeps the stored stamp instead of counting as an uncoordinated local edit. A file that records its own `validate:` decision is still compared as written. `put_page`, `remember`, maintenance pages, lint and `sources reconcile --audit` all route through it.
-- `gbrain repair failed-writes` also lists and replays caller writes (`remember`, `put_page`, `add_timeline_entry`) that ended `conflict` with `source_changed`, with the same dispositions. A replay refused `source_changed` is classified `file_database_drift` only while the file still differs from the database: a reconcile that rewrites only the file makes the write a candidate again (before, only a change to the page row did).
-- Doctor `lost_caller_writes` (ops) counts, per source, the caller writes whose receipt still holds an intent that never landed and names the `repair failed-writes` preview; a write whose replay or retry committed, or whose page was later deleted, is not counted.
-
-### For contributors
-
-- `test/ingestion/put-page-write-through.test.ts` (#6429 case) proves the stamp carry on PGLite (fails before the fix with `source_changed`); `test/repair-failed-writes-conflict-6429.test.ts` covers the conflict replay and the doctor check on PGLite and Postgres; `test/doctor-lost-caller-writes.test.ts` pins the registry wiring. Doctor goldens were regenerated for the new check.
+- **Query-embedding cache** (`ai/query-embed-cache.ts`, `gateway.ts` `embedQuery`). Identical query embeds within one process reuse the vector: a 512-entry LRU with a 10-minute TTL, keyed by recipe, resolved model id, `base_urls` override, effective dimensions and the exact string sent (query prefix + text). Only resolved vectors are stored, as copies; aborts and failures are never cached. Every gateway reconfigure clears it, and a caller under an AI invocation guard (minion spend authorization, delegated spend) always goes through its guard. Document-side embeds are uncached. A deterministic-provider fixture shows byte-identical ranked lists with and without the cache on both engines. Expansion variants never repeat within one call (deduped already); across calls the expansion LLM output is not cached, so a variant embed is reused only when the LLM returns the same string.
+- **Cold start** (`operation-load.ts`, `operation-loaders.generated.ts`, `remote-mcp-error.ts`, `embedding-disabled.ts`, `ai/gateway.ts`, `ops/admin.ts`). The CLI loads only the module that defines the op it runs, finalized by the same area-and-redaction step the registry uses; the MCP client, evidence delivery, the `ai` SDK and `page-mutations` load on first use. Trust proposal decisions load their handlers at the reader, and a test classifies every load-time registry and diffs it per op against the full registry.
+- **`eval_drift`** (`eval/drift-watch.ts`). A working-tree diff that takes 75 ms or more means racily-clean index entries, which git re-hashes on every diff until the index is rewritten; the probe then runs `git update-index -q --refresh` once. A settled checkout skips it. The answer is unchanged, and a held `index.lock` is ignored.
 
 ## [0.60.152.0] - 2026-10-10
 
