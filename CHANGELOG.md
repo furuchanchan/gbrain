@@ -10,11 +10,77 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.60.143.0] - 2026-10-10
+## [0.60.151.0] - 2026-10-10
 
 **The `remember` tool's `items` parameter now names every field the batch handler accepts.**
 
 The MCP schema described `items` as `≤20 facts: [{fact, provenance}]` with a bare `items: {type: 'object'}` — so an agent following the advertised schema had no way to discover `entity`, and facts whose text didn't name exactly one existing entity page landed with `entity_slug` NULL and an `unlinked_facts` doctor warning. The description now lists all eight fields the handler accepts (`fact`, `provenance`, `entity`, `infer_entity`, `kind`, `ttl`, `visibility`, `replaces`), matching the batch error suggestion that already showed `{"fact": "...", "entity": "..."}`. Adjacent param descriptions were shortened to fund the extra text inside the starter tool-list budget; a new test pins the schema against the handler's `ITEM_KEYS` so the two can't drift again.
+
+## [0.60.145.0] - 2026-10-10
+
+**Bulk DB extraction no longer sees purged facts. `gbrain extract --source db` and the batched derived-link write read snapshots with `readPageSnapshotsBatch`, which never read `fact_purges`. A fence row purged for the page, or purged source-wide with a `'*'` tombstone, stayed in the batched body that links and timeline were extracted from, although `get_page` and every per-page read hid it. The batch now applies the same purges and `'*'` purge marker as `readPageSnapshot`, and under `GBRAIN_RLS_SCOPE_BINDING=1` it runs scoped to the batch's sources.**
+
+Efficiency follow-up (GBRA-67, from GBRA-69's report). Measured on the same 4-vCPU AMD EPYC / 16 GiB machine, Postgres 16 + pgvector 0.8.7, synthetic brains (5k = 5,001 pages, 50k = 50,010 pages), warm, 3 rounds x N=40 (get_page) or 2 rounds x N=25 (batches).
+
+| Path | Engine, brain | Before | After |
+|---|---|---|---|
+| get_page snapshot statement, mean | Postgres 5k | 0.52-0.67 ms (unguarded fingerprints) | 0.19-0.30 ms |
+| get_page snapshot statement, mean | Postgres 50k | 0.62-0.69 ms (unguarded fingerprints) | 0.15-0.20 ms |
+| get_page MCP call, p50 | Postgres 5k / 50k | 8.7-11.8 / 7.9-9.0 ms | 10.0-17.4 / 7.1-8.7 ms (within run-to-run noise) |
+| `readPageSnapshotsBatch`, 100 refs, p50 | Postgres 5k / 50k | 7.9-8.3 / 8.7 ms | 9.3-9.4 / 9.5-9.6 ms |
+
+The get_page rows measure the fingerprint guard that shipped in v0.60.141.0 (GBRA-75 wave 7), against master with only that guard reverted; this release does not change `snapshot.ts`. The statement saves 0.4-0.5 ms per read, which is smaller than the MCP call's run-to-run noise on synthetic bodies. The batch costs about 1 ms more per 100 pages for the two purge lookups it was missing.
+
+### Itemized changes
+
+- **Purge-correct batched snapshots** (`src/core/page-snapshot-batch.ts`). The batch statement now reads page-subject `fact_purges` rows and the source's `'*'` purge marker, resolves `'*'` tombstones per overlaid fence through `resolveGlobalPurges`, and computes line fingerprints under the same guard as `snapshot.ts`. `test/page-snapshot-batch.test.ts` and its Postgres arm pin batch == per-page read with both purge kinds; on master the batch returned the purged rows and no purge withdrawals.
+- **RLS-scoped batch read** (`engine.readPageSnapshotsBatch`). The batched read is now an engine member. Postgres runs it through `withScopedReadTransaction` with the refs' sources, so `replaceDerivedLinksBatch`, `extract --source db` and the timeline DB walk bind `app.scopes` under `GBRAIN_RLS_SCOPE_BINDING=1`. With the flag off it stays on the caller's lane (no new pool hold). The RLS inventory golden records `replaceDerivedLinksBatch` as scoped and 24 scoped call sites.
+
+## [0.60.144.0] - 2026-10-10
+
+**A managed import writes about 12% less WAL on Postgres (200 → 176 KB per page at 50,000 pages) and spends 3-13% less time executing SQL, with the same rows: each imported, synced or put page is sealed by one closing write instead of two, the import's crash checkpoint no longer stores the page text, and the write claim looks up its root's earlier rows by index.**
+
+Efficiency wave (GBRA-69). Base is master at wave 7 (f3155533e), measured on the same 4-vCPU AMD EPYC / 16 GiB machine, Bun 1.4.2, synthetic brains (5k = 5,003 pages, 50k = 50,030 pages / 265,861 chunks), cold `gbrain import` of every source with `--no-embed`, N=1.
+
+| Path | Engine, brain | Before | After |
+|---|---|---|---|
+| `gbrain import`, wall | Postgres 50k | 1,458 s (29.1 ms/page) | 1,427 s (28.5 ms/page) |
+| SQL execution time | Postgres 50k | 657 s | 635 s |
+| WAL written | Postgres 50k | 9.99 GB | 8.81 GB |
+| `gbrain import`, wall | Postgres 5k | 142.9 s | 133.5 s |
+| SQL execution time | Postgres 5k | 64.2 s | 55.6 s |
+| `gbrain import`, wall | PGLite 5k | 151.9 s | 141.9 s |
+
+### Itemized changes
+
+- **One closing page write** (`import-file.ts`, `page-state/projections.ts` `sealImportedPage`, `persistence/import-prepare.ts`, `sync-prepare.ts`, `page-prepare.ts`, `engine-sql/chunks.ts`). A coordinated import (managed import, managed sync and the lean `put_page` path) no longer stamps `chunker_version` with its chunk insert; its apply reports `chunkerSeal` and the caller stamps it in the same UPDATE as the text seal, after its one read-back. The chunker version is stamped whatever the page's revision, the text seal only at the revision read back, and the page id is checked against the page the transaction wrote, as before. Uncoordinated imports are unchanged.
+- **Content-free import checkpoints** (`persistence/import-mutations.ts`). The managed-import `op_checkpoints` row keeps the admission's request id and expectations but not the page content: its key binds the input hash, so a retry restores the content from the bytes it just read and refuses a checkpoint whose stored input hash or slug does not match. Checkpoints written by older binaries, which carry the content, still resume and clear. (Design agreed with GBRA-64.)
+- **Indexed claim root probe** (`persistence/journal.ts` `claimableWriteSql`). The "unfinished row ahead on the same root" anti-join matches a worktree root by `worktree_id` and a database-only root by `source_incarnation`, both covered by the pending indexes, instead of a COALESCE text key that walked every pending row once per candidate: 6.1 → 1.4 ms per claim with eight worktrees of queued rows; unchanged for a single source. The claimable rows and their order are identical. (Design agreed with GBRA-64.)
+- Tests: `claim-earlier-equivalence.test.ts` + its Postgres e2e (120 randomized request tables of worktree and database-only roots, every state, passable sync rows and lane groups claim exactly the former predicate's rows in the same order; a forced break of either probe fails it; the Postgres arm checks the index range scan), a checkpoint-resume case in `persistence-file-import.test.ts` (content-free checkpoint, legacy checkpoint with content), and `e2e/managed-import-crash.test.ts` (an import SIGKILLed after admission or at the closing write is published from the stored request on retry, same request id, page sealed, both engines).
+
+## [0.60.143.0] - 2026-10-10
+
+**The crash robot drops each run's database as soon as the run passes, so a transaction-mode pooler no longer holds every run's server connections until the budget ends. Harness only; no product behavior changes.**
+
+Master `f250a517c` failed the `Crash robot / postgres / Bun 1.4.0` cell with `FATAL: sorry, too many clients already` 25 runs into its 600 s budget. The robot gives every run its own database and, until now, kept all of them until the phase ended. Through the CI PgBouncer (wildcard `[databases]`, transaction mode) each run's database gets its own server pool, and PgBouncer keeps those connections for `server_idle_timeout` (600 s by default, the length of a full robot budget), so the server held about four idle backends per finished run: 111 server connections across 26 fixture databases in the failing cell against `max_connections=100`. The previous green masters ran the same cases with the same per-run counts and passed only because their slower early runs reached 22 cases before the budget closed; in the passing Bun 1.4.2 sibling, started at the same moment, PgBouncer's first `server idle timeout` closes came at 06:22:23, 46 s after the Bun 1.4.0 cell's first refusal at 06:21:37. Nothing in `#6412` (v0.60.142.0) changed how many connections a run opens.
+
+### Itemized changes
+
+- `scripts/persistence/robot-driver.ts`: a run that passes has its database dropped (`WITH (FORCE)`) before the next run starts, which ends the pooler's server connections to it. A failing run keeps its database for the retained-fixture metadata as before.
+- `scripts/persistence/validate.ts`, `scripts/persistence/failure-diagnostics.ts`: a failed Postgres gate records `connection_diagnostic` in the manifest: `max_connections`, the backend total and counts per database class (this harness's fixtures or other), state and wait class. No database name, query text or client address is included.
+- `test/e2e/persistence-robot-fixture-release.test.ts`: one replayed run through the pooler when `GBRAIN_PGBOUNCER_URL` names one (direct otherwise); the passed run's database must be gone with no backend attached (four idle pooler backends remained before the fix), and the connection diagnostic's shape is pinned.
+
+## [0.60.142.0] - 2026-10-10
+
+**A file write's publication takes its request-row lock and its `publication_started` stamp in one statement instead of two. No behavior changes; one UPDATE fewer per published file.**
+
+GBRA-69's import profile (50k pages, Postgres 16) counted about six UPDATEs of each `persistence_requests` row per write. One of them was the `publication_started=true` stamp the publication transaction issued right after a bare `SELECT … FOR UPDATE` of the same row. The stamp now rides on the row lock: a file publication locks its request with `UPDATE … SET publication_started=true … RETURNING *`, which takes the same lock, in the same transaction, with the same visibility (the stamp still lives and dies with that transaction, as `control.ts` relies on), and the claim-token and state checks run on the returned row exactly as before. Database-only writes keep the bare `FOR UPDATE`; they never stamped.
+
+### Itemized changes
+
+- `src/core/persistence/coordinator.ts` (`publishMutation`): the request-row lock of a file publication is the stamping UPDATE; the separate stamp statement before `before_publication` is gone.
+- `scripts/persistence/lock-order.ts`: the crash robot's lock-order tracer recognises the stamping UPDATE as the publication's exclusive request-row lock (it previously keyed publications on the bare `FOR UPDATE`), and reports `publication_row_lock_statements_max`.
+- Tests: `test/persistence-crash-robot.test.ts` asserts one request-row lock statement per publication (two on the previous code). Statement budget (`test/e2e/persistence-statement-budget.test.ts`) measures publication at 42 statements on Postgres, under its 50 budget.
 
 ## [0.60.141.0] - 2026-10-10
 
