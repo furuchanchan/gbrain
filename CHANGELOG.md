@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.166.0] - 2026-10-10
+
+**The write-gate p95 check no longer discards passing rounds as "loaded" while letting one borderline round fail (#6430).** The absolute 5 ms budget now takes the minimum gate p95 across all three rounds — outside load can only inflate a sample, never deflate it, so the best round is the load-robust measurement. The reference-quiet filter it replaced judged quietness from the reference workload alone, so a round where load hit only the gate samples still counted as quiet (the reported 5.0495 ms failure) while rounds that measured under budget were excluded. The interleaved gate/reference ratio check stays the guard for a uniformly loaded machine; the quiet constants now only annotate the round log.
+
 ## [0.60.147.0] - 2026-10-10
 
 **A write that arrives while a brain folder with the Git durability hook is committing a backlog of Git effects now publishes after the group in flight, inside its 5 s wait. Before, it waited out the whole backlog and came back pending. On Postgres, a first sync of an already-imported source now issues 40 statements per unchanged file instead of 82.**

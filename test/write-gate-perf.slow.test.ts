@@ -15,10 +15,13 @@
  * (another process on the CPU, a GC pause from earlier work). On a loaded CI
  * machine wall time measures the machine, so the 300 KB check alternates gate
  * samples with a fixed reference workload in the same process and bounds the
- * gate relative to it (calibration below); the absolute 5 ms check applies to
- * rounds whose reference ran at quiet speed and is logged as skipped
- * otherwise. Each check takes the best of three rounds, and every round is
- * printed. `GBRAIN_WRITE_GATE_P95_MS` overrides the budget on slower
+ * gate relative to it (calibration below); the absolute 5 ms check takes the
+ * best round's gate p95 — outside load can only inflate a sample, never
+ * deflate it, so the minimum across rounds is the load-robust measurement
+ * (#6430; the reference-quiet filter it replaced let one borderline round
+ * fail while passing rounds were excluded as loaded). Each check takes the
+ * best of three rounds, and every round is printed.
+ * `GBRAIN_WRITE_GATE_P95_MS` overrides the budget on slower
  * hardware (default 5).
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
@@ -44,8 +47,9 @@ const BUDGET_MS = Number(process.env.GBRAIN_WRITE_GATE_P95_MS ?? '5');
  * four cores: both p95s 12-17 ms, ratio 1.10-1.25) contention cancels out.
  * Load flattens the p95s toward the scheduler quantum, so the same limit also
  * applies to the p50 ratio (3.3 / 1.9 quiet), which keeps a slower detector
- * failing on a loaded machine. The absolute check runs only on rounds whose
- * reference ran at quiet speed (within 1.25x its calibrated p95).
+ * failing on a loaded machine. QUIET_REFERENCE_P95_MS / QUIET_TOLERANCE now
+ * only annotate the log — the absolute check no longer filters rounds
+ * (#6430).
  */
 const QUIET_REFERENCE_P95_MS = 1.95;
 const QUIET_TOLERANCE = 1.25;
@@ -139,15 +143,21 @@ describe('write gate p95 (assessment + receipt insert)', () => {
       const r = await measureInterleaved(text, 60, 10);
       rounds.push(r);
       console.log(`[write-gate perf] 300 KB typical round ${i + 1}: gate p50 ${r.gate.p50.toFixed(2)} / p95 ${r.gate.p95.toFixed(2)} ms; `
-        + `reference p50 ${r.reference.p50.toFixed(2)} / p95 ${r.reference.p95.toFixed(2)} ms; ratio p50 ${(r.gate.p50 / r.reference.p50).toFixed(2)} / p95 ${(r.gate.p95 / r.reference.p95).toFixed(2)}`);
+        + `reference p50 ${r.reference.p50.toFixed(2)} / p95 ${r.reference.p95.toFixed(2)} ms; ratio p50 ${(r.gate.p50 / r.reference.p50).toFixed(2)} / p95 ${(r.gate.p95 / r.reference.p95).toFixed(2)}`
+        + (r.reference.p95 <= QUIET_REFERENCE_P95_MS * QUIET_TOLERANCE ? ' (quiet)' : ''));
     }
     if (process.env.PERF_CALIBRATE) return;
     const ratio = (pick: (s: Stats) => number) => Math.min(...rounds.map(r => pick(r.gate) / pick(r.reference)));
     expect({ p95_ratio: ratio(x => x.p95) }).toEqual({ p95_ratio: Math.min(ratio(x => x.p95), RATIO_LIMIT) });
     expect({ p50_ratio: ratio(x => x.p50) }).toEqual({ p50_ratio: Math.min(ratio(x => x.p50), RATIO_LIMIT) });
-    const quiet = rounds.filter(r => r.reference.p95 <= QUIET_REFERENCE_P95_MS * QUIET_TOLERANCE);
-    if (quiet.length) expect(Math.min(...quiet.map(r => r.gate.p95))).toBeLessThan(BUDGET_MS);
-    else console.log(`[write-gate perf] absolute ${BUDGET_MS} ms check skipped for load: reference p95 above ${(QUIET_REFERENCE_P95_MS * QUIET_TOLERANCE).toFixed(2)} ms in every round`);
+    // Absolute budget: the best round's gate p95 (#6430). Outside load can
+    // only inflate a sample, never deflate it, so the minimum across rounds
+    // is the load-robust measurement — the old reference-quiet filter
+    // excluded passing rounds (a 3.78 p95 counted as "loaded" on a 2.95
+    // reference) and let a single borderline quiet round fail the gate.
+    // The interleaved ratio check above stays the guard for a uniformly
+    // loaded machine; QUIET_REFERENCE_P95_MS only annotates the log.
+    expect(Math.min(...rounds.map(r => r.gate.p95))).toBeLessThan(BUDGET_MS);
     const [{ verdict }] = await engine.executeRaw<{ verdict: string }>('SELECT verdict FROM write_gate_receipts');
     expect(verdict).toBe('flag'); // the shipped default (write_gate.external_mode=flag since the paid eval); quarantine costs the same assessment and receipt
   }, 120_000);
