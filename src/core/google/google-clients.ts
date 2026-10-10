@@ -584,21 +584,46 @@ interface RawPerson {
   resourceName: string;
   names?: Array<{ displayName?: string; metadata?: { primary?: boolean } }>;
   emailAddresses?: Array<{ value?: string }>;
+  phoneNumbers?: Array<{ value?: string; canonicalForm?: string }>;
+  memberships?: Array<{ contactGroupMembership?: { contactGroupResourceName?: string } }>;
   organizations?: Array<{ name?: string; title?: string; metadata?: { primary?: boolean } }>;
   metadata?: { deleted?: boolean };
 }
 
 export class PeopleClient extends GoogleApiClient {
+  /** contactGroups/{id} → display name for user groups; system groups are omitted from person pages. */
+  async listContactGroupNames(opts: { signal?: AbortSignal } = {}): Promise<Map<string, string>> {
+    const groups = await this.drainPages<{ resourceName?: string; name?: string; groupType?: string }>(
+      (t) => {
+        const params = new URLSearchParams({ groupFields: 'name,resourceName,groupType', pageSize: '1000' });
+        if (t) params.set('pageToken', t);
+        return `${PEOPLE_BASE}/contactGroups?${params.toString()}`;
+      },
+      (body) => ({
+        items: (body.contactGroups as Array<{ resourceName?: string; name?: string; groupType?: string }> | undefined) ?? [],
+        nextPageToken: (body.nextPageToken as string | undefined) ?? null,
+      }),
+      'people',
+      opts,
+    );
+    const names = new Map<string, string>();
+    for (const g of groups) {
+      if (g.resourceName && g.name && g.groupType !== 'SYSTEM_CONTACT_GROUP') names.set(g.resourceName, g.name);
+    }
+    return names;
+  }
+
   /** Incremental with syncToken; full otherwise. 410 → GoogleCursorExpiredError. */
   async listConnections(opts: {
     syncToken?: string | null;
+    groupNames?: Map<string, string>;
     signal?: AbortSignal;
   }): Promise<{ contacts: ContactData[]; nextSyncToken: string | null }> {
     let nextSyncToken: string | null = null;
     const raw = await this.drainPages<RawPerson>(
       (t) => {
         const params = new URLSearchParams({
-          personFields: 'names,emailAddresses,organizations',
+          personFields: 'names,emailAddresses,organizations,phoneNumbers,memberships',
           pageSize: '200',
           requestSyncToken: 'true',
         });
@@ -625,6 +650,15 @@ export class PeopleClient extends GoogleApiClient {
         emails: (p.emailAddresses ?? [])
           .map((e) => (e.value ?? '').trim().toLowerCase())
           .filter((e) => e.includes('@')),
+        // canonicalForm is the E.164-ish form when Google parsed it; keep the
+        // raw value otherwise so a non-standard number still joins.
+        phones: [...new Set((p.phoneNumbers ?? [])
+          .map((ph) => (ph.canonicalForm ?? ph.value ?? '').trim())
+          .filter((ph) => ph.length > 0))],
+        groups: [...new Set((p.memberships ?? [])
+          .map((m) => m.contactGroupMembership?.contactGroupResourceName)
+          .map((rn) => (rn ? opts.groupNames?.get(rn) : undefined))
+          .filter((n): n is string => !!n))],
         organization: primaryOrg?.name ?? null,
         title: primaryOrg?.title ?? null,
         deleted: p.metadata?.deleted ?? false,

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.147.0] - 2026-10-10
+
+**Google contacts sync now carries phone numbers and contact-group labels. The People API mask gains `phoneNumbers` and `memberships`; person pages render `phones:` (E.164 where Google canonicalized, raw otherwise) and `groups:` (user groups only — system groups like Starred are omitted), and a contact with a phone but no email gets a page instead of being dropped. Phone is the exact identifier messaging sources key on, where today only email joins are possible.**
+
+Fixes #6324.
+
+
+
 All notable changes to GBrain will be documented in this file.
 
 Historical entries use generic identifiers for the retired hosted provider

@@ -254,6 +254,10 @@ export interface ContactData {
   resourceName: string;
   displayName: string | null;
   emails: string[];
+  /** E.164 where Google could canonicalize, raw value otherwise. */
+  phones: string[];
+  /** Display names of the contact's user (non-system) contact groups. */
+  groups: string[];
   organization: string | null;
   title: string | null;
   deleted: boolean;

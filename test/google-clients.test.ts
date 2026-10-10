@@ -991,7 +991,7 @@ describe('PeopleClient', () => {
 
   test('listConnections requests personFields and normalizes contacts', async () => {
     const h = makeHarness((u) => {
-      expect(u.searchParams.get('personFields')).toBe('names,emailAddresses,organizations');
+      expect(u.searchParams.get('personFields')).toBe('names,emailAddresses,organizations,phoneNumbers,memberships');
       expect(u.searchParams.get('requestSyncToken')).toBe('true');
       return json({
         connections: [
@@ -1002,6 +1002,11 @@ describe('PeopleClient', () => {
               { displayName: 'Alice Example', metadata: { primary: true } },
             ],
             emailAddresses: [{ value: ' Alice@Example.com ' }, { value: 'not-an-email' }],
+            phoneNumbers: [{ value: '555-1234', canonicalForm: '+15551234' }, { value: 'unparseable' }],
+            memberships: [
+              { contactGroupMembership: { contactGroupResourceName: 'contactGroups/abc123' } },
+              { contactGroupMembership: { contactGroupResourceName: 'contactGroups/starred' } },
+            ],
             organizations: [{ name: 'Acme Example', title: 'Engineer', metadata: { primary: true } }],
           },
           { resourceName: 'people/c000000002', metadata: { deleted: true } },
@@ -1010,13 +1015,17 @@ describe('PeopleClient', () => {
       });
     });
     const people = new PeopleClient(h.tokens, h.fetchImpl, () => {}, CLIENT_ID);
-    const { contacts, nextSyncToken } = await people.listConnections({});
+    const { contacts, nextSyncToken } = await people.listConnections({
+      groupNames: new Map([['contactGroups/abc123', 'Clients']]),
+    });
     expect(nextSyncToken).toBe('ppl-1');
     expect(contacts.length).toBe(2);
     expect(contacts[0]).toEqual({
       resourceName: 'people/c000000001',
       displayName: 'Alice Example', // primary name wins
       emails: ['alice@example.com'], // trimmed, lowercased, non-addresses dropped
+      phones: ['+15551234', 'unparseable'], // canonicalForm preferred, raw kept otherwise
+      groups: ['Clients'], // unresolved/system resource names dropped
       organization: 'Acme Example',
       title: 'Engineer',
       deleted: false,
@@ -1024,6 +1033,26 @@ describe('PeopleClient', () => {
     expect(contacts[1].deleted).toBe(true);
     expect(contacts[1].displayName).toBeNull();
     expect(contacts[1].emails).toEqual([]);
+    expect(contacts[1].phones).toEqual([]);
+    expect(contacts[1].groups).toEqual([]);
+  });
+
+  test('listContactGroupNames maps user groups and omits system groups (#6324)', async () => {
+    const h = makeHarness((u) => {
+      expect(u.pathname).toBe('/v1/contactGroups');
+      return json({
+        contactGroups: [
+          { resourceName: 'contactGroups/abc123', name: 'Clients', groupType: 'USER_CONTACT_GROUP' },
+          { resourceName: 'contactGroups/starred', name: 'Starred', groupType: 'SYSTEM_CONTACT_GROUP' },
+          { resourceName: 'contactGroups/noname', groupType: 'USER_CONTACT_GROUP' },
+        ],
+      });
+    });
+    const people = new PeopleClient(h.tokens, h.fetchImpl, () => {}, CLIENT_ID);
+    const names = await people.listContactGroupNames();
+    expect(names.get('contactGroups/abc123')).toBe('Clients');
+    expect(names.has('contactGroups/starred')).toBe(false);
+    expect(names.has('contactGroups/noname')).toBe(false);
   });
 
   test('syncToken is forwarded; 410 surfaces GoogleCursorExpiredError', async () => {

@@ -436,6 +436,8 @@ function contact(over: Partial<ContactData> = {}): ContactData {
     resourceName: 'people/c000000001',
     displayName: 'Alice Example',
     emails: ['alice@example.com', 'alice.alt@example.com'],
+    phones: [],
+    groups: [],
     organization: 'Acme Example',
     title: 'Engineer',
     deleted: false,
@@ -454,6 +456,10 @@ describe('personSlugFromContact', () => {
 
   test('null when neither name nor email', () => {
     expect(personSlugFromContact(contact({ displayName: null, emails: [] }))).toBeNull();
+  });
+
+  test('slug from phone when no name or email (#6324)', () => {
+    expect(personSlugFromContact(contact({ displayName: null, emails: [], phones: ['+15551234567'] }))).toBe('people/15551234567');
   });
 });
 
@@ -475,5 +481,22 @@ describe('renderPersonPage', () => {
 
   test('no emails renders null', () => {
     expect(renderPersonPage(contact({ emails: [] }))).toBeNull();
+  });
+
+  test('phones and groups land in frontmatter (#6324)', () => {
+    const page = renderPersonPage(contact({ phones: ['+15551234567'], groups: ['Clients', 'Family'] }));
+    const md = page!.markdown;
+    expect(md).toContain('phones: \n  - "+15551234567"');
+    expect(md).toContain('groups: \n  - "Clients"\n  - "Family"');
+    expect(md).toContain('Contact: alice@example.com, alice.alt@example.com, +15551234567.');
+  });
+
+  test('phone-only contact still renders a page (#6324)', () => {
+    const page = renderPersonPage(contact({ emails: [], phones: ['+15551234567'] }));
+    expect(page).not.toBeNull();
+    expect(page!.relPath).toBe('people/alice-example.md');
+    expect(page!.markdown).not.toContain('emails:');
+    expect(page!.markdown).toContain('phones: \n  - "+15551234567"');
+    expect(page!.markdown).toContain('Contact: +15551234567.');
   });
 });

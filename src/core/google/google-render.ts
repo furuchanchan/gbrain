@@ -337,7 +337,7 @@ export function renderCalendarEventPage(ev: CalendarEventData): RenderedPage | n
 // ── Person page (contacts) ───────────────────────────────────────────────────
 
 export function personSlugFromContact(c: ContactData, disambiguate = false): string | null {
-  const base = c.displayName ?? c.emails[0]?.split('@')[0] ?? null;
+  const base = c.displayName ?? c.emails[0]?.split('@')[0] ?? c.phones[0] ?? null;
   if (!base) return null;
   const slug = base
     .toLowerCase()
@@ -359,15 +359,17 @@ export function personSlugFromContact(c: ContactData, disambiguate = false): str
  */
 export function renderPersonPage(c: ContactData, disambiguate = false): RenderedPage | null {
   const slug = personSlugFromContact(c, disambiguate);
-  if (!slug || c.emails.length === 0) return null;
-  const name = c.displayName ?? c.emails[0];
+  if (!slug || (c.emails.length === 0 && c.phones.length === 0)) return null;
+  const name = c.displayName ?? c.emails[0] ?? c.phones[0];
   const aliases = [...new Set([...c.emails, ...(c.displayName ? [c.displayName] : [])])];
   const fm: string[] = [
     '---',
     `type: person`,
     `title: ${yamlStr(name)}`,
     `aliases: ${yamlList(aliases)}`,
-    `emails: ${yamlList(c.emails)}`,
+    ...(c.emails.length ? [`emails: ${yamlList(c.emails)}`] : []),
+    ...(c.phones.length ? [`phones: ${yamlList(c.phones)}`] : []),
+    ...(c.groups.length ? [`groups: ${yamlList(c.groups)}`] : []),
     `google_contact_id: ${yamlStr(c.resourceName)}`,
     ...(c.organization ? [`company: ${yamlStr(c.organization)}`] : []),
     ...(c.title ? [`role: ${yamlStr(c.title)}`] : []),
@@ -379,7 +381,7 @@ export function renderPersonPage(c: ContactData, disambiguate = false): Rendered
     '',
     [
       c.title && c.organization ? `${c.title} at ${c.organization}.` : c.organization ? `Works at ${c.organization}.` : null,
-      `Contact: ${c.emails.join(', ')}.`,
+      `Contact: ${[...c.emails, ...c.phones].join(', ')}.`,
       `[Source: Google Contacts]`,
     ]
       .filter(Boolean)

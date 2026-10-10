@@ -336,17 +336,26 @@ async function sweepContacts(
   summary: GoogleSyncSummary,
   countedSlugs: Set<string>,
 ): Promise<void> {
+  // User contact-group display names, resolved once per sweep (fail-open —
+  // a groups-API hiccup must not drop the whole contacts sync).
+  let groupNames: Map<string, string> | undefined;
+  try {
+    groupNames = await people.listContactGroupNames({ ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
+  } catch {
+    deps.log('[google] contactGroups list failed; rendering contacts without group names');
+  }
   let result;
   try {
     result = await people.listConnections({
       syncToken: deps.opts.full ? null : state.contacts_sync_token,
+      groupNames,
       ...(deps.opts.signal ? { signal: deps.opts.signal } : {}),
     });
   } catch (e) {
     if (e instanceof GoogleCursorExpiredError) {
       deps.log('[google] contacts syncToken expired; full re-list');
       state.contacts_sync_token = null;
-      result = await people.listConnections({ syncToken: null, ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
+      result = await people.listConnections({ syncToken: null, groupNames, ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
     } else {
       throw e;
     }
