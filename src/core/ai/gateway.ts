@@ -73,6 +73,7 @@ import { reportEmbeddingAuthFailure } from './key-warnings.ts';
 import { buildGatewayConfig, foldNativeBaseUrlsFromFilePlane } from './build-gateway-config.ts';
 import { invokeAI, sdkInvocationUsage, responseInvocationUsage, hasAIInvocationGuard, isAIInvocationPolicyError } from './invocation-guard.ts';
 import { installAICallLogFromEnv } from './call-log.ts';
+import { cachedQueryEmbedding, clearQueryEmbedCache, queryEmbedCacheKey, queryEmbedGeneration, storeQueryEmbedding } from './query-embed-cache.ts';
 import { createGuardedGeneration, chatInvocation } from './guarded-generation.ts';
 installAiSdkWarningWriter();
 const guardedGeneration = createGuardedGeneration(() => DEFAULT_MAX_OUTPUT_TOKENS);
@@ -134,27 +135,6 @@ let _config: AIGatewayConfig | null = null;
 /** #5137: provider auth errors echo keys; scrub every key in effect before the text leaves the gateway. */
 const redactKeys = (text: string): string => redactProviderKeys(text, _config?.env ?? {});
 const _modelCache = new Map<string, any>();
-
-/**
- * Per-process cache of resolved query embeddings (`embedQuery` only; document
- * embeds never use it). Keyed by recipe, resolved model id, base-URL override,
- * effective dimensions and the exact string sent to the provider, so a hit is
- * the vector the provider would have been asked for. Map order is the LRU
- * order. Only resolved vectors are stored, never an in-flight promise, so one
- * caller's abort or failure cannot reach another caller. Cleared with the model
- * cache whenever the config or env that built the provider client changes;
- * `_queryEmbedGeneration` keeps an embed that started before a clear from
- * storing its vector after it.
- */
-const QUERY_EMBED_CACHE_MAX = 512;
-const QUERY_EMBED_CACHE_TTL_MS = 10 * 60_000;
-const _queryEmbedCache = new Map<string, { vector: Float32Array; expiresAt: number }>();
-let _queryEmbedGeneration = 0;
-
-function clearQueryEmbedCache(): void {
-  _queryEmbedCache.clear();
-  _queryEmbedGeneration++;
-}
 
 /**
  * Materialize `applyResolveAuth`'s SDK-shaped result ({apiKey}|{headers}) into
@@ -761,14 +741,8 @@ export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
   clearQueryEmbedCache();
 }
 
-/**
- * Drop every cached query embedding (`embedQuery`).
- *
- * @internal exported for tests; not part of the public gateway API.
- */
-export function __clearQueryEmbedCacheForTests(): void {
-  clearQueryEmbedCache();
-}
+/** @internal exported for tests: drop every cached query embedding. */
+export const __clearQueryEmbedCacheForTests = clearQueryEmbedCache;
 
 /**
  * Test-only seam for the chat() SDK call. Unlike __setChatTransportForTests,
@@ -1836,15 +1810,10 @@ export async function embedQuery(
   const cfg = requireConfig();
   const { recipe, modelId } = await resolveEmbeddingProvider(opts?.embeddingModel ?? getEmbeddingModel());
   const dims = opts?.dimensions ?? cfg.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
-  const key = JSON.stringify([recipe.id, modelId, cfg.base_urls?.[recipe.id] ?? '', dims, 'query', input]);
-  const cached = _queryEmbedCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    _queryEmbedCache.delete(key);
-    _queryEmbedCache.set(key, cached);
-    return new Float32Array(cached.vector);
-  }
-  if (cached) _queryEmbedCache.delete(key);
-  const generation = _queryEmbedGeneration;
+  const key = queryEmbedCacheKey(recipe.id, modelId, cfg.base_urls?.[recipe.id] ?? '', dims, input);
+  const cached = cachedQueryEmbedding(key);
+  if (cached) return cached;
+  const generation = queryEmbedGeneration();
   const [v] = await embed([input], {
     inputType: 'query',
     embeddingModel: opts?.embeddingModel,
@@ -1854,10 +1823,7 @@ export async function embedQuery(
     // default via withDefaultTimeout (shorter wins).
     abortSignal: opts?.abortSignal,
   });
-  if (v && generation === _queryEmbedGeneration) {
-    _queryEmbedCache.set(key, { vector: new Float32Array(v), expiresAt: Date.now() + QUERY_EMBED_CACHE_TTL_MS });
-    if (_queryEmbedCache.size > QUERY_EMBED_CACHE_MAX) _queryEmbedCache.delete(_queryEmbedCache.keys().next().value!);
-  }
+  if (v) storeQueryEmbedding(key, v, generation);
   return v;
 }
 

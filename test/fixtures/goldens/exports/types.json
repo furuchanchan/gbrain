@@ -1909,7 +1909,7 @@
         ]
       },
       {
-        "kind": "function",
+        "kind": "variable",
         "name": "__clearQueryEmbedCacheForTests",
         "signature": [
           "() => void"
