@@ -17,7 +17,7 @@ import type { BrainEngine } from '../engine.ts';
 import type { SyncOpts, SyncResult } from '../../commands/sync.ts';
 import { OperationError } from '../ops/contract.ts';
 import { getCode, isRetryableConnError, isStatementTimeoutError } from '../retry-matcher.ts';
-import { currentRunDeadline, noteForwardProgress } from '../forward-progress.ts';
+import { currentRunDeadline, noteCurrentStep, noteForwardProgress } from '../forward-progress.ts';
 import { serr } from '../console-prefix.ts';
 import { ERROR_CATALOGUE, type CatalogueName } from '../error-catalogue.ts';
 import { cliRenderContext, renderAction, type Action, type RenderedAction } from '../agent-output.ts';
@@ -282,16 +282,26 @@ export interface DrainInput {
 }
 
 /**
+ * #6423: the step + holder the stall line names (`<step> · held by <kind> pid N · last_sql
+ * <label>`), shared with the out-of-band watchdog so its stop line says what the run was doing.
+ */
+export function stallStep(claim: DrainClaim | null, headState: string | null, stalledMs: number): string {
+  const live = !!claim && !claim.lapsed && claim.phase === 'preparing';
+  const overdue = live && stalledMs >= claim.allowance_ms;
+  const owner = claim?.owner_pid !== null && claim?.owner_pid !== undefined ? `${claim.owner_kind ?? 'owner'} pid ${claim.owner_pid}` : null;
+  return `${claim?.step ?? claim?.phase ?? headState ?? 'the writer head'}`
+    + `${overdue && owner ? ` · held by ${owner}` : ''}${overdue && claim?.last_sql ? ` · last_sql ${claim.last_sql.label}${claim.last_sql.age_ms === null ? '' : ` ${Math.round(claim.last_sql.age_ms / 1000)}s ago`}` : ''}`;
+}
+
+/**
  * #6278: the line the drain prints while nothing commits, naming the head's step, wait cause and allowance. #6317: past the
  * allowance it names the owner (kind, pid), the last statement and the ceiling the drain waits for (B2, C3).
  */
 function stallText(index: number, total: number | null, stalledMs: number, claim: DrainClaim | null, headState: string | null): string {
   const live = !!claim && !claim.lapsed && claim.phase === 'preparing';
   const overdue = live && stalledMs >= claim.allowance_ms;
-  const owner = claim?.owner_pid !== null && claim?.owner_pid !== undefined ? `${claim.owner_kind ?? 'owner'} pid ${claim.owner_pid}` : null;
-  return `[sync] ${index}/${total ?? '?'} processed · stalled ${Math.round(stalledMs / 1000)}s on ${claim?.step ?? claim?.phase ?? headState ?? 'the writer head'}`
+  return `[sync] ${index}/${total ?? '?'} processed · stalled ${Math.round(stalledMs / 1000)}s on ${stallStep(claim, headState, stalledMs)}`
     + `${claim?.waiting_on && claim.waiting_on !== 'unknown' ? ` (waiting on ${claim.waiting_on})` : ''}${claim?.lapsed ? ' (claim lapsed: owner missing)' : ''}`
-    + `${overdue && owner ? ` · held by ${owner}` : ''}${overdue && claim.last_sql ? ` · last_sql ${claim.last_sql.label}${claim.last_sql.age_ms === null ? '' : ` ${Math.round(claim.last_sql.age_ms / 1000)}s ago`}` : ''}`
     + `${live ? overdue ? ` · past the ${formatDuration(Math.round(claim.allowance_ms / 1000))} allowance; the root is freed at the ${formatDuration(Math.round(claim.ceiling_ms / 1000))} ceiling`
       : ` · allowed ${formatDuration(Math.round(claim.allowance_ms / 1000))}` : ''}`;
 }
@@ -323,7 +333,9 @@ export async function runDrain(input: DrainInput): Promise<SyncResult> {
     if (tickAt - lastCommitAt < every || tickAt - lastLine < every) return;
     if (stall) {
       lastLine = tickAt;
-      serr(stallText(index, total, Math.max(tickAt - stall.since, stall.claim?.step_age_ms ?? 0), stall.claim, stall.stallInfo.head_state));
+      const stalledMs = Math.max(tickAt - stall.since, stall.claim?.step_age_ms ?? 0);
+      noteCurrentStep(stallStep(stall.claim, stall.stallInfo.head_state, stalledMs));
+      serr(stallText(index, total, stalledMs, stall.claim, stall.stallInfo.head_state));
       return;
     }
     if (!inPass || !input.probe?.head || readingHead) return;
@@ -332,7 +344,9 @@ export async function runDrain(input: DrainInput): Promise<SyncResult> {
     Promise.resolve().then(() => probe.head!()).then(head => {
       if (!head || !inPass || stall || Date.now() - lastCommitAt < every || tickAt - lastLine < every) return;
       lastLine = tickAt;
-      serr(stallText(index, total, head.claim?.step_age_ms ?? Date.now() - lastCommitAt, head.claim, head.head_state));
+      const stalledMs = head.claim?.step_age_ms ?? Date.now() - lastCommitAt;
+      noteCurrentStep(stallStep(head.claim, head.head_state, stalledMs));
+      serr(stallText(index, total, stalledMs, head.claim, head.head_state));
     }).catch(() => undefined).finally(() => { readingHead = false; });
   }, every) : null;
   stallLine?.unref?.();
@@ -481,7 +495,7 @@ export async function runDrain(input: DrainInput): Promise<SyncResult> {
             }
           }
         }
-      } else stall = null;
+      } else { stall = null; noteCurrentStep(null); }
       if (result.reason === 'writer_pending') await sleep(input.pauseMs ?? PENDING_PAUSE_MS, signal);
     }
   } finally {

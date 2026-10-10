@@ -91,6 +91,16 @@ describe('progress-aware deadline integration (Bun-pinned)', () => {
     expect(r.stderr).toContain('no progress for');
     expect(r.elapsedMs).toBeLessThan(4000);
   }, 15000);
+
+  // #6423: a no-progress stop names the in-flight step — the #6317 stall line
+  // reaches the operator from out-of-band, not only on the drain's own timer.
+  test('a stalled run is stopped naming the in-flight step and holder', async () => {
+    const r = await runHarness('progress-stall-step', 300, 150, 6000, 400);
+    expect(r.killedByTest).toBe(false);
+    expect(r.signalled).toBe(true);
+    expect(r.stdout).not.toContain('SURVIVED');
+    expect(r.stderr).toContain('stalled on admission · held by consumer pid 4242 · last_sql admit_group 5s ago');
+  }, 15000);
 });
 
 describe('loop-stall watchdog integration (Bun-pinned, #4281)', () => {

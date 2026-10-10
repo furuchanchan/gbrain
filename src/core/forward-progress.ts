@@ -21,9 +21,35 @@ let lastProgressAt = 0;
 /** Record that a unit of work just completed. Cheap enough to call per item. */
 export function noteForwardProgress(): void {
   lastProgressAt = Date.now();
+  lastStep = null;
   for (const listener of listeners) {
     try { listener(); } catch { /* a listener must never break the work loop */ }
   }
+}
+
+/**
+ * #6423: the in-flight step a stall line would name (`on <step> · held by
+ * <kind> pid N · last_sql <label>`), so an out-of-band stop can say what the
+ * run was doing — not only that nothing progressed. Forward progress clears
+ * it: a run that is advancing is not stalled anywhere.
+ */
+let lastStep: string | null = null;
+const stepListeners = new Set<(step: string | null) => void>();
+
+export function noteCurrentStep(step: string | null): void {
+  lastStep = step;
+  for (const listener of stepListeners) {
+    try { listener(step); } catch { /* same rule as progress listeners */ }
+  }
+}
+
+export function currentStep(): string | null {
+  return lastStep;
+}
+
+export function onCurrentStep(listener: (step: string | null) => void): () => void {
+  stepListeners.add(listener);
+  return () => { stepListeners.delete(listener); };
 }
 
 /** Subscribe to forward-progress notes; returns the unsubscribe function. */

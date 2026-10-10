@@ -37,7 +37,7 @@
 import { Worker } from 'node:worker_threads';
 // Zero-import teardown-budget leaf — safe edge, no cycle (it imports nothing).
 import { MAX_TIMER_DELAY_MS } from './background-work.ts';
-import { lastForwardProgressAt, onForwardProgress } from './forward-progress.ts';
+import { currentStep, lastForwardProgressAt, onCurrentStep, onForwardProgress } from './forward-progress.ts';
 
 export type WatchdogAction = 'wait' | 'sigterm' | 'sigkill';
 
@@ -161,9 +161,15 @@ const { writeSync } = require('node:fs');
 const { deadlineMs, graceMs, label, heartbeatMs, progressWindowMs, stopNotice } = workerData;
 const t0 = Date.now();
 let lastProgress = t0;
+let lastStep = null;
 let extended = false;
 function w(m) { try { writeSync(2, '[' + label + '] ' + m + '\\n'); } catch (e) {} }
-if (progressWindowMs > 0 && parentPort) parentPort.on('message', () => { lastProgress = Date.now(); });
+// #6423: {step} posts carry the in-flight step so a no-progress stop names it;
+// anything else is a progress note. Forward progress clears the step.
+if (parentPort) parentPort.on('message', (m) => {
+  if (m && typeof m === 'object' && 'step' in m) { lastStep = m.step; return; }
+  lastProgress = Date.now(); lastStep = null;
+});
 if (heartbeatMs > 0) {
   const hb = setInterval(() => {
     const elapsed = Math.round((Date.now() - t0) / 1000);
@@ -182,7 +188,7 @@ if (heartbeatMs > 0) {
 }
 function stop() {
   if (progressWindowMs > 0) {
-    w('deadline reached (' + Math.round(deadlineMs/1000) + 's) and no progress for ' + Math.round((Date.now() - lastProgress) / 1000) + 's — sending SIGTERM for graceful shutdown');
+    w('deadline reached (' + Math.round(deadlineMs/1000) + 's) and no progress for ' + Math.round((Date.now() - lastProgress) / 1000) + 's' + (lastStep ? ', stalled on ' + lastStep : '') + ' — sending SIGTERM for graceful shutdown');
   } else {
     w('deadline reached (' + Math.round(deadlineMs/1000) + 's) — sending SIGTERM for graceful shutdown');
   }
@@ -250,12 +256,18 @@ export function installProcessWatchdog(opts: ProcessWatchdogOpts): WatchdogHandl
       lastPost = now;
       try { worker.postMessage(1); } catch { /* worker gone */ }
     }) : () => {};
+    // #6423: forward the named in-flight step so a no-progress stop can say
+    // `stalled <N>s on <step>` — the #6317 stall line, from out-of-band.
+    const unsubscribeStep = onCurrentStep((step) => {
+      try { worker.postMessage({ step }); } catch { /* worker gone */ }
+    });
     let disposed = false;
     return {
       dispose() {
         if (disposed) return;
         disposed = true;
         unsubscribe();
+        unsubscribeStep();
         void worker.terminate();
       },
       get active() { return !disposed; },
@@ -280,6 +292,8 @@ export function installProcessWatchdog(opts: ProcessWatchdogOpts): WatchdogHandl
         return;
       }
       if (stopNotice) { try { process.stdout.write(stopNotice + '\n'); } catch { /* */ } }
+      const step = currentStep();
+      if (step) warn(`[${label}] stalled ${Math.round(since / 1000)}s on ${step}`);
       try { process.kill(process.pid, 'SIGTERM'); } catch { /* */ }
       kill = setTimeout(() => { killed = true; try { process.kill(process.pid, 'SIGKILL'); } catch { /* */ } }, graceMs);
       (kill as unknown as { unref?: () => void }).unref?.();

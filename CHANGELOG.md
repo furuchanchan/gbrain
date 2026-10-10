@@ -16,6 +16,8 @@ identifiers and attribution are available in the pre-removal Git revision
 
 A transaction-mode pooler keeps a round-trip it never completes in its own queue, where no server-side timeout can end it — a 208-entry catch-up froze after the freeze and admitted nothing (#6423). `runManagedSync` now wraps its engine via `managedSyncStatementRoute` (consumer-lane): `executeRaw` → `executeRawDirect` and `transaction` → `transactionDirect` while `consumerConnectionRoute` reports `lane: 'direct'`, so the CLI drain and the serve's delegated runner share the direct lane. When only a `prepare=false` URL is in play it prints the same loud line the consumer does, with the managed sync named as the subject. The consumer's own statements are unchanged.
 
+And when the out-of-band watchdog stops a run that honored its progress window — "stops after 900s without progress" — it now names what the run was doing: the drain's stall timer feeds a `noteCurrentStep` side-channel on `forward-progress.ts` (`<step> · held by <kind> pid N · last_sql <label>`, the #6317 format, cleared on each forward progress), the watchdog worker receives `{step}` posts alongside progress pings, and its stop line prints `no progress for Ns, stalled on <step>` (#6423).
+
 ## [0.60.146.0] - 2026-10-10
 
 **On PGLite at 50,000 pages, the vector index now builds (11 minutes, where it used to run out of memory) and vector search drops from 1.7 s to 27 ms. A 50,000-page import no longer leaves about 30,000 Git effects queued, so `gbrain serve`'s first call is 189 ms instead of 640 ms and the first write after it 266 ms instead of 758 ms. The first sync of an already-imported 3,700-file source takes 22 s instead of 96 s on Postgres and 28 s instead of 60 s on PGLite.**

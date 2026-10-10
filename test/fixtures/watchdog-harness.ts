@@ -31,11 +31,14 @@
  *                     responsive, no progress). Must be SIGTERMed one window
  *                     after the last progress note, after printing the
  *                     STOP-NOTICE stop notice on stdout.
+ *   progress-stall-step — #6423: report progress, then stall on a named step
+ *                     (noteCurrentStep, no further progress). The stop line
+ *                     must name the step — `stalled on <step>`.
  *
  * Safety net: the busy loop self-exits after 8s so a failed test kill can't hang CI.
  */
 import { installProcessWatchdog, installLoopStallWatchdog } from '../../src/core/process-watchdog.ts';
-import { noteForwardProgress } from '../../src/core/forward-progress.ts';
+import { noteCurrentStep, noteForwardProgress } from '../../src/core/forward-progress.ts';
 
 const mode = process.argv[2] ?? 'starve-with';
 const deadlineMs = Number(process.argv[3] ?? 300);
@@ -92,6 +95,7 @@ if (mode.startsWith('progress-')) {
   const progressFor = mode === 'progress-with' ? deadlineMs * 4 : deadlineMs / 2;
   while (Date.now() - t0 < progressFor) { noteForwardProgress(); await sleep(25); }
   if (mode === 'progress-with') { process.stdout.write('COMPLETED\n'); process.exit(0); }
+  if (mode === 'progress-stall-step') noteCurrentStep('admission · held by consumer pid 4242 · last_sql admit_group 5s ago');
   while (Date.now() - t0 < 8000) await sleep(25);
   process.stdout.write('SURVIVED\n');
   process.exit(0);
