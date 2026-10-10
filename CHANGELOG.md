@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.148.0] - 2026-10-10
+
+**`gbrain migrate --to <target>` no longer fails `graduation_verify_failed` on a managed brain: `sync_freshness` classifies writer-owned content sources structurally (receipt + bindings), not on `persistence_brain.enabled`, which stays `false` on the fenced target until cutover.**
+
+A managed brain's `default` content source has `last_commit`/`last_sync_at` NULL — it never goes through upstream sync. The fenced migration target holds `persistence_brain.enabled=false` until cutover, so the freshness check's writer-owned join returned empty, the source was judged an unsynced upstream, and graduation was refused. `sync_freshness` now calls `ownedContentFreshness` with `includeDisabled`; the `canonical_content` check keeps the enabled-only view.
+
 ## [0.60.144.0] - 2026-10-10
 
 **A managed import writes about 12% less WAL on Postgres (200 → 176 KB per page at 50,000 pages) and spends 3-13% less time executing SQL, with the same rows: each imported, synced or put page is sealed by one closing write instead of two, the import's crash checkpoint no longer stores the page text, and the write claim looks up its root's earlier rows by index.**

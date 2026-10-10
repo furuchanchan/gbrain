@@ -1240,7 +1240,10 @@ export async function checkSyncFreshness(
 
     const issues: string[] = [];
     let ownedContent = new Set<string>();
-    try { ownedContent = new Set((await ownedContentFreshness(engine)).map(source => source.sourceId)); }
+    // includeDisabled: a managed source stays writer-owned when persistence is
+    // merely off (pre-cutover migration target, operator-disabled brain) — it
+    // still isn't an upstream-sync source and must not read as never-synced.
+    try { ownedContent = new Set((await ownedContentFreshness(engine, undefined, { includeDisabled: true })).map(source => source.sourceId)); }
     catch (error) { if (!/does not exist|no such table/i.test(String(error))) throw error; }
     let writer_owned_count = 0;
     // v0.41.27.0: D6 count math. Every source falls into

@@ -7,7 +7,12 @@ export interface OwnedContentFreshness {
   recovering: number;
 }
 
-export async function ownedContentFreshness(engine: BrainEngine, sourceIds?: string[]): Promise<OwnedContentFreshness[]> {
+export async function ownedContentFreshness(engine: BrainEngine, sourceIds?: string[], opts?: { includeDisabled?: boolean }): Promise<OwnedContentFreshness[]> {
+  // `includeDisabled` is for callers classifying a source (writer-owned or
+  // not — structural, receipt-keyed) rather than reporting live publication:
+  // a fenced migration target keeps persistence_brain.enabled=false until
+  // cutover, but its content-directory sources are still writer-owned.
+  const enabledClause = opts?.includeDisabled ? '' : ' AND p.enabled';
   const rows = await engine.executeRaw<{
     id: string; incarnation: string; local_path: string; config: unknown; last_commit: string | null;
     brain_id: string; receipt: string; owner_root: string; relative_path: string; pending: number; recovering: number;
@@ -21,7 +26,7 @@ export async function ownedContentFreshness(engine: BrainEngine, sourceIds?: str
         AND (r.state='recovering' OR r.recovery IS NOT NULL))
        +(SELECT COUNT(*) FROM persistence_effects e WHERE e.source_id=s.id AND e.source_incarnation=s.incarnation
         AND e.recovery IS NOT NULL))::integer AS recovering
-    FROM sources s JOIN persistence_brain p ON p.singleton=1 AND p.enabled
+    FROM sources s JOIN persistence_brain p ON p.singleton=1${enabledClause}
     JOIN config c ON c.key='shared_skills.content.v1.'||s.id||'.'||s.incarnation::text
     JOIN persistence_source_bindings b ON b.source_id=s.id AND b.source_incarnation=s.incarnation
     JOIN persistence_worktrees w ON w.id=b.worktree_id AND w.state='active' AND w.owner_host_id IS NOT NULL
