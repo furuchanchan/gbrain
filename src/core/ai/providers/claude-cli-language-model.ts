@@ -337,6 +337,7 @@ function runClaude(
   userPrompt: string,
   model: string,
   signal?: AbortSignal,
+  maxTokens?: number,
 ): Promise<ClaudeJsonResult> {
   return new Promise((resolve, reject) => {
     const args = [
@@ -390,6 +391,10 @@ function runClaude(
     // see resolveHermeticConfigDir for the auth caveat that makes it opt-in.
     const hermeticConfigDir = resolveHermeticConfigDir();
     if (hermeticConfigDir) env.CLAUDE_CONFIG_DIR = hermeticConfigDir;
+    // #6424: the only output-token cap the CLI honours — no argv flag exists.
+    // Set, never clobbered from gbrain's env: a caller-set env value is
+    // irrelevant since every per-call cap the gateway computes rides maxTokens.
+    if (maxTokens !== undefined) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
     const child = spawn(claudeBin(), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: ensureCleanCwd(),
@@ -661,7 +666,7 @@ export class ClaudeCliLanguageModel implements LanguageModelV2 {
     const toolInstructions = buildToolUseInstructions(options.tools);
     const systemPrompt = [systemText, toolInstructions].filter(s => s.length > 0).join('\n');
 
-    const result = await runClaude(systemPrompt, userPrompt, this.modelId, options.abortSignal);
+    const result = await runClaude(systemPrompt, userPrompt, this.modelId, options.abortSignal, options.maxTokens);
     const { toolCalls, beforeText, afterText } = extractToolCalls(result.result);
 
     const content: LanguageModelV2Content[] = [];

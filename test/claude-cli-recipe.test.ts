@@ -842,6 +842,48 @@ describe('claude-cli LanguageModel — context isolation', () => {
   });
 });
 
+describe('claude-cli LanguageModel — maxTokens propagation', () => {
+  test('#6424: doGenerate forwards options.maxTokens as CLAUDE_CODE_MAX_OUTPUT_TOKENS in the child env', async () => {
+    await withStubEnv(async () => {
+      const envLog = join(stubDir, 'env-max.log');
+      const envStub = [
+        '#!/bin/sh',
+        `printf "maxOut=%s\\n" "\${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-UNSET}" > "${envLog}"`,
+        'cat > /dev/null',
+        `cat "${stubResponsePath}"`,
+      ].join('\n');
+      writeFileSync(stubBin, envStub);
+      chmodSync(stubBin, 0o755);
+      stageResponse(baseEnvelope('ok'));
+
+      try {
+        const { ClaudeCliLanguageModel } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+        const model = new ClaudeCliLanguageModel('claude-haiku-4-5-20251001');
+        const fs = require('node:fs');
+
+        await model.doGenerate({
+          prompt: [userMessage('hi')],
+          maxTokens: 16384,
+        } as LanguageModelV2CallOptions);
+        expect(fs.readFileSync(envLog, 'utf8')).toContain('maxOut=16384');
+
+        await model.doGenerate({
+          prompt: [userMessage('hi')],
+        } as LanguageModelV2CallOptions);
+        expect(fs.readFileSync(envLog, 'utf8')).toContain('maxOut=UNSET');
+      } finally {
+        const fastStub = [
+          '#!/bin/sh',
+          'cat > /dev/null',
+          `cat "${stubResponsePath}"`,
+        ].join('\n');
+        writeFileSync(stubBin, fastStub);
+        chmodSync(stubBin, 0o755);
+      }
+    });
+  });
+});
+
 describe('claude-cli LanguageModel — abort + error envelopes', () => {
   test('SIGTERMs the child on AbortSignal', async () => {
     await withStubEnv(async () => {

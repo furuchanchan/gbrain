@@ -36,6 +36,12 @@ Efficiency wave 9 (GBRA-75). Base is master at wave 8 (310371559). Measured on 4
   - `managed-sync-foreground-priority.test.ts` (Postgres arm) flake fixed. "a stream of writes from another process" now boots and connects its writer process before the drain starts. Before, the drain's lead depended on how fast a cold process started, so a slow runner could commit most groups before the first write. Forcing a 600 ms boot fails the old test 4 of 4 times and passes the new one 4 of 4.
   - Crash robot: 600 s on each engine, every seam, with PgBouncer and `pooler_disconnect` on Postgres.
 
+## [0.60.162.0] - 2026-10-10
+
+**`claude-cli:` models now honour `maxTokens`: the per-call output cap gbrain computes (e.g. `cycle.extract_atoms.max_output_tokens = 16384`) reaches the `claude` child as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` — large-page extractions that used to fail on truncated JSON respect the configured budget (#6424).**
+
+The recipe's `doGenerate()` called `runClaude()` without `options.maxTokens`, and the child argv carries no output-limit flag, so every computed cap was silently dropped. `runClaude` now takes the cap and sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the scrubbed child env — the only limit the CLI honours (no argv flag exists; env var documented upstream since v2.1.138).
+
 ## [0.60.146.0] - 2026-10-10
 
 **On PGLite at 50,000 pages, the vector index now builds (11 minutes, where it used to run out of memory) and vector search drops from 1.7 s to 27 ms. A 50,000-page import no longer leaves about 30,000 Git effects queued, so `gbrain serve`'s first call is 189 ms instead of 640 ms and the first write after it 266 ms instead of 758 ms. The first sync of an already-imported 3,700-file source takes 22 s instead of 96 s on Postgres and 28 s instead of 60 s on PGLite.**
