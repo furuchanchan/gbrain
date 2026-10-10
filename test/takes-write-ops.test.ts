@@ -506,6 +506,36 @@ describe('takes-write adversarial regressions (F1 cross-holder / P1-2 containmen
     expect(parseTakesFence(pageMd(F2_SLUG)).takes.length).toBe(0);
   });
 
+  test('#6450: malformed holders refuse before any state change on both local and managed paths', async () => {
+    const malformed = ['', ' ', 'Garry', 'foo bar', 'a/b/c', '???'];
+    const claimsBefore = (await engine.listTakes({ page_slug: 'people/alice-example', sourceId: 'default' })).length;
+    const mdBefore = pageMd('people/alice-example');
+    for (const holder of malformed) {
+      const res = await dispatchToolCall(engine, 'takes_add', {
+        slug: 'people/alice-example', claim: 'malformed holder take', kind: 'fact', holder,
+      }, { ...STDIO, remote: false });
+      expect(res.isError).toBe(true);
+      expect(parsed(res).error).toBe('invalid_params');
+      expect(pageMd('people/alice-example')).toBe(mdBefore);
+    }
+    for (const holder of malformed) {
+      const res = await dispatchToolCall(engine, 'takes_add', {
+        slug: 'people/alice-example', claim: 'malformed holder take', kind: 'fact', holder,
+      }, { ...STDIO, takesHoldersAllowList: [holder] });
+      expect(res.isError).toBe(true);
+      expect(parsed(res).error).toBe('invalid_params');
+      expect(pageMd('people/alice-example')).toBe(mdBefore);
+    }
+    expect((await engine.listTakes({ page_slug: 'people/alice-example', sourceId: 'default' })).length).toBe(claimsBefore);
+    // Valid legacy + canonical holders still land.
+    for (const holder of ['garry', 'people/garry-tan', 'world']) {
+      const res = await dispatchToolCall(engine, 'takes_add', {
+        slug: 'people/alice-example', claim: `ok by ${holder}`, kind: 'fact', holder,
+      }, { ...STDIO, remote: false });
+      expect(parsed(res).state).toBe('committed');
+    }
+  });
+
   test('P1-1: a source with its own local_path publishes only under its registered root', async () => {
     const sourceRoot = mkdtempSync(join(tmpdir(), 'gbrain-takes-source-root-'));
     extraRoots.push(sourceRoot);

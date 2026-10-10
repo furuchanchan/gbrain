@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.169.0] - 2026-10-10
+
+### Fixed
+
+- `take add` and `take supersede` now refuse an unresolvable holder (empty,
+  whitespace, or any token outside the canonical holder grammar) before any
+  page, file, facts or takes state changes — on both the trusted local path
+  and the managed ops path. Previously `assertHolderAllowed` only checked the
+  remote allow-list and `assertSafeCellText` only rejected control chars and
+  fence-marker text, so a malformed holder was accepted and published — #6450.
+
+
 ## [0.60.158.0] - 2026-10-10
 
 **`engine.transaction(fn, { signal })` and `engine.transactionDirect(fn, { signal })`: an `AbortSignal` that cancels a running Postgres transaction. No behavior changes for callers that pass no signal.**

@@ -45,6 +45,7 @@ import {
   renderTakesFence,
   upsertTakeRow,
   supersedeRow,
+  isValidHolder,
   TAKES_FENCE_BEGIN,
   TAKES_FENCE_END,
   type ParsedTake,
@@ -317,6 +318,25 @@ function assertValidWeight(weight: number | undefined): void {
   }
 }
 
+/**
+ * Holder grammar guard (#6450): an unresolvable holder — empty, whitespace,
+ * or any token outside the canonical grammar (world|brain|<dir>/<slug>|legacy
+ * bare slug, per isValidHolder) — must refuse before any page/file/facts/
+ * takes state changes. assertSafeCellText only rejects control chars and
+ * fence-marker text, and assertHolderAllowed skips trusted local callers, so
+ * without this check a malformed holder was accepted and published.
+ */
+function assertValidHolder(holder: string | undefined): void {
+  if (holder === undefined) return;
+  if (!isValidHolder(holder)) {
+    throw new TakesWriteError(
+      'invalid_input',
+      `holder '${holder}' is not a valid takes holder (expected world, brain, a <dir>/<slug> holder, or a legacy bare slug).`,
+      'takes_holder_invalid',
+    );
+  }
+}
+
 const SINCE_DATE_RE = /^\d{4}-\d{2}(-\d{2})?$/;
 function assertValidSinceDate(value: string | undefined): void {
   if (value === undefined) return;
@@ -507,6 +527,7 @@ export async function materializeTakeResolutions(engine: BrainEngine, pageId: nu
 export function appendTakesToPageBody(body: string, rows: ReadonlyArray<AddTakeInput>): { body: string; rowNums: number[] } {
   for (const row of rows) {
     assertHolderAllowed(row.holder, null);
+    assertValidHolder(row.holder);
     assertSafeCellText('claim', row.claim);
     assertSafeCellText('kind', row.kind);
     assertSafeCellText('holder', row.holder);
@@ -538,8 +559,9 @@ export async function addTakeToPage(
   input: AddTakeInput,
 ): Promise<{ rowNum: number; mirror: TakeMirror }> {
   assertHolderAllowed(input.holder, target.allowList);
-  // Fence-injection + range guards run before any I/O (invalid input must
-  // never acquire the lock or touch the page).
+  // Grammar + fence-injection + range guards run before any I/O (invalid
+  // input must never acquire the lock or touch the page).
+  assertValidHolder(input.holder);
   assertSafeCellText('claim', input.claim);
   assertSafeCellText('kind', input.kind);
   assertSafeCellText('holder', input.holder);
@@ -715,6 +737,7 @@ export async function supersedeTakeOnPage(
   rowNum: number,
   input: SupersedeTakeInput,
 ): Promise<{ oldRow: number; newRow: number; mirror: TakeMirror }> {
+  assertValidHolder(input.holder);
   assertSafeCellText('claim', input.claim);
   assertSafeCellText('kind', input.kind);
   assertSafeCellText('holder', input.holder);
@@ -860,4 +883,4 @@ export async function resolveTakeOnPage(
 }
 
 /** Pure fence primitives shared by durable semantic preparation and legacy callers. */
-export const takesPreparation = { assertHolderAllowed, assertSafeCellText, assertValidWeight, assertValidSinceDate, findFenceRow, assertFenceRoundTrips, replaceFence, toBatchInput, toCanonicalBatchInput };
+export const takesPreparation = { assertHolderAllowed, assertValidHolder, assertSafeCellText, assertValidWeight, assertValidSinceDate, findFenceRow, assertFenceRoundTrips, replaceFence, toBatchInput, toCanonicalBatchInput };

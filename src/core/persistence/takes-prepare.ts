@@ -98,6 +98,7 @@ async function prepare(engine: BrainEngine, row: WriteRequest, config: GBrainCon
   if (row.operation === 'takes_add') {
     if (typeof p.claim !== 'string' || !p.claim.trim() || typeof p.kind !== 'string' || typeof p.holder !== 'string') throw takesRefusal('invalid_params','claim, kind and holder are required.',row,
       'takes_add needs claim, kind and holder as non-empty text.');
+    edit.assertValidHolder(p.holder);
     edit.assertHolderAllowed(p.holder,holders); requiredHolders.add(p.holder);
     const added = upsertTakeRow(body,{claim:p.claim,kind:p.kind,holder:p.holder,weight:p.weight as number ?? 0.5,
       source:p.source as string | undefined,sinceDate:p.since as string,active:true,rowNum:await nextRow()});
@@ -125,6 +126,7 @@ async function prepare(engine: BrainEngine, row: WriteRequest, config: GBrainCon
       if (typeof p.claim!=='string' || !p.claim.trim()) throw takesRefusal('invalid_params','claim is required.',row,
         'takes_supersede needs the replacement claim as non-empty text.');
       const holder=typeof p.holder==='string'?p.holder:target.holder;
+      if (typeof p.holder==='string') edit.assertValidHolder(p.holder);
       edit.assertHolderAllowed(holder,holders); requiredHolders.add(holder);
       const [stored]=await engine.executeRaw<{id:number;trust_tier:string}>('SELECT id,trust_tier FROM takes WHERE page_id=$1 AND row_num=$2',[snapshot.page.id,number]);
       const accepted=p.trust_accept!==undefined && stored ? await ownerAcceptedTake(engine,row,Number(stored.id),snapshot.page.id) : null;
