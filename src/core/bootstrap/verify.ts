@@ -39,6 +39,7 @@ import { join, resolve } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { operations, type Operation, type OperationContext } from '../operations.ts';
 import { loadConfigFileOnly, type GBrainConfig } from '../config.ts';
+import { resolveCliWriteWaitMs } from '../persistence/write-wait.ts';
 import { detectExecutionEnvironment } from '../execution-env.ts';
 import { resolveGbrainHome } from '../gbrain-home.ts';
 import { realpathOrResolve } from '../path-confine.ts';
@@ -133,15 +134,21 @@ function findOp(name: string): Operation {
   return op;
 }
 
-function localCtx(engine: BrainEngine, sourceId: string, log?: (l: string) => void): OperationContext {
+export function localCtx(engine: BrainEngine, sourceId: string, log?: (l: string) => void): OperationContext {
   const sink = log ?? (() => {});
+  const config = (loadConfigFileOnly() ?? { engine: 'pglite' }) as GBrainConfig;
   return {
     engine,
-    config: (loadConfigFileOnly() ?? { engine: 'pglite' }) as GBrainConfig,
+    config,
     logger: { info: sink, warn: sink, error: sink },
     dryRun: false,
     remote: false,
     sourceId,
+    // #6356: the roundtrip is a CLI check; give its writes the CLI wait
+    // (--wait / GBRAIN_WRITE_WAIT_MS / persistence.write_wait_ms / 30 s)
+    // instead of waitForWrite's 5 s agent default, which a slow remote
+    // commit can exceed while still landing.
+    writeWaitMs: resolveCliWriteWaitMs({ config }),
   };
 }
 

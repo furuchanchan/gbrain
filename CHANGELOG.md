@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.146.0] - 2026-10-10
+
+**`gbrain bootstrap verify` no longer fails its roundtrip on a slow remote database. The check's `put_page` writes now wait the way a CLI write waits — `--wait`, `GBRAIN_WRITE_WAIT_MS` or `persistence.write_wait_ms`, defaulting to 30 s — instead of the 5 s agent default `waitForWrite` falls back to, which a healthy commit over a remote pooler can exceed while still landing.**
+
+Fixes #6356.
+
+
+
 All notable changes to GBrain will be documented in this file.
 
 Historical entries use generic identifiers for the retired hosted provider
