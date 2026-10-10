@@ -8,11 +8,15 @@
  * member's `preparation_deadline` (the signal's reason once it aborted, the
  * typed error naming the step before that), which `preparationAbortReason`
  * classifies as the deadline, never a terminal failure; any other error
- * passes through; and a group's shared read (`preparationReads`) answers a
- * bounded read once with the bound and signal dropped. Fails when the bound
- * stops reaching the statement, when a server timeout is left as a raw
- * Postgres error (a `storage_error` receipt), or when a member's bound leaks
- * into a sibling's shared read.
+ * passes through; a group's shared read (`preparationReads`) answers a
+ * bounded read once, keeping the first requester's `timeoutMs` while the
+ * member's signal stays dropped; and (#6318) the engine methods that read
+ * outside `executeRaw` (`readPageSnapshot`, `getPage`, `readPageSnapshotsBatch`,
+ * `findDuplicatePage`) run with the same remaining-budget `timeoutMs`, with a
+ * server timeout surfacing as `preparation_deadline` the same way. Fails when
+ * the bound stops reaching the statement, when a server timeout is left as a
+ * raw Postgres error (a `storage_error` receipt), or when a member's signal
+ * leaks into a sibling's shared read.
  */
 import { expect, test } from 'bun:test';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -79,7 +83,7 @@ test('a statement the server ends at the bound is the member\'s preparation_dead
   expect(await reads.executeRaw('SELECT id FROM pages').catch(e => e)).toEqual({ code: 'group_member_waiting' });
 });
 
-test('a group\'s shared read answers a bounded read once, with the member\'s bound and signal dropped', async () => {
+test('a group\'s shared read answers a bounded read once, keeping the first bound but no member\'s signal', async () => {
   const STABLE = 'SELECT local_path FROM sources WHERE id=$1';
   const { engine, calls } = fakeEngine('postgres', async () => [{ local_path: '/brain' }]);
   const shared = preparationReads(engine);
@@ -87,9 +91,56 @@ test('a group\'s shared read answers a bounded read once, with the member\'s bou
   const [readA, readB] = await Promise.all([boundedReads(shared, a).executeRaw(STABLE, ['default']), boundedReads(shared, b).executeRaw(STABLE, ['default'])]);
   expect(readA).toEqual([{ local_path: '/brain' }]);
   expect(readB).toEqual([{ local_path: '/brain' }]);
-  expect(calls).toEqual([{ sql: STABLE, opts: undefined }]);
+  // #6318: the shared read keeps a server-side bound — the first requester's,
+  // never either member's signal.
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.sql).toBe(STABLE);
+  expect(calls[0]!.opts!.timeoutMs).toBeGreaterThan(0);
+  expect(calls[0]!.opts!.timeoutMs).toBeLessThanOrEqual(10_000);
+  expect(calls[0]!.opts!.signal).toBeUndefined();
   // An unmemoized read keeps its own bound.
   await boundedReads(shared, a).executeRaw('SELECT id FROM pages WHERE source_id=$1', ['default']);
   expect(calls[1]!.opts!.timeoutMs).toBeGreaterThan(0);
   expect(calls[1]!.opts!.signal).toBe(a.signal);
+});
+
+test('#6318: engine reads outside executeRaw run with the remaining budget; a server timeout is preparation_deadline', async () => {
+  const opts: Array<Record<string, unknown> | undefined> = [];
+  let fail: unknown = pgError('57014', 'canceling statement due to statement timeout');
+  const engine = {
+    kind: 'postgres',
+    executeRaw: async () => [],
+    getConfig: async () => null,
+    readPageSnapshot: async (_slug: string, o?: Record<string, unknown>) => { opts.push(o); if (fail) throw fail; return { page: {} }; },
+    getPage: async (_slug: string, o?: Record<string, unknown>) => { opts.push(o); if (fail) throw fail; return {}; },
+    readPageSnapshotsBatch: async (_refs: ReadonlyArray<{ slug: string; sourceId: string }>, o?: Record<string, unknown>) => { opts.push(o); if (fail) throw fail; return { snapshots: new Map(), skipped: [] }; },
+    findDuplicatePage: async (_sourceId: string, o?: Record<string, unknown>) => { opts.push(o); if (fail) throw fail; return null; },
+  } as unknown as BrainEngine;
+  const cancel = new AbortController();
+  const clock = startClaimPhase(Date.now(), cancel.signal, 10_000);
+  enterClaimStep(clock, 'origin_check', undefined, 'db');
+  const reads = boundedReads(engine, clock);
+
+  for (const [call, name] of [
+    [() => reads.readPageSnapshot('slug', { sourceId: 'default' }), 'readPageSnapshot'],
+    [() => reads.getPage('slug', { sourceId: 'default' }), 'getPage'],
+    [() => reads.readPageSnapshotsBatch([{ slug: 'slug', sourceId: 'default' }]), 'readPageSnapshotsBatch'],
+    [() => reads.findDuplicatePage!('default', { hash: 'h' }), 'findDuplicatePage'],
+  ] as const) {
+    const error = await call().catch(e => e);
+    expect(error, name).toBeInstanceOf(PreparationDeadlineError);
+    expect(error, name).toMatchObject({ code: 'preparation_deadline', step: 'origin_check', sqlstate: '57014' });
+  }
+  expect(opts).toHaveLength(4);
+  for (const o of opts) {
+    expect(o!.timeoutMs as number).toBeGreaterThan(0);
+    expect(o!.timeoutMs as number).toBeLessThanOrEqual(10_000);
+  }
+
+  // Other failures stay the preparer's own; an aborted clock surfaces its reason.
+  fail = pgError('42P01', 'relation "pages" does not exist');
+  expect(await reads.readPageSnapshot('slug').catch(e => e)).toBe(fail);
+  fail = pgError('57014', 'canceling statement due to statement timeout');
+  cancel.abort({ code: 'group_member_waiting' });
+  expect(await reads.findDuplicatePage!('default', { hash: 'h' }).catch(e => e)).toEqual({ code: 'group_member_waiting' });
 });

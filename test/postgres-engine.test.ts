@@ -72,9 +72,10 @@ describe('postgres-engine / search path timeout isolation', () => {
     expect(helper).toMatch(/this\.transaction\(async engine =>/);
     expect(helper).toMatch(/const tx = \(engine as PostgresEngine\)\.sql;/);
     expect(helper).toMatch(/await callback\(tx\)/);
-    // Flag off without a transaction requirement preserves pool passthrough.
+    // Flag off without a transaction requirement preserves pool passthrough —
+    // a #6318 statement_timeout bound is itself a transaction requirement.
     expect(helper).toMatch(
-      /if\s*\(!this\.rlsScopeBindingEnabled\s*&&\s*!opts\?\.alwaysTransaction\)\s*\{\s*return\s+await\s+callback\(this\.sql\);/,
+      /if\s*\(!this\.rlsScopeBindingEnabled\s*&&\s*!opts\?\.alwaysTransaction\s*&&\s*opts\?\.statementTimeoutMs\s*===\s*undefined\)\s*\{\s*return\s+await\s+callback\(this\.sql\);/,
     );
   });
 

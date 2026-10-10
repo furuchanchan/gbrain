@@ -325,12 +325,12 @@ export class PostgresEngine implements BrainEngine {
     sourceIds: string[] | undefined,
     sourceId: string | undefined,
     callback: (tx: ReturnType<typeof postgres>) => Promise<T>,
-    opts?: { alwaysTransaction?: boolean; jitOff?: boolean },
+    opts?: { alwaysTransaction?: boolean; jitOff?: boolean; statementTimeoutMs?: number },
   ): Promise<T> {
     // Flag off + no pre-existing transaction need: call through on the
     // shared pool exactly as master does. No tx round-trip, no pool slot
     // held for the duration of the read.
-    if (!this.rlsScopeBindingEnabled && !opts?.alwaysTransaction) {
+    if (!this.rlsScopeBindingEnabled && !opts?.alwaysTransaction && opts?.statementTimeoutMs === undefined) {
       return await callback(this.sql);
     }
     // Precedence matches sourceScopeOpts: federated array > scalar > '*'
@@ -347,6 +347,10 @@ export class PostgresEngine implements BrainEngine {
       const previous = this.rlsScopeBindingEnabled
         ? await tx`SELECT current_setting('app.scopes', true) AS scopes` : [];
       if (this.rlsScopeBindingEnabled) await tx`SELECT set_config('app.scopes', ${scopesValue}, true)`;
+      // #6318: the #6278 bound for reads that bypass executeRaw — a transaction-local
+      // statement_timeout holds through a transaction-mode pooler and ends a
+      // lock-blocked read server-side (SQLSTATE 57014).
+      if (opts?.statementTimeoutMs !== undefined) await tx.unsafe(`SET LOCAL statement_timeout = ${Math.max(1, Math.ceil(opts.statementTimeoutMs))}`);
       const result = opts?.jitOff ? await withSearchJitOff(tx, this._pageTransaction, () => callback(tx)) : await callback(tx);
       // Successful RELEASE SAVEPOINT retains SET LOCAL; a failed callback
       // rolls it back with the savepoint and must preserve its original error.
@@ -741,15 +745,17 @@ export class PostgresEngine implements BrainEngine {
 
   async readPageSnapshot(slug: string, opts?: PageSnapshotOptions): Promise<PageSnapshot | null> {
     // #6276: the remote alias-resolving read's visibility subplans cross the JIT thresholds on larger brains; run it with JIT off.
+    const txOpts = opts?.resolveAlias && opts.excludePrivate ? { alwaysTransaction: true, jitOff: true } : undefined;
     return this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, tx =>
       readCanonicalPageSnapshot(async (query, params) => Array.from(await tx.unsafe(query, params as never, { prepare: true })) as never, slug, opts),
-    opts?.resolveAlias && opts.excludePrivate ? { alwaysTransaction: true, jitOff: true } : undefined);
+    opts?.timeoutMs !== undefined ? { ...txOpts, statementTimeoutMs: opts.timeoutMs } : txOpts);
   }
 
-  async readPageSnapshotsBatch(refs: ReadonlyArray<{ slug: string; sourceId: string }>, opts?: { maxBytes?: number }) {
+  async readPageSnapshotsBatch(refs: ReadonlyArray<{ slug: string; sourceId: string }>, opts?: { maxBytes?: number; timeoutMs?: number }) {
     const sourceIds = [...new Set(refs.map(ref => ref.sourceId))];
     return this.withScopedReadTransaction(sourceIds.length ? sourceIds : undefined, undefined, tx =>
-      readPageSnapshotsBatch(async (query, params) => Array.from(await tx.unsafe(query, params as never, { prepare: true })) as never, refs, opts));
+      readPageSnapshotsBatch(async (query, params) => Array.from(await tx.unsafe(query, params as never, { prepare: true })) as never, refs, opts),
+    opts?.timeoutMs !== undefined ? { statementTimeoutMs: opts.timeoutMs } : undefined);
   }
 
   async lockPageKeys(keys: readonly PageKey[]): Promise<void> {
@@ -764,9 +770,10 @@ export class PostgresEngine implements BrainEngine {
    */
   async findDuplicatePage(
     sourceId: string,
-    opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string },
+    opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number },
   ): Promise<{ slug: string; id: number } | null> {
-    return this.withScopedReadTransaction(undefined, sourceId, tx => pagesImpl.findDuplicatePage(scopedRead(this.engineSqlOn(tx)), sourceId, opts));
+    return this.withScopedReadTransaction(undefined, sourceId, tx => pagesImpl.findDuplicatePage(scopedRead(this.engineSqlOn(tx)), sourceId, opts),
+      opts.timeoutMs !== undefined ? { statementTimeoutMs: opts.timeoutMs } : undefined);
   }
 
   private _pageTransaction = false;

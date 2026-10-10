@@ -153,11 +153,12 @@ export function preparationReads(engine: BrainEngine): BrainEngine {
     return value;
   };
   return new Proxy(engine, { get(target, key) {
-    // A shared read takes no member's signal: a caller's own signal bypasses the memo, and (#6278) a bounded preparation read
-    // (`timeoutMs`, whose signal only covers its connection wait) is answered once with the member's bound and signal dropped.
+    // A shared read takes no member's signal: a caller's own signal bypasses the memo. A bounded preparation read
+    // (#6278/#6318 `timeoutMs`) keeps its server-side bound — the first requester's remaining budget bounds the shared
+    // statement without lending it that member's signal, and a bound kill only drops the memo for a bounded retry.
     if (key === 'executeRaw') return (sql: string, params?: unknown[], opts?: { signal?: AbortSignal; timeoutMs?: number }) =>
       STABLE_IN_PREPARATION.has(flat(sql)) && (!opts?.signal || opts.timeoutMs !== undefined)
-        ? once(JSON.stringify([flat(sql), params ?? null]), () => target.executeRaw(sql, params)) : target.executeRaw(sql, params, opts);
+        ? once(JSON.stringify([flat(sql), params ?? null]), () => target.executeRaw(sql, params, opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined)) : target.executeRaw(sql, params, opts);
     if (key === 'getConfig') return (name: string) => once(`config:${name}`, () => target.getConfig(name));
     if (key === 'getAllConfig') return () => once('config:*', () => target.getAllConfig()).then(all => ({ ...all }));
     const value = Reflect.get(target, key, target);

@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.160.0] - 2026-10-10
+
+**A managed sync's preparation reads that bypass `executeRaw` now carry the same server-side bound as its raw statements: under a held `pages` lock every member's read ends at its claim budget (SQLSTATE 57014, surfacing as that member's `preparation_deadline`) instead of staying in `Lock/relation` until the lock holder finishes — including through a transaction-mode pooler that drops the session `statement_timeout`.**
+
+#6278 bounded only the reads routed through `executeRaw`; the engine's scoped reads went around it. `withScopedReadTransaction` now accepts `statementTimeoutMs` and runs `SET LOCAL statement_timeout` inside its transaction — the bound itself forces the transaction path even with RLS scope binding off, and the bound holds through a transaction-mode pooler since it lives inside the transaction. `readPageSnapshot`, `getPage`, `readPageSnapshotsBatch` and the import pipeline's `findDuplicatePage` content-hash lookup accept `timeoutMs` on their options; `boundedReads` injects each claim clock's remaining budget into all four and maps 57014/55P03/connection-end to `PreparationDeadlineError` exactly as the raw path does, for every member, not just the head. `preparationReads`' group memo keeps a bound on the shared read — the first requester's `timeoutMs`, never either member's signal — so a lock-blocked memoized read frees the pinned connection instead of wedging behind the lock until the consumer's ceiling. GBRA-45 pipelining is unchanged. #6318.
+
+Measured on `scripts/bench/managed-sync-catchup.ts` (`--files 500 --rows cli --rtt 0`, same machine, pgvector Postgres): 5,736 pages/min vs master's 5,897 (steady state 13,028 vs 13,399 pages/min), inside the 20% bar. `--chaos-kind lock` on `scripts/bench/managed-sync-stall-repro.ts` (PgBouncer in transaction mode, session `statement_timeout` dropped): the eight lock-blocked preparation reads ended 57014 at the claim budget (~120 s) instead of waiting out the lock.
+
+### Itemized changes
+
+- **`postgres-engine.ts` `withScopedReadTransaction`** accepts `statementTimeoutMs`, runs `SET LOCAL statement_timeout = <ms>` inside the scoped transaction before the callback, and treats a bound as a transaction requirement alongside `alwaysTransaction`/RLS binding — the unbounded flag-off path still calls through on the shared pool.
+- **`readPageSnapshot` / `getPage` / `readPageSnapshotsBatch` / `findDuplicatePage`** take `timeoutMs` (`GetPageOpts`, batch opts, the duplicate-check opts) and forward it as `statementTimeoutMs`; `src/core/engine.ts`, `pglite-engine.ts` and `page-state` types updated.
+- **`boundedReads`** intercepts the four methods alongside `executeRaw`, injecting `timeoutMs = deadlineAt - Date.now()` and sharing the same deadline translation (57014/55P03/discarded connection → the member's `preparation_deadline` or the signal's reason once aborted).
+- **`group-publish.ts` `preparationReads`** forwards `timeoutMs` on memoized stable reads so the shared read keeps a server-side bound without borrowing a member's signal.
+- Tests: `persistence-bounded-scoped-reads-6318.test.ts` (Postgres lane — a `pages` ACCESS EXCLUSIVE hold ends each of the four reads at ~500 ms with 57014; on master the same calls block until the lock is released), a scoped-read case in `persistence-bounded-reads.test.ts`, the memo test updated for the bound-keeping contract, `postgres-engine.test.ts`'s passthrough pin for the new transaction requirement, and the export-surface types golden for the three widened option shapes.
+
 ## [0.60.146.0] - 2026-10-10
 
 **On PGLite at 50,000 pages, the vector index now builds (11 minutes, where it used to run out of memory) and vector search drops from 1.7 s to 27 ms. A 50,000-page import no longer leaves about 30,000 Git effects queued, so `gbrain serve`'s first call is 189 ms instead of 640 ms and the first write after it 266 ms instead of 758 ms. The first sync of an already-imported 3,700-file source takes 22 s instead of 96 s on Postgres and 28 s instead of 60 s on PGLite.**

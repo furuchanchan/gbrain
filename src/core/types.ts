@@ -415,6 +415,8 @@ export interface GetPageOpts extends PageReadScope {
   sourceIds?: string[];
   /** Include soft-deleted pages. Default false. See PageFilters.includeDeleted. */
   includeDeleted?: boolean;
+  /** #6318: server-side bound (`SET LOCAL statement_timeout`) on the read's scoped transaction; the call ends with SQLSTATE 57014 past it. */
+  timeoutMs?: number;
 }
 
 /** v0.29: literal ORDER BY fragments for the PageFilters.sort enum. Whitelisted. */

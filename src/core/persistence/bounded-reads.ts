@@ -18,11 +18,16 @@
  * an uncounted `database_contention` release.
  *
  * The memo rule stands: a read `preparationReads` answers once for a whole
- * group never takes one member's bound or signal (group-publish.ts drops
- * them), and a statement that already carries a caller's signal keeps the
- * foreground path's cancellation instead of the bound. Engine helpers that bypass `executeRaw`
- * (`readPageSnapshot` and the import pipeline) stay under the consumer's race
- * and the ceiling. Without a deadline (switch off, a clock from an older
+ * group never takes one member's signal (group-publish.ts drops it); since
+ * #6318 it keeps the first requester's `timeoutMs`, a server-side bound that
+ * frees the pinned connection without lending the shared read a member's
+ * cancellation. A statement that already carries a caller's signal keeps the
+ * foreground path's cancellation instead of the bound. Engine helpers that
+ * bypass `executeRaw` (`readPageSnapshot`, `readPageSnapshotsBatch`,
+ * `findDuplicatePage`, `getPage` — the import pipeline's content-hash and
+ * origin reads) are bound through the same `timeoutMs`, which
+ * `withScopedReadTransaction` turns into `SET LOCAL statement_timeout`
+ * (#6318). Without a deadline (switch off, a clock from an older
  * caller) or on PGLite (one in-process connection, no other session to wait
  * on) the engine is returned as it is.
  *
@@ -62,6 +67,13 @@ export function isStatementTimeout(error: unknown): error is { code: string } {
 export function boundedReads(engine: BrainEngine, clock: ClaimPhaseClock | undefined): BrainEngine {
   const deadlineAt = clock?.deadlineAt;
   if (deadlineAt === undefined || engine.kind !== 'postgres') return engine;
+  const translate = (error: unknown): never => {
+    // A connection the engine discarded after the budget's cancel (a pooler that never completed the round-trip) is the deadline too.
+    const discarded = isConnectionEnd(error) && (clock!.signal?.aborted || Date.now() >= deadlineAt);
+    if (!isStatementTimeout(error) && !discarded) throw error;
+    if (clock!.signal?.aborted) throw clock!.signal.reason;
+    throw new PreparationDeadlineError(clock!.step, (error as { code: string }).code, error);
+  };
   return registerEngineView(new Proxy(engine, { get(target, key) {
     if (key === 'executeRaw') return async (sql: string, params?: unknown[], opts?: { signal?: AbortSignal; timeoutMs?: number }) => {
       recordClaimSql(clock, sql);
@@ -70,12 +82,30 @@ export function boundedReads(engine: BrainEngine, clock: ClaimPhaseClock | undef
         // The clock's signal ends only the wait for a free connection (a saturated pool); the statement itself ends at the bound.
         return await target.executeRaw(sql, params, { ...opts, timeoutMs: Math.max(1, deadlineAt - Date.now()), ...(clock!.signal ? { signal: clock!.signal } : {}) });
       } catch (error) {
-        // A connection the engine discarded after the budget's cancel (a pooler that never completed the round-trip) is the deadline too.
-        const discarded = isConnectionEnd(error) && (clock!.signal?.aborted || Date.now() >= deadlineAt);
-        if (!isStatementTimeout(error) && !discarded) throw error;
-        if (clock!.signal?.aborted) throw clock!.signal.reason;
-        throw new PreparationDeadlineError(clock!.step, (error as { code: string }).code, error);
+        translate(error);
       }
+    };
+    // #6318: the scoped-read methods take `timeoutMs` for their transaction-local
+    // statement_timeout; the bound stays server-side, never the member's signal.
+    if (key === 'readPageSnapshot') return async (slug: string, opts?: Record<string, unknown>) => {
+      recordClaimSql(clock, 'readPageSnapshot');
+      try { return await target.readPageSnapshot(slug, { ...opts, timeoutMs: Math.max(1, deadlineAt - Date.now()) }); }
+      catch (error) { translate(error); }
+    };
+    if (key === 'getPage') return async (slug: string, opts?: Record<string, unknown>) => {
+      recordClaimSql(clock, 'getPage');
+      try { return await target.getPage(slug, { ...opts, timeoutMs: Math.max(1, deadlineAt - Date.now()) }); }
+      catch (error) { translate(error); }
+    };
+    if (key === 'readPageSnapshotsBatch') return async (refs: ReadonlyArray<{ slug: string; sourceId: string }>, opts?: Record<string, unknown>) => {
+      recordClaimSql(clock, 'readPageSnapshotsBatch');
+      try { return await target.readPageSnapshotsBatch(refs, { ...opts, timeoutMs: Math.max(1, deadlineAt - Date.now()) }); }
+      catch (error) { translate(error); }
+    };
+    if (key === 'findDuplicatePage' && target.findDuplicatePage) return async (sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number }) => {
+      recordClaimSql(clock, 'findDuplicatePage');
+      try { return await target.findDuplicatePage!(sourceId, { ...opts, timeoutMs: Math.max(1, deadlineAt - Date.now()) }); }
+      catch (error) { translate(error); }
     };
     const value = Reflect.get(target, key, target);
     return typeof value === 'function' ? value.bind(target) : value;

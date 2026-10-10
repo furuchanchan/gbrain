@@ -811,7 +811,7 @@ export interface BrainEngine {
    * `readPageSnapshot(slug, { sourceId })` for a run of exact refs in one statement (page-snapshot-batch.ts):
    * the longest prefix whose bodies fit `maxBytes`. Postgres binds the refs' sources for RLS.
    */
-  readPageSnapshotsBatch(refs: ReadonlyArray<{ slug: string; sourceId: string }>, opts?: { maxBytes?: number }): Promise<PageSnapshotBatch>;
+  readPageSnapshotsBatch(refs: ReadonlyArray<{ slug: string; sourceId: string }>, opts?: { maxBytes?: number; timeoutMs?: number }): Promise<PageSnapshotBatch>;
   /** Hold exact page identities through commit, including absent rows. Requires a transaction. */
   lockPageKeys(keys: readonly PageKey[]): Promise<void>;
   /**
@@ -860,7 +860,7 @@ export interface BrainEngine {
    */
   findDuplicatePage?(
     sourceId: string,
-    opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string },
+    opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number },
   ): Promise<{ slug: string; id: number } | null>;
   /**
    * Hard-delete a page row. Cascades to content_chunks, page_links,

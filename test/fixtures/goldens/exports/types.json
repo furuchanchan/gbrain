@@ -85,7 +85,7 @@
           "findAnomalies: (opts: AnomaliesOpts) => Promise<AnomalyResult[]>",
           "findByTitleFuzzy: (name: string, dirPrefix?: string, minSimilarity?: number, sourceId?: string) => Promise<{ slug: string; similarity: number; } | null>",
           "findCandidateDuplicates: (source_id: string, entitySlug: string, factText: string, opts?: { k?: number; embedding?: Float32Array; embeddingModel?: string | null; attributedTo?: FactAttribution | null; }) => Promise<FactRow[]>",
-          "findDuplicatePage?: ((sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; }) => Promise<{ slug: string; id: number; } | null>) | undefined",
+          "findDuplicatePage?: ((sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number; }) => Promise<{ slug: string; id: number; } | null>) | undefined",
           "findOntologyConflicts: (opts?: PageReadScope & { minConfidence?: number; visibility?: OntologyReadOpts[\"visibility\"]; }) => Promise<OntologyConflict[]>",
           "findOrphanPages: (opts?: PageReadScope & { sourceId?: string; sourceIds?: string[]; mode?: \"inbound\" | \"islanded\"; }) => Promise<Array<{ slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean; source_id?: string; }>>",
           "findTrajectory: (opts: TrajectoryOpts) => Promise<TrajectoryPoint[]>",
@@ -171,7 +171,7 @@
           "putPage: (slug: string, page: PageInput, opts?: PageWriteOptions) => Promise<Page>",
           "putRawData: (slug: string, source: string, data: object, opts?: { sourceId?: string; }) => Promise<void>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
-          "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; }) => Promise<PageSnapshotBatch>",
+          "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; timeoutMs?: number; }) => Promise<PageSnapshotBatch>",
           "readonly kind: \"postgres\" | \"pglite\"",
           "reconnect: (ctx?: { error?: unknown; }) => Promise<void>",
           "refreshPageBody: (slug: string, sourceId: string, compiledTruth: string, timeline: string, contentHash: string) => Promise<void>",
@@ -682,7 +682,8 @@
           "requireSafeChunks?: boolean | undefined",
           "sourceId?: string | undefined",
           "sourceIds?: string[] | undefined",
-          "suppressFlagged?: boolean | undefined"
+          "suppressFlagged?: boolean | undefined",
+          "timeoutMs?: number | undefined"
         ],
         "name": "GetPageOpts"
       },
@@ -1047,7 +1048,7 @@
           "findAnomalies: (opts: AnomaliesOpts) => Promise<AnomalyResult[]>",
           "findByTitleFuzzy: (name: string, dirPrefix?: string, minSimilarity?: number, sourceId?: string) => Promise<{ slug: string; similarity: number; } | null>",
           "findCandidateDuplicates: (source_id: string, entitySlug: string, factText: string, opts?: { k?: number; embedding?: Float32Array; embeddingModel?: string | null; attributedTo?: FactAttribution | null; }) => Promise<FactRow[]>",
-          "findDuplicatePage: (sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; }) => Promise<{ slug: string; id: number; } | null>",
+          "findDuplicatePage: (sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number; }) => Promise<{ slug: string; id: number; } | null>",
           "findOntologyConflicts: (opts?: PageReadScope & { minConfidence?: number; visibility?: OntologyReadOpts[\"visibility\"]; }) => Promise<OntologyConflict[]>",
           "findOrphanPages: (opts?: { sourceId?: string; sourceIds?: string[]; excludePrivate?: boolean; mode?: \"inbound\" | \"islanded\"; }) => Promise<Array<{ slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean; source_id?: string; }>>",
           "findTrajectory: (opts: TrajectoryOpts) => Promise<TrajectoryPoint[]>",
@@ -1170,7 +1171,7 @@
           "putPage: (slug: string, page: PageInput, opts?: PageWriteOptions) => Promise<Page>",
           "putRawData: (slug: string, source: string, data: object, opts?: { sourceId?: string; }) => Promise<void>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
-          "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; }) => Promise<PageSnapshotBatch>",
+          "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; timeoutMs?: number; }) => Promise<PageSnapshotBatch>",
           "readonly kind: \"postgres\"",
           "reconnect: (ctx?: { error?: unknown; }) => Promise<void>",
           "refreshPageBody: (slug: string, sourceId: string, compiledTruth: string, timeline: string, contentHash: string) => Promise<void>",
@@ -3263,7 +3264,7 @@
           "findAnomalies: (opts: AnomaliesOpts) => Promise<AnomalyResult[]>",
           "findByTitleFuzzy: (name: string, dirPrefix?: string, minSimilarity?: number, sourceId?: string) => Promise<{ slug: string; similarity: number; } | null>",
           "findCandidateDuplicates: (source_id: string, entitySlug: string, factText: string, opts?: { k?: number; embedding?: Float32Array; embeddingModel?: string | null; attributedTo?: FactAttribution | null; }) => Promise<FactRow[]>",
-          "findDuplicatePage?: ((sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; }) => Promise<{ slug: string; id: number; } | null>) | undefined",
+          "findDuplicatePage?: ((sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number; }) => Promise<{ slug: string; id: number; } | null>) | undefined",
           "findOntologyConflicts: (opts?: PageReadScope & { minConfidence?: number; visibility?: OntologyReadOpts[\"visibility\"]; }) => Promise<OntologyConflict[]>",
           "findOrphanPages: (opts?: PageReadScope & { sourceId?: string; sourceIds?: string[]; mode?: \"inbound\" | \"islanded\"; }) => Promise<Array<{ slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean; source_id?: string; }>>",
           "findTrajectory: (opts: TrajectoryOpts) => Promise<TrajectoryPoint[]>",
@@ -3349,7 +3350,7 @@
           "putPage: (slug: string, page: PageInput, opts?: PageWriteOptions) => Promise<Page>",
           "putRawData: (slug: string, source: string, data: object, opts?: { sourceId?: string; }) => Promise<void>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
-          "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; }) => Promise<PageSnapshotBatch>",
+          "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; timeoutMs?: number; }) => Promise<PageSnapshotBatch>",
           "readonly kind: \"postgres\" | \"pglite\"",
           "reconnect: (ctx?: { error?: unknown; }) => Promise<void>",
           "refreshPageBody: (slug: string, sourceId: string, compiledTruth: string, timeline: string, contentHash: string) => Promise<void>",
@@ -3686,7 +3687,8 @@
           "resolveAlias?: boolean | undefined",
           "sourceId?: string | undefined",
           "sourceIds?: string[] | undefined",
-          "suppressFlagged?: boolean | undefined"
+          "suppressFlagged?: boolean | undefined",
+          "timeoutMs?: number | undefined"
         ],
         "name": "PageSnapshotOptions"
       },
@@ -6248,7 +6250,7 @@
           "findAnomalies: (opts: AnomaliesOpts) => Promise<AnomalyResult[]>",
           "findByTitleFuzzy: (name: string, dirPrefix?: string, minSimilarity?: number, sourceId?: string) => Promise<{ slug: string; similarity: number; } | null>",
           "findCandidateDuplicates: (source_id: string, entitySlug: string, factText: string, opts?: { k?: number; embedding?: Float32Array; embeddingModel?: string | null; attributedTo?: FactAttribution | null; }) => Promise<FactRow[]>",
-          "findDuplicatePage: (sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; }) => Promise<{ slug: string; id: number; } | null>",
+          "findDuplicatePage: (sourceId: string, opts: { hash: string; frontmatterId?: string | null; excludeSlug?: string; timeoutMs?: number; }) => Promise<{ slug: string; id: number; } | null>",
           "findOntologyConflicts: (opts?: PageReadScope & { minConfidence?: number; visibility?: OntologyReadOpts[\"visibility\"]; }) => Promise<OntologyConflict[]>",
           "findOrphanPages: (opts?: { sourceId?: string; sourceIds?: string[]; excludePrivate?: boolean; mode?: \"inbound\" | \"islanded\"; }) => Promise<Array<{ slug: string; title: string; domain: string | null; type?: string | null; quarantined?: boolean; source_id?: string; }>>",
           "findTrajectory: (opts: TrajectoryOpts) => Promise<TrajectoryPoint[]>",
@@ -8293,7 +8295,8 @@
           "requireSafeChunks?: boolean | undefined",
           "sourceId?: string | undefined",
           "sourceIds?: string[] | undefined",
-          "suppressFlagged?: boolean | undefined"
+          "suppressFlagged?: boolean | undefined",
+          "timeoutMs?: number | undefined"
         ],
         "name": "GetPageOpts"
       },
