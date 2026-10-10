@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.60.145.0] - 2026-10-10
+## [0.60.153.0] - 2026-10-10
 
 **The llama-server reranker walkthrough no longer recommends a community GGUF that scores at random. Step 2 now pulls a `convert_hf_to_gguf.py`-built conversion and shows how to check any GGUF for the `cls.output.weight` classifier head it needs — files without it load, answer rerank calls and pass `models doctor`, but rank near-randomly (the head, rank pooling metadata and the rerank template are absent). Step 3 adds an explicit `--pooling rank` next to `--reranking`.**
 
