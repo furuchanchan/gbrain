@@ -10,21 +10,37 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.60.160.0] - 2026-10-10
+## [0.60.164.0] - 2026-10-10
 
-**A managed sync's preparation reads that bypass `executeRaw` now carry the same server-side bound as its raw statements: under a held `pages` lock every member's read ends at its claim budget (SQLSTATE 57014, surfacing as that member's `preparation_deadline`) instead of staying in `Lock/relation` until the lock holder finishes — including through a transaction-mode pooler that drops the session `statement_timeout`.**
+**The engine-internal preparation reads the bounded-read budget did not cover are now bounded too: `readPageSnapshot`, `readPageSnapshotsBatch`, `findDuplicatePage` and `getPage` take the same `timeoutMs`, which `withScopedReadTransaction` turns into a `SET LOCAL statement_timeout` inside their own transaction — surviving transaction-mode poolers (#6318).**
 
-#6278 bounded only the reads routed through `executeRaw`; the engine's scoped reads went around it. `withScopedReadTransaction` now accepts `statementTimeoutMs` and runs `SET LOCAL statement_timeout` inside its transaction — the bound itself forces the transaction path even with RLS scope binding off, and the bound holds through a transaction-mode pooler since it lives inside the transaction. `readPageSnapshot`, `getPage`, `readPageSnapshotsBatch` and the import pipeline's `findDuplicatePage` content-hash lookup accept `timeoutMs` on their options; `boundedReads` injects each claim clock's remaining budget into all four and maps 57014/55P03/connection-end to `PreparationDeadlineError` exactly as the raw path does, for every member, not just the head. `preparationReads`' group memo keeps a bound on the shared read — the first requester's `timeoutMs`, never either member's signal — so a lock-blocked memoized read frees the pinned connection instead of wedging behind the lock until the consumer's ceiling. GBRA-45 pipelining is unchanged. #6318.
+A `pages` lock no longer holds these reads' connections until the ceiling: each dies on the server at its bound with 57014/55P03 mapped to `preparation_deadline`, so a lock-blocked head ends at its claim budget instead of parking the pool. The group-memoized `preparationReads` keeps the first requester's bound rather than borrowing a member's signal.
 
-Measured on `scripts/bench/managed-sync-catchup.ts` (`--files 500 --rows cli --rtt 0`, same machine, pgvector Postgres): 5,736 pages/min vs master's 5,897 (steady state 13,028 vs 13,399 pages/min), inside the 20% bar. `--chaos-kind lock` on `scripts/bench/managed-sync-stall-repro.ts` (PgBouncer in transaction mode, session `statement_timeout` dropped): the eight lock-blocked preparation reads ended 57014 at the claim budget (~120 s) instead of waiting out the lock.
+## [0.60.147.0] - 2026-10-10
+
+**A write that arrives while a brain folder with the Git durability hook is committing a backlog of Git effects now publishes after the group in flight, inside its 5 s wait. Before, it waited out the whole backlog and came back pending. On Postgres, a first sync of an already-imported source now issues 40 statements per unchanged file instead of 82.**
+
+Efficiency wave 9 (GBRA-75). Base is master at wave 8 (310371559). Measured on 4-vCPU AMD EPYC / 16 GiB machines with Bun 1.4.2 and synthetic brains, base and branch interleaved, p50 / p95.
+
+| Path | Engine, brain, N | Before | After |
+|---|---|---|---|
+| write submitted while 6 full Git groups (600 effects, 1 s per commit) are committing in a hooked folder | PGLite, N=6 | 6 of 6 still pending at the 5 s wait | 6 of 6 published (about 1.8 s) |
+| same | Postgres, N=1 | pending | published |
+| first sync of an already-imported 3,700-file source | Postgres 5k, N=3 | 22,859 / 23,139 ms | 21,227 / 21,989 ms |
+| statements per unchanged file in that sync | Postgres 5k | 82.2 | 40.3 |
+| `SET LOCAL statement_timeout` statements per sync | Postgres 5k | 51.8k | about 80 |
+| 1-page sync / no-change sync (guards) | Postgres 5k, N=10 | 1,426 / 737 ms | 1,450 / 751 ms |
 
 ### Itemized changes
 
-- **`postgres-engine.ts` `withScopedReadTransaction`** accepts `statementTimeoutMs`, runs `SET LOCAL statement_timeout = <ms>` inside the scoped transaction before the callback, and treats a bound as a transaction requirement alongside `alwaysTransaction`/RLS binding — the unbounded flag-off path still calls through on the shared pool.
-- **`readPageSnapshot` / `getPage` / `readPageSnapshotsBatch` / `findDuplicatePage`** take `timeoutMs` (`GetPageOpts`, batch opts, the duplicate-check opts) and forward it as `statementTimeoutMs`; `src/core/engine.ts`, `pglite-engine.ts` and `page-state` types updated.
-- **`boundedReads`** intercepts the four methods alongside `executeRaw`, injecting `timeoutMs = deadlineAt - Date.now()` and sharing the same deadline translation (57014/55P03/discarded connection → the member's `preparation_deadline` or the signal's reason once aborted).
-- **`group-publish.ts` `preparationReads`** forwards `timeoutMs` on memoized stable reads so the shared read keeps a server-side bound without borrowing a member's signal.
-- Tests: `persistence-bounded-scoped-reads-6318.test.ts` (Postgres lane — a `pages` ACCESS EXCLUSIVE hold ends each of the four reads at ~500 ms with 57014; on master the same calls block until the lock is released), a scoped-read case in `persistence-bounded-reads.test.ts`, the memo test updated for the bound-keeping contract, `postgres-engine.test.ts`'s passthrough pin for the new transaction requirement, and the export-surface types golden for the three widened option shapes.
+- **Full Git groups yield to a queued write** (`persistence/effects.ts`). A Git group in a folder with the durability hook already stood aside, for at most 20 claims, when a publication was queued or running on its worktree. Groups of 100 never did, though, so under a backlog every group was full. A write's publication found the worktree lock held, was released as `writer_busy`, and missed every gap until the backlog ended. Every group now yields, in a single update with `publication_pending` (250 ms). The attempt cap still bounds the delay under a steady stream of writes. Effects stay in claim order per worktree, and no group spans a publication of its own worktree.
+- **A released claim no longer looks like a stalled preparation** (`persistence/journal.ts`). An uncharged release (`writer_busy`, `owner_unavailable`, `recovery_required`, capacity) now clears the claim phase. A row that waits on the worktree lock used to keep reading `preparing` / `waiting_on=unknown`. A charged `preparation_deadline` release keeps its phase, which kill accounting reads.
+- **One bounded-read session per waiver run** (`persistence/bounded-reads.ts` `withBoundedReadSession`, `sync-run.ts`, `sync-waivers.ts`, `postgres-engine.ts`). On Postgres, a waiver run's screens now share one reserved connection and one transaction. `SET LOCAL statement_timeout` is set again before any read whose bound differs by more than 25 ms, so every read keeps its server-side budget. Before, each bounded read had its own `BEGIN; SET LOCAL; read; COMMIT`. A failed read rolls back the transaction, and reads it aborted run again in a new transaction. A lost connection, a pool with no long-hold capacity, or PGLite all fall back to the per-read path. Session reads are prepared statements unless the pool is a transaction pooler.
+- Tests:
+  - `persistence-git-coalescing-5530.slow.test.ts` and its Postgres twin add two cases. A write behind six full groups, sent while one is committing, must publish within the wait with at most the in-flight group ahead of it; this fails on base on both engines. A write that finds the worktree locked is requeued as `writer_busy` with no claim phase.
+  - `persistence-bounded-read-session.test.ts` has 7 cases: sequencing, bound refresh, rollback and retry, joining a run's session, prepared reads, the PGLite and no-permit paths, a real lock wait that ends at its bound with nothing left running, and a re-sync. On the re-sync, base runs 101 bounded transactions for 8 files and the branch runs 16.
+  - `managed-sync-foreground-priority.test.ts` (Postgres arm) flake fixed. "a stream of writes from another process" now boots and connects its writer process before the drain starts. Before, the drain's lead depended on how fast a cold process started, so a slow runner could commit most groups before the first write. Forcing a 600 ms boot fails the old test 4 of 4 times and passes the new one 4 of 4.
+  - Crash robot: 600 s on each engine, every seam, with PgBouncer and `pooler_disconnect` on Postgres.
 
 ## [0.60.146.0] - 2026-10-10
 
