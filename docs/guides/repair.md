@@ -685,7 +685,7 @@ gbrain older than v0.60.38.0 refuses writes it should allow. And a write ends
 `conflict` with `source_changed` when the page's canonical file and database
 copy differed at publication, as every write did on a brain whose v0.13.1
 grandfather `validate: false` stamp lived only in the database (#6429, fixed
-in v0.60.154.0: that stamp is no longer read as a file edit). Each refused
+in v0.60.156.0: that stamp is no longer read as a file edit). Each refused
 write keeps a receipt with its full intent until receipt compaction
 (`persistence.receipt_retention_days`, 30 days by default). `gbrain repair
 failed-writes` submits those writes again. It is explicit-only and
