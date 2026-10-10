@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.161.0] - 2026-10-10
+
+**A managed sync on a transaction-mode pooler (`prepare=false`, port 6543) can now drain: the run's own statements — the manifest freeze, the admission transactions, the cursor compare-and-swap — take the direct/session-mode lane when `GBRAIN_DIRECT_DATABASE_URL` is set, the way the consumer's tick statements have since #6317. Without a direct route the run names the exposure once at start instead of parking silently mid-manifest.**
+
+A transaction-mode pooler keeps a round-trip it never completes in its own queue, where no server-side timeout can end it — a 208-entry catch-up froze after the freeze and admitted nothing (#6423). `runManagedSync` now wraps its engine via `managedSyncStatementRoute` (consumer-lane): `executeRaw` → `executeRawDirect` and `transaction` → `transactionDirect` while `consumerConnectionRoute` reports `lane: 'direct'`, so the CLI drain and the serve's delegated runner share the direct lane. When only a `prepare=false` URL is in play it prints the same loud line the consumer does, with the managed sync named as the subject. The consumer's own statements are unchanged.
+
 ## [0.60.146.0] - 2026-10-10
 
 **On PGLite at 50,000 pages, the vector index now builds (11 minutes, where it used to run out of memory) and vector search drops from 1.7 s to 27 ms. A 50,000-page import no longer leaves about 30,000 Git effects queued, so `gbrain serve`'s first call is 189 ms instead of 640 ms and the first write after it 266 ms instead of 758 ms. The first sync of an already-imported 3,700-file source takes 22 s instead of 96 s on Postgres and 28 s instead of 60 s on PGLite.**

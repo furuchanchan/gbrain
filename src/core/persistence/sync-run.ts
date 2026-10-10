@@ -32,6 +32,7 @@ import { CHECKPOINT_VALIDATION_TIMEOUT, checkpointRetryCommand, checkpointTimeou
 import { isTerminalWriteState, publicWriteReceipt, type WriteReceipt } from './types.ts';
 import { principalKey, type WriteRequest } from './model.ts';
 import { readJournalLimits } from './limits.ts';
+import { managedSyncStatementRoute } from './consumer-lane.ts';
 import { assertManagedSyncAllowed } from './worktree-refresh.ts';
 import type { GBrainConfig } from '../config.ts';
 import { admitGroup, freezeFollowers, groupableIntent, nextGroupSize, type BulkSettings } from './sync-group.ts';
@@ -1214,6 +1215,9 @@ async function runManagedSync(engine: BrainEngine, opts: SyncOpts, slice: { maxP
   }
   assertPersistenceAccepting(engine);
   validateManagedSyncOptions(opts);
+  // #6423: a transaction-mode pooler can hold a round-trip in its own queue where no server timeout ends it;
+  // the catch-up's statements take the direct route when the engine has one (#6317), else it is named once.
+  engine = managedSyncStatementRoute(engine);
   const context = await resolveManagedSyncContext(engine, opts);
   if (!opts.dryRun) await assertManagedSyncAllowed(engine, context.binding.worktree_id, context.sourceId);
   const authority = await managedSyncAuthority(engine, context.sourceId, context.incarnation, opts.repoPath ?? context.root);

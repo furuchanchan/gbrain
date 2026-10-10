@@ -69,10 +69,38 @@ export function consumerStatementEngine(engine: BrainEngine): BrainEngine {
   } }), viewedEngine(engine));
 }
 
-/** The one loud line a consumer prints when it starts on a transaction-mode pooler with no direct route. */
-export function poolerExposureLine(route: ConsumerConnectionRoute): string | null {
+/**
+ * #6423: the engine a managed sync's own round-trips run through. Where `consumerStatementEngine` moves only
+ * `executeRaw`, the sync's admission — freeze, the request's INSERT and the cursor's compare-and-swap — runs
+ * inside `engine.transaction`, so this view also routes `transaction` to `transactionDirect` while the direct
+ * route is active. A transaction-mode pooler can hold a round-trip in its own queue where no server-side
+ * timeout ends it, which is how a 208-entry catch-up froze mid-manifest and admitted nothing: with
+ * `GBRAIN_DIRECT_DATABASE_URL` set every statement the run makes takes the session-mode lane, like the
+ * consumer's statements (#6317). Non-Postgres engines and engines without a direct route are unchanged.
+ */
+export function managedSyncStatementEngine(engine: BrainEngine): BrainEngine {
+  if (engine.kind !== 'postgres' || typeof engine.executeRawDirect !== 'function') return engine;
+  return registerEngineView(new Proxy(engine, { get(target, key) {
+    if (key === 'executeRaw') return (sql: string, params?: unknown[], opts?: { signal?: AbortSignal; timeoutMs?: number }) =>
+      consumerConnectionRoute(target).lane === 'direct' && opts?.timeoutMs === undefined ? target.executeRawDirect(sql, params, opts) : target.executeRaw(sql, params, opts);
+    if (key === 'transaction') return (fn: (engine: BrainEngine) => Promise<unknown>) =>
+      consumerConnectionRoute(target).lane === 'direct' && typeof target.transactionDirect === 'function' ? target.transactionDirect(fn) : target.transaction(fn);
+    const member = Reflect.get(target, key, target);
+    return typeof member === 'function' ? member.bind(target) : member;
+  } }), viewedEngine(engine));
+}
+
+/** #6423: a managed catch-up's statement engine, plus the one loud line when it can only run through a transaction-mode pooler. */
+export function managedSyncStatementRoute(engine: BrainEngine): BrainEngine {
+  const exposure = poolerExposureLine(consumerConnectionRoute(engine), 'the managed sync');
+  if (exposure) process.stderr.write(`${exposure}\n`);
+  return managedSyncStatementEngine(engine);
+}
+
+/** The one loud line a role (the persistence consumer, a managed sync) prints when it starts on a transaction-mode pooler with no direct route. */
+export function poolerExposureLine(route: ConsumerConnectionRoute, subject = 'the persistence consumer'): string | null {
   if (route.lane === 'direct' || route.pooler_mode !== 'transaction') return null;
-  return '[persistence] phase=start reason=transaction_pooler message="the persistence consumer runs its statements through a transaction-mode pooler '
+  return `[persistence] phase=start reason=transaction_pooler message="${subject} runs its statements through a transaction-mode pooler `
     + '(prepare=false, port 6543) with no direct route; a round-trip the pooler never completes cannot be ended by any server timeout"; '
     + 'fix: set GBRAIN_DIRECT_DATABASE_URL to the session-mode (port 5432) or direct URL of the same database and restart; verify: gbrain sources writer status --json (connection.lane: direct); '
     + 'docs: docs/ENGINES.md#persistence-consumer-log';
