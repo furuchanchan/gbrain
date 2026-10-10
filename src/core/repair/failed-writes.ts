@@ -2,9 +2,13 @@
  * `gbrain repair failed-writes` (#5983): resubmits caller writes that the
  * managed writer guard refused while it misread page children's source
  * (`writer_coordinator_required`, stored before #5982 as `storage_error`
- * "Publication failed (P0001)"). The failed receipt keeps its full intent until
- * receipt compaction (`persistence.receipt_retention_days`), so the write can
- * be submitted again once the guard is fixed.
+ * "Publication failed (P0001)"), and (#6429) caller writes that ended
+ * `conflict` with `source_changed` because the page's file and database
+ * differed, such as the writes refused while a database-only grandfather
+ * stamp made every file look edited. The
+ * terminal receipt keeps its full intent until receipt compaction
+ * (`persistence.receipt_retention_days`), so the write can be submitted again
+ * once the guard or the drift check is fixed.
  *
  * Only writes a caller made directly are replayed: `put_page` without an
  * owner-internal `kind`, `add_timeline_entry` and `remember`. Writes an owner
@@ -47,6 +51,8 @@ import { isTerminal, principalKey, type WriteAuthority, type WriteRequest } from
 import { authorizeStoredRequest } from '../persistence/authority.ts';
 import { initializeLocalPersistence, requestPrincipalForContext, submitPageMutation } from '../persistence/page-mutations.ts';
 import { submitRememberMutation } from '../persistence/memory-mutations.ts';
+import { getWorktreeBinding } from '../persistence/ownership.ts';
+import { prepareFileTarget } from '../persistence/page-prepare.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet } from '../persistence/preview-approval.ts';
 import { resolveEntitySlugWithSource } from '../entities/resolve.ts';
 import { afterCursor, type RepairHandler, type RepairItem, type RepairItemOutcome, type RepairPlan, type RepairScope } from './core.ts';
@@ -55,11 +61,13 @@ const REPLAYABLE = ['put_page', 'add_timeline_entry', 'remember'];
 const REMEMBER_PREPARED_KEYS = ['entity_slug', 'fence', 'valid_from', 'valid_until', 'entity_inferred', 'entity_warning'];
 const REMOTE_PREPARED_KEYS = ['source_kind', 'source_uri', 'ingested_via'];
 const PAGE_REMOVALS = ['delete_page', 'purge_page'];
-const GUARD_REFUSAL = `(r.error_code='writer_coordinator_required'
-  OR (r.error_code='storage_error' AND r.error_message LIKE 'Publication failed (P0001)%'))`;
+const GUARD_REFUSAL = `(r.state='failed' AND (r.error_code='writer_coordinator_required'
+  OR (r.error_code='storage_error' AND r.error_message LIKE 'Publication failed (P0001)%')))`;
+/** #6429: a refusal from prepareFileTarget (page-prepare.ts); the receipt keeps the code, not the refusal's detail. */
+const DRIFT_REFUSAL = `(r.state='conflict' AND r.error_code='source_changed')`;
 
 interface FailedWrite {
-  id: string; sequence: string; operation: string; source_id: string; slug: string; digest: string;
+  id: string; request_id: string; sequence: string; operation: string; source_id: string; slug: string; digest: string; state: string;
   intent: Record<string, unknown>; authority: WriteAuthority; created_at: string; producer: string | null;
 }
 type Disposition = 'replay' | 'already_written' | 'duplicate' | 'superseded' | 'unpinned_target' | 'file_database_drift';
@@ -83,14 +91,67 @@ function producerCommand(producer: string, sourceId: string): string {
 }
 
 async function failedWrites(engine: BrainEngine, sourceIds: string[], id?: string): Promise<FailedWrite[]> {
-  return engine.executeRaw<FailedWrite>(`SELECT r.id::text, r.sequence::text, r.operation, r.source_id, r.slug, r.digest, r.intent, r.authority,
+  const rows = await engine.executeRaw<FailedWrite>(`SELECT r.id::text, r.request_id::text, r.sequence::text, r.operation, r.source_id, r.slug, r.digest, r.state, r.intent, r.authority,
       to_char(r.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
       CASE WHEN r.operation = ANY($2::text[]) AND NOT (r.operation='put_page' AND r.intent ? 'kind') THEN NULL
         ELSE r.operation || COALESCE(':' || (r.intent->>'kind'), '') END AS producer
     FROM persistence_requests r
-    WHERE r.source_id = ANY($1::text[]) AND r.state='failed' AND NOT r.compacted AND r.intent IS NOT NULL AND ${GUARD_REFUSAL}
+    WHERE r.source_id = ANY($1::text[]) AND NOT r.compacted AND r.intent IS NOT NULL AND (${GUARD_REFUSAL} OR ${DRIFT_REFUSAL})
       ${id ? 'AND r.id=$3::uuid' : ''}
     ORDER BY r.sequence`, id ? [sourceIds, REPLAYABLE, id] : [sourceIds, REPLAYABLE]);
+  if (id) return rows;
+  // #6429: a replay this command submitted that was refused source_changed is itself a conflict row; the original
+  // write stays the candidate (its attempts are read through replayAttempt), so the attempt rows are not listed twice.
+  const replays = new Set<string>();
+  const requestIds = new Set(rows.map(row => row.request_id));
+  for (const row of rows) for (let attempt = 0; requestIds.has(replayId(row.id, attempt)); attempt++) replays.add(replayId(row.id, attempt));
+  return rows.filter(row => !replays.has(row.request_id));
+}
+
+/**
+ * #6429: the caller writes this command would still replay, counted per source, operation and refusal reason for
+ * doctor's `lost_caller_writes`. Distinct intents, so a caller's retry counts its write once; a refused replay
+ * attempt is the original write (its rows are dropped and its attempts walked as `disposition` does), a write whose
+ * replay or retry committed or whose page was later deleted (for put_page: written again) is not lost. Owner-produced
+ * writes are not counted: their producer runs them again. Reads no intents.
+ */
+export async function lostCallerWrites(engine: BrainEngine, sourceIds: string[]):
+Promise<{ source_id: string; operation: string; reason: 'file_database_drift' | 'writer_guard'; count: number }[]> {
+  type Lost = { id: string; request_id: string; source_id: string; slug: string; operation: string; digest: string; reason: 'file_database_drift' | 'writer_guard' };
+  const rows = await engine.executeRaw<Lost>(
+    `SELECT r.id::text, r.request_id::text, r.source_id, r.slug, r.operation, r.digest, CASE WHEN r.state='conflict' THEN 'file_database_drift' ELSE 'writer_guard' END AS reason
+    FROM persistence_requests r
+    WHERE r.source_id = ANY($1::text[]) AND NOT r.compacted AND r.intent IS NOT NULL AND (${GUARD_REFUSAL} OR ${DRIFT_REFUSAL})
+      AND r.operation = ANY($2::text[]) AND NOT (r.operation='put_page' AND r.intent ? 'kind')
+      AND NOT EXISTS (SELECT 1 FROM persistence_requests c WHERE c.source_id=r.source_id AND c.slug=r.slug AND c.state='committed' AND c.sequence > r.sequence
+        AND (c.digest=r.digest OR c.operation = ANY($3::text[]) OR r.operation='put_page'))
+    ORDER BY r.sequence`, [sourceIds, REPLAYABLE, PAGE_REMOVALS]);
+  const requestIds = new Set(rows.map(row => row.request_id));
+  const replays = new Set<string>();
+  for (const row of rows) for (let attempt = 0; requestIds.has(replayId(row.id, attempt)); attempt++) replays.add(replayId(row.id, attempt));
+  let pending = rows.filter(row => !replays.has(row.request_id));
+  const lost: Lost[] = [];
+  for (let attempt = 0; pending.length; attempt++) {
+    const states = new Map((await engine.executeRaw<{ request_id: string; state: string }>(
+      'SELECT request_id::text, state FROM persistence_requests WHERE request_id = ANY($1::uuid[])', [pending.map(row => replayId(row.id, attempt))])).map(row => [row.request_id, row.state]));
+    const next: Lost[] = [];
+    for (const row of pending) {
+      const state = states.get(replayId(row.id, attempt));
+      if (state === 'committed') continue;
+      if (state && isTerminal({ state: state as WriteRequest['state'] })) next.push(row);
+      else lost.push(row);
+    }
+    pending = next;
+  }
+  const groups = new Map<string, { source_id: string; operation: string; reason: Lost['reason']; digests: Set<string> }>();
+  for (const row of lost) {
+    const key = `${row.source_id}\0${row.operation}\0${row.reason}`;
+    const group = groups.get(key) ?? { source_id: row.source_id, operation: row.operation, reason: row.reason, digests: new Set<string>() };
+    group.digests.add(row.digest);
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((a, b) => a.source_id.localeCompare(b.source_id) || a.operation.localeCompare(b.operation) || a.reason.localeCompare(b.reason))
+    .map(group => ({ source_id: group.source_id, operation: group.operation, reason: group.reason, count: group.digests.size }));
 }
 
 async function pageRevision(engine: BrainEngine, sourceId: string, slug: string): Promise<string | null> {
@@ -132,6 +193,24 @@ function driftDetail(sourceId: string, slug: string): string {
   return `the page's file and database differ, so the replay was refused (source_changed); reconcile first: gbrain sources reconcile ${sourceId} ${slug} --preview, then run gbrain repair failed-writes again`;
 }
 
+/**
+ * #6429: whether the page's canonical file still differs from its database copy, the same check the replay's
+ * preparation applies. A reconcile that rewrites only the file leaves the page row untouched, so the row's
+ * `updated_at` alone cannot tell that the drift is gone. Without the page or its owner binding on this host the
+ * drift is assumed to remain.
+ */
+async function stillDrifted(engine: BrainEngine, write: FailedWrite): Promise<boolean> {
+  const snapshot = await engine.readPageSnapshot(write.slug, { sourceId: write.source_id });
+  const binding = await getWorktreeBinding(engine, write.source_id);
+  if (!snapshot || !binding) return true;
+  try {
+    await prepareFileTarget(engine, { source_id: write.source_id, worktree_id: binding.worktree_id, slug: write.slug }, snapshot, null);
+    return false;
+  } catch (error) {
+    return !(error instanceof OperationError) || error.code === 'source_changed';
+  }
+}
+
 /** Why a caller write must not be replayed now, or `replay`. */
 async function disposition(engine: BrainEngine, write: FailedWrite): Promise<{ class: Disposition; detail?: string }> {
   if ((await replayAttempt(engine, write.id)).prior?.state === 'committed') return { class: 'already_written', detail: 'replayed by gbrain repair failed-writes' };
@@ -139,7 +218,7 @@ async function disposition(engine: BrainEngine, write: FailedWrite): Promise<{ c
   if (drifted?.error_code === 'source_changed') {
     const [written] = await engine.executeRaw<{ later: boolean }>(
       'SELECT updated_at > $3::timestamptz AS later FROM pages WHERE source_id=$1 AND slug=$2', [write.source_id, write.slug, drifted.updated_at]);
-    if (!written?.later) return { class: 'file_database_drift', detail: driftDetail(write.source_id, write.slug) };
+    if (!written?.later && await stillDrifted(engine, write)) return { class: 'file_database_drift', detail: driftDetail(write.source_id, write.slug) };
   }
   const replace = write.operation === 'put_page';
   const [later] = await engine.executeRaw<{ state: string; operation: string; same_intent: boolean }>(
@@ -180,7 +259,7 @@ export const failedWritesRepair: RepairHandler = {
       const producers = new Map<string, string>();
       const replay: ApprovedWrite[] = [];
       for (const write of rows) {
-        const label = `${write.source_id}:${write.slug} ${write.operation} (failed ${write.created_at}, request ${write.id})`;
+        const label = `${write.source_id}:${write.slug} ${write.operation} (${write.state} ${write.created_at}, request ${write.id})`;
         if (write.producer) {
           residuals[`producer_owned:${write.producer}`] = (residuals[`producer_owned:${write.producer}`] ?? 0) + 1;
           producers.set(`${write.producer} in ${write.source_id}`, producerCommand(write.producer, write.source_id));
