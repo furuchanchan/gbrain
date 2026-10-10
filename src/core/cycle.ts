@@ -1240,10 +1240,12 @@ export async function packDeclaresPhase(
   phase: CyclePhase,
 ): Promise<boolean> {
   try {
-    const { loadActivePack } = await import('./schema-pack/load-active.ts');
-    const { loadConfig } = await import('./config.ts');
-    const cfg = loadConfig();
-    const resolved = await loadActivePack({ cfg, remote: false });
+    // The engine-backed resolver reads the DB-plane tiers (per-source
+    // `schema_pack.source.<id>`, brain-wide `schema_pack`) the raw
+    // cfg-only loadActivePack call skipped — a pack bound only in the
+    // brain's config table must still gate its own phases (#6393).
+    const { loadActivePackForEngine } = await import('./schema-pack/engine-resolution.ts');
+    const resolved = await loadActivePackForEngine(engine, { remote: false });
     const phases = resolved.manifest.phases ?? [];
     return phases.includes(phase);
   } catch {

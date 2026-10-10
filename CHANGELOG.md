@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.141.0] - 2026-10-10
+
+**Pack-gated cycle phases run again on brains whose active pack lives only in the database.**
+
+`packDeclaresPhase` — the gate for `extract_atoms` and `synthesize_concepts` — resolved the active pack from the config file and environment only, skipping the DB-plane tiers every other engine surface reads. On a brain whose pack was bound solely via `gbrain config set schema_pack <name>` (or a `schema_pack.source.<id>` row), the gate fell through to `gbrain-base`, skipped every pack-gated phase with `not_in_active_pack`, and left `gbrain schema active` and the phase report disagreeing forever — in the reporter's case 1,328 atoms carrying `concepts:` frontmatter and zero concept pages. The gate now resolves through the engine-backed loader (`loadActivePackForEngine`) that reads the DB config table, matching `schema active`, doctor, and the MCP surface.
+
 ## [0.60.140.0] - 2026-10-10
 
 **CI only: unit shard 7 no longer loses its tail to a Bun runtime defect, and a red shard that does names the defect instead of blaming the tests. Nothing in gbrain itself changes.**
