@@ -21,7 +21,8 @@
  *     rotation (via configureGateway()) invalidates stale entries.
  */
 
-import { embed as aiEmbed, embedMany, generateObject, generateText, jsonSchema, type JSONSchema7, type Output } from 'ai';
+import type { embedMany, generateObject, generateText, JSONSchema7, Output } from 'ai';
+import { jsonSchema } from '@ai-sdk/provider-utils';
 import { installAiSdkWarningWriter } from './sdk-warnings.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
@@ -163,19 +164,27 @@ export function configureGatewayIfUninitialized(): void {
 
 /**
  * The function the gateway calls to actually run a batch through the AI SDK.
- * Defaults to the imported `embedMany`. Tests inject a stub via
+ * Defaults to the AI SDK's `embedMany`, loaded on the first call. Tests inject a stub via
  * `__setEmbedTransportForTests` to drive recursion + fast-path scenarios
  * without hitting a real provider. Production never reads the override.
  */
 type EmbedManyFn = typeof embedMany;
-let _embedTransport: EmbedManyFn = embedMany;
 type GenerateTextFn = typeof generateText;
-let _generateTextTransport: GenerateTextFn = generateText;
+type GenerateObjectFn = typeof generateObject;
+// The AI SDK (and the OpenTelemetry API it pulls in) loads at the first
+// provider call, not when the gateway is configured, so a command that never
+// calls a model never pays for its module graph.
+let aiSdk: Promise<typeof import('ai')> | undefined;
+const loadAiSdk = () => (aiSdk ??= import('ai'));
+const sdkEmbedMany = (async (opts: Parameters<EmbedManyFn>[0]) => (await loadAiSdk()).embedMany(opts)) as EmbedManyFn;
+const sdkGenerateText = (async (opts: Parameters<GenerateTextFn>[0]) => (await loadAiSdk()).generateText(opts)) as GenerateTextFn;
+const sdkGenerateObject = (async (opts: Parameters<GenerateObjectFn>[0]) => (await loadAiSdk()).generateObject(opts as never)) as GenerateObjectFn;
+let _embedTransport: EmbedManyFn = sdkEmbedMany;
+let _generateTextTransport: GenerateTextFn = sdkGenerateText;
 // Test-only seam for expand()'s structured-output SDK call. Mirrors
 // _generateTextTransport (see __setGenerateObjectTransportForTests). Never
 // swapped in production — expand() always calls the real generateObject.
-type GenerateObjectFn = typeof generateObject;
-let _generateObjectTransport: GenerateObjectFn = generateObject;
+let _generateObjectTransport: GenerateObjectFn = sdkGenerateObject;
 // Adversarial F5 (#4121): recipes that DECLARE structured-output support but
 // reject json_schema at call time would otherwise pay the rejected attempt —
 // and a pessimistic '.failed' budget record — on EVERY expand() call
@@ -676,9 +685,9 @@ function clearGatewayState(): void {
   stashGatewayAnthropicKeyFromEnv(undefined); // gateway-owned snapshot dies with the config
   _modelCache.clear();
   _shrinkState.clear();
-  _embedTransport = embedMany;
-  _generateTextTransport = generateText;
-  _generateObjectTransport = generateObject;
+  _embedTransport = sdkEmbedMany;
+  _generateTextTransport = sdkGenerateText;
+  _generateObjectTransport = sdkGenerateObject;
   _structuredOutputRejectedRecipes.clear();
   _embedTransportInstalled = false;
   _chatTransport = null;
@@ -731,7 +740,7 @@ export function __unconfigureGatewayForTests(): void {
  * @internal exported for tests; not part of the public gateway API.
  */
 export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
-  _embedTransport = fn ?? embedMany;
+  _embedTransport = fn ?? sdkEmbedMany;
   _embedTransportInstalled = fn !== null;
 }
 
@@ -743,7 +752,7 @@ export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
  * @internal exported for tests; not part of the public gateway API.
  */
 export function __setGenerateTextTransportForTests(fn: GenerateTextFn | null): void {
-  _generateTextTransport = fn ?? generateText;
+  _generateTextTransport = fn ?? sdkGenerateText;
 }
 
 /**
@@ -754,7 +763,7 @@ export function __setGenerateTextTransportForTests(fn: GenerateTextFn | null): v
  * @internal exported for tests; not part of the public gateway API.
  */
 export function __setGenerateObjectTransportForTests(fn: GenerateObjectFn | null): void {
-  _generateObjectTransport = fn ?? generateObject;
+  _generateObjectTransport = fn ?? sdkGenerateObject;
 }
 
 /**
