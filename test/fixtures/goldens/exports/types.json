@@ -1910,6 +1910,13 @@
       },
       {
         "kind": "function",
+        "name": "__clearQueryEmbedCacheForTests",
+        "signature": [
+          "() => void"
+        ]
+      },
+      {
+        "kind": "function",
         "name": "__getShrinkStateForTests",
         "signature": [
           "(recipeId: string) => ShrinkEntry | undefined"
