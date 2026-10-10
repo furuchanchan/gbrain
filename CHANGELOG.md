@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.142.0] - 2026-10-10
+
+**The `remember` tool's `items` parameter now names every field the batch handler accepts.**
+
+The MCP schema described `items` as `≤20 facts: [{fact, provenance}]` with a bare `items: {type: 'object'}` — so an agent following the advertised schema had no way to discover `entity`, and facts whose text didn't name exactly one existing entity page landed with `entity_slug` NULL and an `unlinked_facts` doctor warning. The description now lists all eight fields the handler accepts (`fact`, `provenance`, `entity`, `infer_entity`, `kind`, `ttl`, `visibility`, `replaces`), matching the batch error suggestion that already showed `{"fact": "...", "entity": "..."}`. Adjacent param descriptions were shortened to fund the extra text inside the starter tool-list budget; a new test pins the schema against the handler's `ITEM_KEYS` so the two can't drift again.
+
 ## [0.60.140.0] - 2026-10-10
 
 **CI only: unit shard 7 no longer loses its tail to a Bun runtime defect, and a red shard that does names the defect instead of blaming the tests. Nothing in gbrain itself changes.**

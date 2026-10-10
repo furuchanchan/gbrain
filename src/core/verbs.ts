@@ -68,26 +68,23 @@ const remember: Operation = {
     fact: { type: 'string', description: 'One claim.' },
     items: {
       type: 'array',
-      description: '≤20 facts: [{fact, provenance}]',
+      description: '≤20 facts: [{fact, provenance, entity, kind, ttl, visibility, replaces, infer_entity}]',
       items: { type: 'object' },
     },
     provenance: {
       type: 'string',
       // Required for a single fact (the handler refuses with provenance_required); with items it may be given per item.
-      description: 'Fact source (max 500 chars).',
+      description: 'Fact source.',
     },
     ttl: {
       type: 'string',
-      description: '"30d", "12h" or ISO 8601 time; omit = never.',
+      description: '"30d" or ISO 8601; omit = never.',
     },
     entity: {
       type: 'string',
-      description: 'Subject (name or slug).',
+      description: 'Subject.',
     },
-    infer_entity: {
-      type: 'boolean',
-      description: 'Default true.',
-    },
+    infer_entity: { type: 'boolean' },
     kind: {
       type: 'string', description: 'Default fact.',
       enum: [...FACT_KINDS],
@@ -95,7 +92,7 @@ const remember: Operation = {
     visibility: {
       type: 'string',
       enum: ['world', 'private'],
-      description: 'world (default) or private (local CLI only).',
+      description: 'world (default) or private.',
     },
     replaces: { type: 'string', description: 'fact_id this fact replaces (same entity).', fullSurfaceOnly: true },
   },

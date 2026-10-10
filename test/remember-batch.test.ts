@@ -98,3 +98,15 @@ describe('remember items[] shorthand and receipts', () => {
     expect(out.hints).toEqual(['link it']);
   });
 });
+
+describe('remember items[] schema documentation (#6363)', () => {
+  test('the items param documents every field the batch handler accepts', async () => {
+    const { operations } = await import('../src/core/operations.ts');
+    const { ITEM_KEYS } = await import('../src/core/remember-batch.ts');
+    const op = operations.find(o => o.name === 'remember')!;
+    const desc = (op.params.items as { description?: string }).description ?? '';
+    for (const key of ITEM_KEYS) {
+      expect(desc, `items description missing accepted field ${key}`).toContain(key);
+    }
+  });
+});
