@@ -421,7 +421,19 @@ export async function writeFactsToFence(
         // Stub-create the parent directory if it doesn't exist.
         mkdirSync(dirname(filePath), { recursive: true });
         const activePack = await loadActivePackBestEffort({ engine } as never);
-        body = stubEntityPage(target.slug, activePack?.manifest ?? null);
+        const stub = stubEntityPage(target.slug, activePack?.manifest ?? null);
+        // #6398: a live DB row may already back this slug (a "DB-only"
+        // page). Writing the empty entity stub over it and mirroring that
+        // stub into pages.compiled_truth wiped real bodies in production
+        // (63 entity pages on one Postgres brain). The file is the drift-
+        // repair mirror, so seed it with the row's real body under the
+        // standard stub frontmatter; the fence then appends onto that body
+        // and the #4872 mirror round-trips the same prose back.
+        const existing = await engine.getPage(target.slug, { sourceId: target.sourceId });
+        const fmMatch = stub.match(/^---\n[\s\S]*?\n---\n/);
+        body = existing?.compiled_truth?.trim() && fmMatch
+          ? fmMatch[0] + '\n' + existing.compiled_truth.replace(/\s+$/, '') + '\n'
+          : stub;
       }
 
       // 2. Upsert each fact onto the fence in input order. row_num

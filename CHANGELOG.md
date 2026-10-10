@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.144.0] - 2026-10-10
+
+**A fence write over a DB-only page no longer wipes the page body.**
+
+`writeFactsToFence` stub-created an empty entity page whenever the markdown file was missing — even when a live DB row already held real prose for that slug — and the `#4872` mirror then copied the stub over `compiled_truth`. One maintenance pass on a production Postgres brain erased the bodies of 63 DB-only entity pages. When a DB row backs the slug, the drift-repair file is now seeded with the row's real body under the standard stub frontmatter; the facts fence appends onto that body and the mirror round-trips the same prose back. Pageless slugs still get the empty stub as before, and both refusal arms of the stub guard are unchanged.
+
 ## [0.60.141.0] - 2026-10-10
 
 **Re-importing and syncing unchanged files is 2.4x faster, `gbrain extract` finishes on a 50,000-page PGLite brain (114 s instead of hanging), a PGLite `serve` with a git backlog answers its first tool call in 0.6 s instead of 4.3 s, and a Postgres brain that lost its planner statistics gets them back instead of taking a minute per search.**

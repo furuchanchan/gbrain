@@ -183,3 +183,32 @@ describe('writeSingleFact × resolution provenance (#4108 matrix)', () => {
     expect(row.source_markdown_slug).toBe('people/star-example');
   });
 });
+
+describe('DB-only page body preservation (#6398)', () => {
+  test('a fence write over a live DB-only page keeps its compiled_truth — no stub wipe', async () => {
+    const body = '# Verdant Systems\n\nVerdant Systems is a climate-data company founded in 2019. It sells satellite-derived soil-moisture analytics to insurers.';
+    await engine.putPage('companies/verdant-systems', {
+      type: 'company',
+      title: 'Verdant Systems',
+      compiled_truth: body,
+      frontmatter: {},
+    }, { sourceId: 'default' });
+
+    const r = await writeSingleFact(engine, 'default', {
+      fact: 'Raised a Series A in 2024',
+      provenance: 'test:6398',
+      entity: 'companies/verdant-systems',
+    });
+    expect(r.status).toBe('inserted');
+
+    // The drift-repair file must seed the row's real body, not an empty stub.
+    const fileBody = readFileSync(join(brainDir, 'companies/verdant-systems.md'), 'utf-8');
+    expect(fileBody).toContain('satellite-derived soil-moisture analytics');
+    expect(fileBody).toContain('Raised a Series A in 2024');
+
+    // The #4872 mirror must round-trip the same prose back into the row —
+    // pre-fix it copied the stub over compiled_truth and wiped the body.
+    const page = await engine.getPage('companies/verdant-systems', { sourceId: 'default' });
+    expect(page?.compiled_truth).toContain('satellite-derived soil-moisture analytics');
+  });
+});
