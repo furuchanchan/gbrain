@@ -136,6 +136,27 @@ const redactKeys = (text: string): string => redactProviderKeys(text, _config?.e
 const _modelCache = new Map<string, any>();
 
 /**
+ * Per-process cache of resolved query embeddings (`embedQuery` only; document
+ * embeds never use it). Keyed by recipe, resolved model id, base-URL override,
+ * effective dimensions and the exact string sent to the provider, so a hit is
+ * the vector the provider would have been asked for. Map order is the LRU
+ * order. Only resolved vectors are stored, never an in-flight promise, so one
+ * caller's abort or failure cannot reach another caller. Cleared with the model
+ * cache whenever the config or env that built the provider client changes;
+ * `_queryEmbedGeneration` keeps an embed that started before a clear from
+ * storing its vector after it.
+ */
+const QUERY_EMBED_CACHE_MAX = 512;
+const QUERY_EMBED_CACHE_TTL_MS = 10 * 60_000;
+const _queryEmbedCache = new Map<string, { vector: Float32Array; expiresAt: number }>();
+let _queryEmbedGeneration = 0;
+
+function clearQueryEmbedCache(): void {
+  _queryEmbedCache.clear();
+  _queryEmbedGeneration++;
+}
+
+/**
  * Materialize `applyResolveAuth`'s SDK-shaped result ({apiKey}|{headers}) into
  * raw HTTP headers: a Bearer-style apiKey becomes an Authorization header;
  * custom/default headers ride alongside (they win on conflict, matching the
@@ -462,6 +483,7 @@ export function configureGateway(config: AIGatewayConfig): void {
   };
   stashGatewayAnthropicKeyFromEnv(config.env); // #2119: filter + rationale in anthropic-key.ts
   _modelCache.clear();
+  clearQueryEmbedCache();
   _shrinkState.clear();
   // A (re)configure is a new env snapshot: a key that appeared or vanished
   // since the last no_key audit row deserves a fresh once-per-process row.
@@ -493,6 +515,7 @@ export function refreshGatewayEnvFromFilePlane(): void {
   // DB-plane base_urls never steer native keys.
   _config = { ..._config, env: foldNativeBaseUrlsFromFilePlane(cfg, mergedProviderEnv(cfg, process.env)) };
   _modelCache.clear();
+  clearQueryEmbedCache();
 }
 
 /**
@@ -593,6 +616,7 @@ export async function reconfigureGatewayWithEngine(engine: BrainEngine): Promise
   setGatewayModelSource('expansion', expansionFull, gatewayModelSource('expansion', expansionDetailed, expansionEffective));
   setGatewayModelSource('chat', chatFull, gatewayModelSource('chat', chatDetailed, chatEffective));
   _modelCache.clear();
+  clearQueryEmbedCache();
   _shrinkState.clear();
   return _config;
 }
@@ -675,6 +699,7 @@ function clearGatewayState(): void {
   clearGatewayModelSources();
   stashGatewayAnthropicKeyFromEnv(undefined); // gateway-owned snapshot dies with the config
   _modelCache.clear();
+  clearQueryEmbedCache();
   _shrinkState.clear();
   _embedTransport = embedMany;
   _generateTextTransport = generateText;
@@ -733,6 +758,16 @@ export function __unconfigureGatewayForTests(): void {
 export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
   _embedTransport = fn ?? embedMany;
   _embedTransportInstalled = fn !== null;
+  clearQueryEmbedCache();
+}
+
+/**
+ * Drop every cached query embedding (`embedQuery`).
+ *
+ * @internal exported for tests; not part of the public gateway API.
+ */
+export function __clearQueryEmbedCacheForTests(): void {
+  clearQueryEmbedCache();
 }
 
 /**
@@ -1797,7 +1832,20 @@ export async function embedQuery(
   // #5691: instruction-style models (Qwen3-Embedding, e5, BGE, nomic) take a
   // query instruction. The caller resolves it per brain (search/query-prefix.ts);
   // documents are never prefixed.
-  const [v] = await embed([(opts?.queryPrefix ?? '') + text], {
+  const input = (opts?.queryPrefix ?? '') + text;
+  const cfg = requireConfig();
+  const { recipe, modelId } = await resolveEmbeddingProvider(opts?.embeddingModel ?? getEmbeddingModel());
+  const dims = opts?.dimensions ?? cfg.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
+  const key = JSON.stringify([recipe.id, modelId, cfg.base_urls?.[recipe.id] ?? '', dims, 'query', input]);
+  const cached = _queryEmbedCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    _queryEmbedCache.delete(key);
+    _queryEmbedCache.set(key, cached);
+    return new Float32Array(cached.vector);
+  }
+  if (cached) _queryEmbedCache.delete(key);
+  const generation = _queryEmbedGeneration;
+  const [v] = await embed([input], {
     inputType: 'query',
     embeddingModel: opts?.embeddingModel,
     dimensions: opts?.dimensions,
@@ -1806,6 +1854,10 @@ export async function embedQuery(
     // default via withDefaultTimeout (shorter wins).
     abortSignal: opts?.abortSignal,
   });
+  if (v && generation === _queryEmbedGeneration) {
+    _queryEmbedCache.set(key, { vector: new Float32Array(v), expiresAt: Date.now() + QUERY_EMBED_CACHE_TTL_MS });
+    if (_queryEmbedCache.size > QUERY_EMBED_CACHE_MAX) _queryEmbedCache.delete(_queryEmbedCache.keys().next().value!);
+  }
   return v;
 }
 
