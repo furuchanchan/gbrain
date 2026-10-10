@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.60.152.0] - 2026-10-10
+## [0.60.153.0] - 2026-10-10
 
 **A repeated query in a long-running `gbrain serve` no longer waits on the embedding provider: about 110–150 ms faster per repeat, and 75 of 100 provider embed calls avoided on a realistic mix. Cold `search`, `query` and `stats` start 100–175 ms faster on both engines. Doctor's `eval_drift` stops paying 0.2–0.4 s per run on a freshly cloned or just-pulled source checkout. Rankings and output are unchanged.**
 
@@ -36,6 +36,21 @@ PGLite cold start stays about 170–200 ms above Postgres: `PGlite.create` boots
 - **Query-embedding cache** (`ai/query-embed-cache.ts`, `gateway.ts` `embedQuery`). Identical query embeds within one process reuse the vector: a 512-entry LRU with a 10-minute TTL, keyed by recipe, resolved model id, `base_urls` override, effective dimensions and the exact string sent (query prefix + text). Only resolved vectors are stored, as copies; aborts and failures are never cached. Every gateway reconfigure clears it, and a caller under an AI invocation guard (minion spend authorization, delegated spend) always goes through its guard. Document-side embeds are uncached. A deterministic-provider fixture shows byte-identical ranked lists with and without the cache on both engines. Expansion variants never repeat within one call (deduped already); across calls the expansion LLM output is not cached, so a variant embed is reused only when the LLM returns the same string.
 - **Cold start** (`operation-load.ts`, `operation-loaders.generated.ts`, `remote-mcp-error.ts`, `embedding-disabled.ts`, `ai/gateway.ts`, `ops/admin.ts`). The CLI loads only the module that defines the op it runs, finalized by the same area-and-redaction step the registry uses; the MCP client, evidence delivery, the `ai` SDK and `page-mutations` load on first use. Trust proposal decisions load their handlers at the reader, and a test classifies every load-time registry and diffs it per op against the full registry.
 - **`eval_drift`** (`eval/drift-watch.ts`). A working-tree diff that takes 75 ms or more means racily-clean index entries, which git re-hashes on every diff until the index is rewritten; the probe then runs `git update-index -q --refresh` once. A settled checkout skips it. The answer is unchanged, and a held `index.lock` is ignored.
+
+## [0.60.152.0] - 2026-10-10
+
+**Remote fact writes apply the same visibility filter as reads.**
+
+`forget` and `remember` called by a remote agent now apply the same visibility filter as remote fact reads. The trusted local CLI is unchanged, and nothing needs doing after you upgrade.
+
+### Itemized changes
+
+- Remote `forget` applies the same visibility filter as reads, through its trust guard, the withdrawal it records and the similar facts it lists.
+- Remote `remember` applies the same visibility filter in its duplicate checks and in `replaces`.
+
+### For contributors
+
+- `test/remote-fact-write-private-provenance.test.ts` covers the fix on PGLite, and on Postgres through `test/e2e/remote-fact-write-private-provenance-postgres.test.ts`.
 
 ## [0.60.151.0] - 2026-10-10
 
