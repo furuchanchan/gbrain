@@ -521,17 +521,18 @@ async function holdUnderGate(engine: BrainEngine, input: { cursor: Cursor; key: 
   const { cursor, key, pending, assertActive } = input;
   const principal = cursor.authority.writer.principal;
   const base: Cursor = input.base ?? { ...cursor }; delete base.group; delete base.window; delete base.pending;
-  const [failedRow] = await engine.executeRaw<{ sequence: string | number | null }>('SELECT sequence::text AS sequence FROM persistence_requests WHERE id=$1::uuid', [input.failedId]);
+  const [failedRow] = await engine.executeRaw<{ sequence: string | number | null; request_id: string | null; error_code: string | null }>('SELECT sequence::text AS sequence, request_id::text AS request_id, error_code FROM persistence_requests WHERE id=$1::uuid', [input.failedId]);
   const after = failedRow?.sequence == null ? null : String(failedRow.sequence);
+  const cancelCause = { predecessorId: failedRow?.request_id ?? null, predecessorState: failedRow?.error_code ?? undefined };
   const keys = [{ sourceId: cursor.sourceId, slug: pending.slug }, ...(pending.intent.renameFrom && pending.intent.renameFrom.slug !== pending.slug ? [{ sourceId: cursor.sourceId, slug: pending.intent.renameFrom.slug }] : [])];
   const deadline = performance.now() + input.waitMs;
   for (;;) {
     assertActive();
-    if (cursor.window?.length) await cancelWindow(engine, cursor.window, principal);
+    if (cursor.window?.length) await cancelWindow(engine, cursor.window, principal, cancelCause);
     if (after !== null) {
       const queued = await engine.executeRaw<WriteRequest>(`SELECT * FROM persistence_requests WHERE worktree_id=$1::uuid AND intent->>'runId'=$2 AND state='queued'
         AND ${SYNC_PAGE_KINDS_SQL} AND sequence>$3::bigint ORDER BY sequence`, [cursor.binding.worktree_id, cursor.runId, after]);
-      if (queued.length) await cancelRows(engine, queued);
+      if (queued.length) await cancelRows(engine, queued, cancelCause);
     }
     const saved = await engine.transaction(async tx => {
       assertActive();
@@ -1088,7 +1089,7 @@ async function groupStep(engine: BrainEngine, cursor: Cursor, key: string, bulk:
     if (rest.length) next.window = rest; else delete next.window;
   } else { next.pending = stuck; if (failed) delete next.group; else next.group = members.slice(committed); }
   // A failed page stops the run: groups admitted ahead of it are cancelled, never published after it.
-  if (failed && next.window) { await cancelWindow(engine, next.window, principal); delete next.window; }
+  if (failed && next.window) { await cancelWindow(engine, next.window, principal, { predecessorId: stuck!.requestId, predecessorState: stuckRow!.state }); delete next.window; }
   const saved = committed || failed || next.group?.length !== members.length ? await saveCursor(engine, key, cursor, next) : cursor;
   for (let index = cursor.index + 1; index <= saved.index && index <= next.index; index++) onProgress?.({ phase: 'managed_sync.page_committed', bankedFiles: index, total: cursor.entries.length });
   if (stuck && stuckRow && !isTerminalWriteState(stuckRow.state) && saved.index === next.index) {
@@ -1479,7 +1480,9 @@ async function runManagedSync(engine: BrainEngine, opts: SyncOpts, slice: { maxP
       // A refresh fence, or an admission refused while other requests hold the writer's outstanding cap (#6278: the drain
       // waits for them), is transient admission back-pressure, not a sync failure to record. #6340: neither is a lost
       // database connection or a statement timeout: the cursor and its frozen manifest stay, and the next pass resumes them.
-      if (!['permission_denied', 'worktree_refreshing', 'refresh_recovery_required'].includes(code) && !isWriteCapacityWait(error)
+      // #6402: an invalid_params refusal (a dry run or a caller's option conflict with the stored cursor) is a caller
+      // error, never a sync failure — recording one overwrites the real last error in sync status.
+      if (!['permission_denied', 'worktree_refreshing', 'refresh_recovery_required', 'invalid_params'].includes(code) && !isWriteCapacityWait(error)
         && !isRetryableConnError(error) && !isStatementTimeoutError(error)) {
         const [stored] = cursor ? [] : await engine.executeRaw<{ completed_keys: [CursorHeader] }>('SELECT completed_keys FROM op_checkpoints WHERE op=$1 AND fingerprint=$2', [OP, key]);
         const failedCursor = cursor ?? stored?.completed_keys?.[0];

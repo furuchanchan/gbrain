@@ -243,6 +243,9 @@ test('gbrain#5452 managed purge refuses missing/epoch archive stamps and still p
   expect(await engine.executeRaw('SELECT id FROM sources WHERE id=$1',[source])).toHaveLength(0);
 }),60_000);
 
+// #6402: a re-recorded observation bumps its own attempts; strip it when comparing replayed results.
+const stripResultAttempts = (result: any) => result?.failures ? { ...result, failures: result.failures.map(({ attempts: _a, ...rest }: any) => rest) } : result;
+
 test('a failed new clone retries under the retained physical identity and a new explicit request',()=>fixture(async(home)=>{
   const target=join(home,'new-clone');
   const first={operation:'add' as const,sourceId:'new-clone-source',path:target,remoteUrl:'https://example.invalid/brain.git',requestId:randomUUID()};
@@ -256,7 +259,7 @@ test('a failed new clone retries under the retained physical identity and a new 
   });
   expect(result).toMatchObject({state:'committed',cloned:true});
   expect((await getWorktreeBinding(engine,first.sourceId))!.worktree_id).toBe(old.worktree_ids[0]);
-  expect(await runManagedSourceLifecycle(engine,first)).toEqual(failed);
+  expect(stripResultAttempts(await runManagedSourceLifecycle(engine,first))).toEqual(stripResultAttempts(failed));
 }),60_000);
 
 test('a missing owned checkout needs a current verified manifest before clone recovery',()=>fixture(async(_home,source,root)=>{

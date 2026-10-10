@@ -15,6 +15,7 @@ import { prepareManagedSyncMutation, type SyncIntent } from '../src/core/persist
 import { publishMutation } from '../src/core/persistence/coordinator.ts';
 import { sha256 } from '../src/core/persistence/digest.ts';
 import { performManagedSync } from '../src/core/persistence/sync-run.ts';
+import { recordManagedSyncFailure } from '../src/core/persistence/sync-failures.ts';
 import { discoverManagedSync } from '../src/core/persistence/sync-discovery.ts';
 import { withCoordinatedWrite } from '../src/core/persistence/context.ts';
 import { TEST_WRITE_ATTRIBUTION } from './helpers/write-attribution.ts';
@@ -632,10 +633,14 @@ test('retry-failed resets cursor when pending write is committed but failure rec
       expect((await engine.getPage('a', { sourceId: f.id }))?.compiled_truth).toContain('First observation');
       expect(await engine.getPage('b', { sourceId: f.id })).toBeNull();
 
-      // A real mismatched invocation records the failure against that run.
+      // A mismatched invocation refuses without a ledger row (#6402: caller error, not a sync failure);
+      // the row this reset must clear is seeded directly.
       await expect(performManagedSync(engine, {
         sourceId: f.id, noPull: true, noEmbed: true, noExtract: true,
       })).rejects.toThrow('processing options');
+      await recordManagedSyncFailure(engine, { source_id: f.id, source_incarnation: cursor.incarnation, path: 'a.md',
+        code: 'storage_error', message: 'seeded prior failure', request_id: null, run_id: cursor.runId, target: null,
+        cursor_key: row.fingerprint, phase: 'receipt', state: 'failed', observation_id: `${cursor.runId}:seed` });
       const failuresBefore = await engine.executeRaw(
         "SELECT 1 FROM op_checkpoints WHERE op='managed-sync-failure' AND fingerprint=$1 AND completed_keys->0->>'run_id'=$2", [row.fingerprint, cursor.runId]);
       expect(failuresBefore).toHaveLength(1);

@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.159.0] - 2026-10-10
+
+**Sync knock-on cancels and the failure ledger now carry operator truth (`sync status --json` / `--retry-failed`).** A page cancelled because an earlier page of the same window did not commit was reported as `cancelled` (a `needs_human` class with no safe action), its failure-ledger row counted every failure the cursor key had ever seen, and a caller `invalid_params` options conflict was written to the durable failure ledger. Knock-on cancels are now detected and classified `transient` with `safe_actions: [retry]` and the printed `Next:` argv carries `--retry-failed`; window members name their group leader and the leader names the request it follows plus how it ended; the ledger's `attempts`/`first_seen` are scoped to the current observation (a new observation starts a fresh row, `updated_at` maintained); and `invalid_params` refusals are never ledger-recorded. (GBRA-77, #6402.)
+
 ## [0.60.145.0] - 2026-10-10
 
 **Bulk DB extraction no longer sees purged facts. `gbrain extract --source db` and the batched derived-link write read snapshots with `readPageSnapshotsBatch`, which never read `fact_purges`. A fence row purged for the page, or purged source-wide with a `'*'` tombstone, stayed in the batched body that links and timeline were extracted from, although `get_page` and every per-page read hid it. The batch now applies the same purges and `'*'` purge marker as `readPageSnapshot`, and under `GBRAIN_RLS_SCOPE_BINDING=1` it runs scoped to the batch's sources.**

@@ -88,6 +88,10 @@ afterAll(async () => {
   await closePostgres?.(); rmSync(home, { recursive: true, force: true });
 });
 
+// #6402: a re-recorded observation bumps its own attempts; comparisons below pin everything but that count.
+const stripAttempts = (rows: any[] | undefined) => rows?.map(({ attempts: _a, ...rest }: any) => rest);
+const stripResultAttempts = (result: any) => result?.failures ? { ...result, failures: stripAttempts(result.failures) } : result;
+
 test('failed managed receipt stays diagnostic across replay, restart, and explicit repaired admission', async () => withEnv(env, async () => {
   for (const engine of engines) {
     const f = await fixture(engine, { 'a.md': 'Useful stable first observation.\n', 'bad.md': '---\ntitle: [broken\n---\nBroken content.\n' });
@@ -104,8 +108,8 @@ test('failed managed receipt stays diagnostic across replay, restart, and explic
     writeFileSync(join(f.root, 'bad.md'), 'Repaired useful second observation.\n');
     const repairedHead = commit(f.root);
     const replay = await performManagedSync(engine, options);
-    expect(replay).toEqual(failed);
-    expect(loadSyncFailures().filter(r => r.source_id === f.id)).toEqual(ledger);
+    expect(stripResultAttempts(replay)).toEqual(stripResultAttempts(failed));
+    expect(stripAttempts(loadSyncFailures().filter(r => r.source_id === f.id))).toEqual(stripAttempts(ledger));
     expect(await engine.executeRaw('SELECT id,state,intent,error_code,error_message FROM persistence_requests WHERE source_id=$1 ORDER BY sequence', [f.id])).toEqual(receipts);
     expect((await engine.executeRaw<{ last_commit: string | null }>('SELECT last_commit FROM sources WHERE id=$1', [f.id]))[0].last_commit).toBeNull();
     expect(buildSingleSyncJsonEnvelope(f.id, failed)).toMatchObject({ failures: (failed as any).failures, failure_codes: failed.failureCodes });
@@ -177,7 +181,7 @@ test('CRLF checkout of a newer commit does not replace the stale blob pinned by 
     expect((await engine.getPage('z', { sourceId: f.id }))?.compiled_truth).toBe('Original last observation.');
     expect(readFileSync(join(f.root, 'z.md'), 'utf8')).toBe(newer.replace(/\n/g, '\r\n'));
     expect((await engine.executeRaw<{ last_commit: string }>('SELECT last_commit FROM sources WHERE id=$1', [f.id]))[0].last_commit).toBe(f.head);
-    expect(await performManagedSync(engine, options)).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, options))).toEqual(stripResultAttempts(blocked));
   }
 }), 120_000);
 
@@ -194,13 +198,13 @@ test('full sync cannot hide an older failed incremental cursor or repeat its com
     const failedId = blocked.failures![0].request_id;
     const receipts = await engine.executeRaw('SELECT id,state,intent,error_code FROM persistence_requests WHERE source_id=$1 ORDER BY sequence', [f.id]);
     const replay = await performManagedSync(engine, options);
-    expect(replay).toEqual(blocked);
+    expect(stripResultAttempts(replay)).toEqual(stripResultAttempts(blocked));
     expect(await engine.executeRaw('SELECT id,state,intent,error_code FROM persistence_requests WHERE source_id=$1 ORDER BY sequence', [f.id])).toEqual(receipts);
     writeFileSync(join(f.root, 'bad.md'), 'Repaired valid source observation.\n');
     const fullTarget = commit(f.root);
     expect(await performManagedSync(engine, { ...options, full: true })).toMatchObject({ status: 'synced', toCommit: fullTarget });
     const [source] = await engine.executeRaw('SELECT last_commit,last_sync_at FROM sources WHERE id=$1', [f.id]);
-    expect(await performManagedSync(engine, options)).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, options))).toEqual(stripResultAttempts(blocked));
     expect(await engine.executeRaw('SELECT last_commit,last_sync_at FROM sources WHERE id=$1', [f.id])).toEqual([source]);
     rmSync(join(home, 'sync-failures.jsonl'), { force: true });
     await disposePersistenceConsumer(engine);
@@ -213,7 +217,7 @@ test('full sync cannot hide an older failed incremental cursor or repeat its com
     expect(await checkSyncFailures(engine, { sourceIds: [], remote: true })).toBeNull();
     await engine.executeRaw("UPDATE op_checkpoints SET updated_at=now()-interval '10 days' WHERE op LIKE 'managed-sync%'");
     await purgeStaleCheckpoints(engine);
-    expect(await performManagedSync(engine, options)).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, options))).toEqual(stripResultAttempts(blocked));
     const repaired = await performManagedSync(engine, { ...options, retryFailed: true });
     expect(repaired.status).toBe('synced'); expect(repaired.runId).not.toBe(blocked.runId);
     expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(0);
@@ -305,7 +309,7 @@ test('checkpoint, discovery, and freeze failures remain diagnosable without a fi
     await engine.transaction(tx => withCoordinatedWrite(tx, [f.id], () => tx.executeRaw('UPDATE sources SET last_commit=$2 WHERE id=$1', [f.id, f.head]), TEST_WRITE_ATTRIBUTION));
     const blocked = await performManagedSync(engine, options);
     expect(blocked).toEqual(expect.objectContaining({ status: 'blocked_by_failures', failures: [expect.objectContaining({ path: '<checkpoint>', phase: 'checkpoint', code: 'revision_conflict' })] }));
-    expect(await performManagedSync(engine, options)).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, options))).toEqual(stripResultAttempts(blocked));
     expect(await performManagedSync(engine, { ...options, retryFailed: true })).toMatchObject({ status: 'synced' });
     expect(await readManagedSyncFailures(engine, [f.id])).toHaveLength(0);
 
@@ -319,7 +323,8 @@ test('checkpoint, discovery, and freeze failures remain diagnosable without a fi
       await expect(performManagedSync(engine, { sourceId: d.id, noPull: true })).rejects.toMatchObject({ code: 'storage_error' });
       await expect(performManagedSync(engine, { sourceId: d.id, noPull: true })).rejects.toMatchObject({ code: 'storage_error' });
     } finally { engine.executeRaw = execute; }
-    expect(await readManagedSyncFailures(engine, [d.id])).toEqual([expect.objectContaining({ phase: 'discovery', path: '<discovery>', request_id: null, target: d.head, attempts: 1 })]);
+    // #6402: both throws re-record the SAME observation (same run/index/phase/code), so attempts counts 2.
+    expect(await readManagedSyncFailures(engine, [d.id])).toEqual([expect.objectContaining({ phase: 'discovery', path: '<discovery>', request_id: null, target: d.head, attempts: 2 })]);
     await performManagedSync(engine, { sourceId: d.id, noPull: true, retryFailed: true });
     expect(await readManagedSyncFailures(engine, [d.id])).toHaveLength(0);
 
@@ -346,12 +351,12 @@ test('explicit retry leaves a frozen terminal cursor untouched while queued work
       topologyGeneration: row.topology_generation, principal: row.authority.principal, authority: row.authority,
       callerIntent: { ...row.intent, runId: 'another-active-run' }, intent: { ...row.intent, runId: 'another-active-run' } });
     writeFileSync(join(f.root, 'bad.md'), 'Repaired useful source content.\n'); commit(f.root);
-    expect(await performManagedSync(engine, { ...options, retryFailed: true })).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, { ...options, retryFailed: true }))).toEqual(stripResultAttempts(blocked));
     expect((await engine.executeRaw<{ run: string }>("SELECT completed_keys->0->>'runId' AS run FROM op_checkpoints WHERE op='managed-sync' AND completed_keys->0->>'sourceId'=$1", [f.id]))[0].run).toBe(blocked.runId!);
     const claimed = await claimNextWrite(engine, localHostId()); expect(claimed?.id).toBe(active.id);
-    expect(await performManagedSync(engine, { ...options, retryFailed: true })).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, { ...options, retryFailed: true }))).toEqual(stripResultAttempts(blocked));
     await markRecovering(engine, claimed!, 'Synthetic recovering fixture');
-    expect(await performManagedSync(engine, { ...options, retryFailed: true })).toEqual(blocked);
+    expect(stripResultAttempts(await performManagedSync(engine, { ...options, retryFailed: true }))).toEqual(stripResultAttempts(blocked));
     await engine.transaction(tx => completeWrite(tx, claimed!, 'cancelled', {}, { code: 'storage_error', message: 'Fixture cleanup' }));
     expect((await performManagedSync(engine, { ...options, retryFailed: true })).status).toBe('first_sync');
   }
@@ -376,7 +381,8 @@ test('local single and all-source CLI JSON carry durable diagnostics and fail th
       stdout = ''; stderr = '';
       try { await runSync(engine, [...flags, '--all', '--serial']); } catch (error) { if ((error as Error).message !== 'fixture-cli-exit') throw error; }
       const all = JSON.parse(stdout.trim());
-      expect(all).toEqual(expect.objectContaining({ error_count: 1, ok_count: 0, sources: [expect.objectContaining({ source_id: f.id, status: 'error', sync_status: 'blocked_by_failures', failures: single.failures, failure_codes: single.failure_codes })] }));
+      for (const src of all.sources ?? []) src.failures = stripAttempts(src.failures);
+      expect(all).toEqual(expect.objectContaining({ error_count: 1, ok_count: 0, sources: [expect.objectContaining({ source_id: f.id, status: 'error', sync_status: 'blocked_by_failures', failures: stripAttempts(single.failures), failure_codes: single.failure_codes })] }));
       expect(exitCode).toBe(1); expect(stderr).toContain(single.failures[0].request_id); expect(stderr).not.toContain('--skip-failed');
     } finally {
       console.log = originalLog; process.stdout.write = originalWrite; process.stderr.write = originalErr; process.exit = originalExit;
@@ -410,7 +416,8 @@ test.skipIf(!backends.includes('pglite'))('a new process reads the same failed r
   const child = Bun.spawn([process.execPath, '-e', script], { cwd: home, env: { ...process.env, ...env, DATABASE_URL: '', GBRAIN_DATABASE_URL: '' }, stdout: 'pipe', stderr: 'pipe' });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ code, stderr }).toMatchObject({ code: 0 });
-  expect(JSON.parse(stdout)).toEqual({ result: expected!, receipts: [{ count: 1 }] });
+  const childOut = JSON.parse(stdout);
+  expect({ ...childOut, result: stripResultAttempts(childOut.result) }).toEqual({ result: stripResultAttempts(expected!), receipts: [{ count: 1 }] });
 }), 120_000);
 
 test('remote managed failure results expose only aggregates, never private receipt details', async () => withEnv(env, async () => {
@@ -482,8 +489,10 @@ test('a new failed admission increments attempts but repeating retry during repa
     const first = await performManagedSync(engine, options);
     const second = await performManagedSync(engine, { ...options, retryFailed: true });
     expect(second.failures![0].request_id).not.toBe(first.failures![0].request_id);
-    expect(second.failures![0].attempts).toBe(2);
-    expect(await performManagedSync(engine, options)).toEqual(second);
+    // #6402: attempts counts re-observations of THIS request, not every failure the cursor key ever saw;
+    // a new request id (and run) starts a fresh row at 1.
+    expect(second.failures![0].attempts).toBe(1);
+    expect(stripResultAttempts(await performManagedSync(engine, options))).toEqual(stripResultAttempts(second));
     writeFileSync(join(f.root, 'bad.md'), 'Repaired successful second observation.\n'); commit(f.root);
     const slice = { maxPages: 1, maxMs: 1000 };
     const start = await performManagedSync(engine, { ...options, retryFailed: true }, slice);

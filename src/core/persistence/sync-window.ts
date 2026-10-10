@@ -14,7 +14,43 @@ import type { BrainEngine } from '../engine.ts';
 import { completeWrite, lockCounters } from './journal.ts';
 import { isTerminal, principalKey, requestPrincipal, type Principal, type WriteRequest } from './model.ts';
 
-export const WINDOW_CANCEL_MESSAGE = 'An earlier page of the same sync did not commit; this page was not published and is re-frozen after that failure is resolved.';
+const REFROZEN_TAIL = 'this page was not published and is re-frozen after that failure is resolved.';
+export const WINDOW_CANCEL_MESSAGE = `An earlier page of the same sync did not commit; ${REFROZEN_TAIL}`;
+
+/**
+ * #6402: a cancelled window member names its group leader, so `persistence_requests` shows the culprit instead
+ * of fourteen identical victims. `intent.group` is the leader's request id.
+ */
+export function windowMemberCancelMessage(group: string): string {
+  return `${WINDOW_CANCEL_MESSAGE} Group leader: ${group}.`;
+}
+
+/**
+ * #6402: a window/lane group head is cancelled because the request it follows ended without committing (or is
+ * gone), not because an earlier page of its own group failed. Its message carries that predecessor and state
+ * when the caller knows them.
+ */
+export function windowLeaderCancelMessage(predecessorId: string | null, predecessorState?: string): string {
+  const who = predecessorId ? ` ${predecessorId}` : '';
+  const how = predecessorState ? ` ended ${predecessorState}` : ' did not commit';
+  return `The request this page follows${who}${predecessorId ? how : ' did not commit'}; ${REFROZEN_TAIL}`;
+}
+
+/** What the sync's caller knows about why a row's group is being torn down. */
+export interface WindowCancelCause { predecessorId?: string | null; predecessorState?: string }
+
+/** #6402: every message cancelRows can write carries REFROZEN_TAIL; sync status relies on this to classify the knock-on. */
+export function isWindowKnockOn(message: string): boolean {
+  return message.includes(REFROZEN_TAIL);
+}
+
+/** #6402: the per-row cancel message — a group member names its leader; the head names the predecessor that ended it. */
+export function windowCancelMessage(row: Pick<WriteRequest, 'intent' | 'request_id'>, cause?: WindowCancelCause): string {
+  const group = (row.intent as Record<string, unknown> | null | undefined)?.group;
+  if (typeof group === 'string' && group !== row.request_id) return windowMemberCancelMessage(group);
+  if (cause?.predecessorId !== undefined || cause?.predecessorState) return windowLeaderCancelMessage(cause?.predecessorId ?? null, cause?.predecessorState);
+  return WINDOW_CANCEL_MESSAGE;
+}
 
 /** The request a window group waits for, or null for any other request. */
 export function windowPredecessor(row: Pick<WriteRequest, 'intent'>): string | null {
@@ -110,16 +146,16 @@ export async function claimedHeadOrder(engine: BrainEngine, head: WriteRequest, 
   const group = typeof head.intent?.group === 'string' ? head.intent.group : head.request_id;
   const members = await engine.executeRaw<WriteRequest>(`SELECT * FROM persistence_requests WHERE worktree_id=$1::uuid AND intent->>'group'=$2
     AND state='queued' AND id<>$3::uuid ORDER BY sequence`, [head.worktree_id, group, head.id]);
-  return cancelRows(engine, [head, ...members]);
+  return cancelRows(engine, [head, ...members], { predecessorId: windowPredecessor(head), predecessorState: prior });
 }
 
 /** The sync side's cancellation of the window after a failed page: every member nobody claimed yet. */
-export async function cancelWindow(engine: BrainEngine, window: Array<Array<{ requestId: string }>>, principal: Principal): Promise<void> {
+export async function cancelWindow(engine: BrainEngine, window: Array<Array<{ requestId: string }>>, principal: Principal, cause?: WindowCancelCause): Promise<void> {
   const ids = window.flat().map(member => member.requestId);
   if (!ids.length) return;
   const rows = await engine.executeRaw<WriteRequest>(`SELECT * FROM persistence_requests WHERE principal_kind=$1 AND principal_id=$2
     AND request_id=ANY($3::uuid[]) AND state='queued' ORDER BY sequence`, [principal.kind, principal.id, ids]);
-  await cancelRows(engine, rows);
+  await cancelRows(engine, rows, cause);
 }
 
 /**
@@ -138,25 +174,26 @@ export async function cancelOrphanedLaneRows(engine: BrainEngine, run: string, s
     let unsettled = false;
     for (const row of rows) {
       // In manifest order, so a row cancelled here is the uncommitted predecessor the next row sees.
-      if (!ENDED_UNCOMMITTED.includes(await claimedPredecessorState(engine, row) ?? '')) continue;
+      const prior = await claimedPredecessorState(engine, row);
+      if (!ENDED_UNCOMMITTED.includes(prior ?? '')) continue;
       // A running orphan is one the consumer claimed under the FIFO after the lanes closed; it cancels it itself.
       if (row.state === 'running') unsettled = true;
-      else await cancelRows(engine, [row]);
+      else await cancelRows(engine, [row], { predecessorId: windowPredecessor(row), predecessorState: prior ?? undefined });
     }
     if (!unsettled || Date.now() - started >= settleMs) return;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
 }
 
-/** Cancels unpublished rows (queued, or claimed with the given token) with the window reason. */
-export async function cancelRows(engine: BrainEngine, rows: WriteRequest[]): Promise<WriteRequest[]> {
+/** Cancels unpublished rows (queued, or claimed with the given token) with the window reason; `cause` names the head's predecessor. */
+export async function cancelRows(engine: BrainEngine, rows: WriteRequest[], cause?: WindowCancelCause): Promise<WriteRequest[]> {
   const settled: WriteRequest[] = [];
   for (const row of rows) {
     const done = await engine.transaction(async tx => {
       await lockCounters(tx, ['brain', principalKey(requestPrincipal(row)), ...(row.worktree_id ? [`worktree:${row.worktree_id}`] : [])]);
       const [current] = await tx.executeRaw<WriteRequest>('SELECT * FROM persistence_requests WHERE id=$1::uuid FOR UPDATE', [row.id]);
       if (!current || isTerminal(current) || current.execution_token !== row.execution_token || current.publication_started || current.recovery) return current ?? null;
-      return completeWrite(tx, current, 'cancelled', {}, { code: 'cancelled', message: WINDOW_CANCEL_MESSAGE });
+      return completeWrite(tx, current, 'cancelled', {}, { code: 'cancelled', message: windowCancelMessage(current, cause) });
     });
     if (done) settled.push(done);
   }

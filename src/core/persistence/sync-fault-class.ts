@@ -18,6 +18,12 @@
  * read this table; `docs/guides/sync-unblock-runbook.md` renders it, and
  * `test/sync-runbook-table.test.ts` pins the two together.
  *
+ * #6402: a lane-group knock-on is classified before the table. A request the
+ * window teardown cancelled (its message is `isWindowKnockOn` text — a member
+ * naming its group leader, or a head naming the request it follows) is
+ * `transient` with `safe_actions: [retry]`: the sync's own `Next:` already says
+ * `--retry-failed`, and the JSON must never be more pessimistic than stdout.
+ *
  * #6377: a `frontmatter_slug_conflict` hold the content-repair lane judged
  * (`meta.content_repair`) is classified from that verdict: a recommended
  * merge (`merge_recommended`) or an undecidable pair
@@ -25,7 +31,9 @@
  * from the hold's codes and slugs (`contentRepairHumanReason`), never from
  * model prose; the table row stays the lane's default for every other state.
  */
-export type SyncFaultClass = 'page' | 'connection' | 'systemic';
+import { isWindowKnockOn } from './sync-window.ts';
+
+export type SyncFaultClass = 'page' | 'connection' | 'systemic' | 'transient';
 export type SyncSafeAction = 'retry' | 'retry_when_clean' | 'repair' | 'reconcile' | 'upgrade' | 'none';
 
 export interface SyncFaultRule {
@@ -126,6 +134,8 @@ export interface SyncFaultVerdict { class: SyncFaultClass; safe_actions: SyncSaf
  * undecidable pair names a person. An unknown code is systemic and human: an agent must not guess at it.
  */
 export function classifySyncFault(input: { code: string; detail?: string | null; attempts?: number | null; message?: string | null; content_repair?: ContentRepairHoldInput | null }): SyncFaultVerdict {
+  if (input.code === 'cancelled' && isWindowKnockOn(input.message ?? ''))
+    return { class: 'transient', safe_actions: ['retry'], needs_human: false };
   const judged = input.content_repair && input.code === 'frontmatter_slug_conflict' ? contentRepairHumanReason(input.content_repair) : undefined;
   if (judged) return { class: 'page', safe_actions: ['none'], needs_human: true, human_reason: judged };
   const rule = (input.detail ? BY_CODE.get(input.detail) : undefined) ?? BY_CODE.get(input.code)

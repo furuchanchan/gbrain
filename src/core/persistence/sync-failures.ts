@@ -33,9 +33,10 @@ export async function recordManagedSyncFailure(engine: BrainEngine, value: Omit<
       INSERT INTO op_checkpoints(op,fingerprint,completed_keys) VALUES('managed-sync-failure',$1,$2::text::jsonb)
       ON CONFLICT(op,fingerprint) DO UPDATE SET completed_keys=CASE
         WHEN op_checkpoints.completed_keys->0->>'observation_id'=EXCLUDED.completed_keys->0->>'observation_id'
-        THEN op_checkpoints.completed_keys ELSE jsonb_build_array(EXCLUDED.completed_keys->0 || jsonb_build_object(
-          'first_seen',op_checkpoints.completed_keys->0->>'first_seen',
-          'attempts',COALESCE((op_checkpoints.completed_keys->0->>'attempts')::int,0)+1)) END
+        THEN jsonb_build_array(op_checkpoints.completed_keys->0 || jsonb_build_object(
+          'attempts',COALESCE((op_checkpoints.completed_keys->0->>'attempts')::int,0)+1))
+        ELSE EXCLUDED.completed_keys END,
+        updated_at=now()
       RETURNING completed_keys`, [value.cursor_key, JSON.stringify([failure])]);
     return row.completed_keys[0];
   });
