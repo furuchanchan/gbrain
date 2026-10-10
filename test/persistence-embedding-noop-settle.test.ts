@@ -237,6 +237,49 @@ for (const kind of testBackends()) {
       expect(seen).toEqual(expected);
     });
 
+    check('an effect the cursor passes (not yet due, or locked by another claimer) still commits through the runner', async () => {
+      await reset();
+      let start = await settleNoopEmbeddingEffects(engine, localHostId(), signature);
+      while (!start.done) start = await settleNoopEmbeddingEffects(engine, localHostId(), signature, start.cursor);
+      const later = await page('passed/not-due', true);
+      const locked = await page('passed/locked', true);
+      const settles = await page('passed/settles', true);
+      await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=ANY($1::text[]::bigint[])', [[locked.effectId, settles.effectId]]);
+      await engine.executeRaw("UPDATE persistence_effects SET next_attempt_at=now()+interval '1 hour' WHERE id=$1", [later.effectId]);
+      let pass: Awaited<ReturnType<typeof settleNoopEmbeddingEffects>>;
+      if (kind === 'postgres') {
+        // Another claimer holds the row while the pass runs; SKIP LOCKED steps over it.
+        let release!: () => void;
+        let held!: () => void;
+        const holding = new Promise<void>(resolve => { held = resolve; });
+        const holder = engine.transaction(async tx => {
+          await tx.executeRaw('SELECT id FROM persistence_effects WHERE id=$1 FOR UPDATE', [locked.effectId]);
+          held();
+          await new Promise<void>(resolve => { release = resolve; });
+        });
+        await holding;
+        try { pass = await settleNoopEmbeddingEffects(engine, localHostId(), signature, start.cursor); }
+        finally { release(); await holder; }
+        expect((await row(locked.effectId)).state).toBe('queued');
+      } else {
+        // PGLite has one connection, so no second claimer can hold a lock; the not-due case covers the pass.
+        await engine.executeRaw("UPDATE persistence_effects SET next_attempt_at=now()+interval '1 hour' WHERE id=$1", [locked.effectId]);
+        pass = await settleNoopEmbeddingEffects(engine, localHostId(), signature, start.cursor);
+        expect((await row(locked.effectId)).state).toBe('queued');
+      }
+      expect(pass.done).toBe(true);
+      expect(BigInt(pass.cursor.through)).toBeGreaterThanOrEqual(BigInt(later.effectId));
+      expect((await row(settles.effectId)).state).toBe('committed');
+      expect((await row(later.effectId)).state).toBe('queued');
+      // Behind the cursor now, both reach the runner and commit there without provider work.
+      expect((await settleNoopEmbeddingEffects(engine, localHostId(), signature, pass.cursor)).settled).toBe(0);
+      await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at=now() WHERE id=ANY($1::text[]::bigint[])', [[later.effectId, locked.effectId]]);
+      let calls = 0;
+      await drainAll(async texts => { calls++; return texts.map(() => vector()); });
+      expect(calls).toBe(0);
+      for (const p of [later, locked]) expect(await row(p.effectId)).toMatchObject({ state: 'committed', attempts: 1, outcome: {} });
+    });
+
     check('the completion model matches the runner for the legacy column and a named column, model names with colons included', async () => {
       expect(embeddingCompletionModel({ name: 'embedding', embeddingModel: undefined } as never, 'acme:embed:v2:1536')).toBe('acme:embed:v2');
       expect(embeddingCompletionModel({ name: 'embedding_voyage', embeddingModel: 'voyage:voyage-3' } as never, 'acme:embed:v2:1536')).toBe('voyage:voyage-3');
