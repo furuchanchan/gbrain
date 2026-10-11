@@ -1203,6 +1203,13 @@ export interface SearchOpts extends PageReadPolicy {
   /** #5989: bounded CJK keyword arm (deadline + meta sink); set by hybrid only (engine-sql/cjk-search.ts). */
   cjkKeyword?: import('./engine-sql/cjk-search.ts').CjkKeywordRun;
   /**
+   * #6495 — Postgres statement_timeout (ms) for the lexical search arms'
+   * scoped read transactions (keyword FTS, title arm, CJK fallback). Set by
+   * hybrid from merged config (`search.statement_timeout_ms`); unset falls
+   * back to the 8000ms default. Postgres engine only.
+   */
+  statementTimeoutMs?: number;
+  /**
    * v0.42 — intent-aware adaptive return-sizing. `true` enables with config/
    * default caps; an object overrides caps per-call; omitted/`false` = off
    * (default, no behavior change). Trims the ranked set to an intent-driven

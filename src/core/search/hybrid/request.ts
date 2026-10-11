@@ -25,6 +25,7 @@ import { resolveEmbeddingColumn } from '../embedding-column.ts';
 import { resolveVectorLegacyGuard } from '../vector-legacy-guard.ts';
 import { resolveHnswIterativeScan } from '../hnsw-iterative-scan.ts';
 import { resolveCjkKeywordDeadlineMs } from '../cjk-keyword-deadline.ts';
+import { resolveSearchStatementTimeoutMs } from '../search-stmt-timeout.ts';
 import { resolveSearchDateBounds } from '../date-bounds.ts';
 import { type DecideSearchContext, decideMetaFor, resolveAndLaunchDecide } from '../decide-stage.ts';
 import { applySearchIntent } from '../decide-retrieval.ts';
@@ -249,6 +250,9 @@ export async function resolveHybridRequest(
     // #5824 rollback switch, latched once per process from env/config.
     vectorLegacyGuard: resolveVectorLegacyGuard(cfgForColumn),
     hnswIterativeScan: resolveHnswIterativeScan(cfgForColumn),
+    // #6495: operator-set Postgres statement_timeout for the lexical arms;
+    // unset config keeps the engine's 8000ms default.
+    statementTimeoutMs: resolveSearchStatementTimeoutMs(cfgForColumn),
     // #5989: bound the CJK keyword arm by one deadline; its outcome and wall time ride the meta.
     cjkKeyword: {
       deadlineMs: resolveCjkKeywordDeadlineMs(cfgForColumn),

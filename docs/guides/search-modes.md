@@ -150,6 +150,13 @@ Seven of the knobs deserve a sentence:
   one capped retry (see [multi-language FTS](multi-language-fts.md)). A cut
   arm reports `keyword_candidates_incomplete`; another value is refused
   with exit 2.
+- **`statement_timeout_ms`** (config key `search.statement_timeout_ms`,
+  integer milliseconds, default 8000, range 1000 to 60000; for example
+  `gbrain config set search.statement_timeout_ms 20000`) is the Postgres
+  `statement_timeout` of hybrid search's keyword, title and CJK keyword
+  arms, set per scoped read transaction. A very large brain can raise it so
+  cold broad queries stop cancelling the arm (the arm then fails open to
+  the other arms); another value is refused with exit 2.
 - **`hnsw_iterative_scan`** (Postgres with pgvector 0.8+; config key
   `search.hnsw_iterative_scan`, string, default `relaxed_order`, one of
   `relaxed_order | strict_order | off`; env `GBRAIN_HNSW_ITERATIVE_SCAN`

@@ -25,9 +25,11 @@
           },
           {
             "lane": "tx",
-            "params": [],
-            "sql": "SET LOCAL statement_timeout = '8s'",
-            "textSha256": "7346ddf58ceeb31a31fd4f44990faf92a5bf015f93c675513e2bc17e5c3619db"
+            "params": [
+              "string"
+            ],
+            "sql": "SELECT set_config('statement_timeout', $1, true)",
+            "textSha256": "4ff5eea87475148656b3e4c0a62fb90fdc1e96997a8b96873e48285836003675"
           },
           {
             "lane": "pool",
@@ -81,9 +83,11 @@
           },
           {
             "lane": "tx",
-            "params": [],
-            "sql": "SET LOCAL statement_timeout = '8s'",
-            "textSha256": "7346ddf58ceeb31a31fd4f44990faf92a5bf015f93c675513e2bc17e5c3619db"
+            "params": [
+              "string"
+            ],
+            "sql": "SELECT set_config('statement_timeout', $1, true)",
+            "textSha256": "4ff5eea87475148656b3e4c0a62fb90fdc1e96997a8b96873e48285836003675"
           },
           {
             "lane": "pool",
@@ -132,9 +136,11 @@
           },
           {
             "lane": "tx",
-            "params": [],
-            "sql": "SET LOCAL statement_timeout = '8s'",
-            "textSha256": "7346ddf58ceeb31a31fd4f44990faf92a5bf015f93c675513e2bc17e5c3619db"
+            "params": [
+              "string"
+            ],
+            "sql": "SELECT set_config('statement_timeout', $1, true)",
+            "textSha256": "4ff5eea87475148656b3e4c0a62fb90fdc1e96997a8b96873e48285836003675"
           },
           {
             "lane": "tx",
@@ -172,9 +178,11 @@
           },
           {
             "lane": "tx",
-            "params": [],
-            "sql": "SET LOCAL statement_timeout = '8s'",
-            "textSha256": "7346ddf58ceeb31a31fd4f44990faf92a5bf015f93c675513e2bc17e5c3619db"
+            "params": [
+              "string"
+            ],
+            "sql": "SELECT set_config('statement_timeout', $1, true)",
+            "textSha256": "4ff5eea87475148656b3e4c0a62fb90fdc1e96997a8b96873e48285836003675"
           },
           {
             "lane": "tx",

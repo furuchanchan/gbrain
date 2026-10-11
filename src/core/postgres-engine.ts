@@ -105,7 +105,7 @@ import type {
 import { GBrainError, PAGE_SORT_SQL } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import * as db from './db.ts';
-import { ConnectionManager, DEFAULT_DIRECT_POOL_SIZE } from './connection-manager.ts';
+import { ConnectionManager, DEFAULT_DIRECT_POOL_SIZE, SEARCH_STMT_TIMEOUT_MS } from './connection-manager.ts';
 import { logConnectionEvent } from './connection-audit.ts';
 import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, isBlankBody, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
@@ -1126,7 +1126,7 @@ export class PostgresEngine implements BrainEngine {
     // shares the same transaction as the timeout.
     const runKeyword = (queryText: string, relaxed = false) =>
       this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, async (tx) => {
-        await tx`SET LOCAL statement_timeout = '8s'`;
+        await tx`SELECT set_config('statement_timeout', ${`${opts?.statementTimeoutMs ?? SEARCH_STMT_TIMEOUT_MS}ms`}, true)`;
         const previous = relaxed ? await tx`SHOW enable_seqscan` : [];
         if (relaxed) await tx`SET LOCAL enable_seqscan = off`;
         const boundParams = [...params];
@@ -1169,7 +1169,7 @@ export class PostgresEngine implements BrainEngine {
       (read) => this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, tx => read(scopedRead(this.engineSqlOn(tx))), { alwaysTransaction: true, jitOff: true }),
       query,
       opts,
-      { statementTimeout: '8s', relaxedPrefersIndex: true, staleProbe: false },
+      { statementTimeout: `${opts?.statementTimeoutMs ?? SEARCH_STMT_TIMEOUT_MS}ms`, relaxedPrefersIndex: true, staleProbe: false },
     );
   }
 
@@ -1313,7 +1313,7 @@ export class PostgresEngine implements BrainEngine {
     // already wrapped this in sql.begin() for the SET LOCAL; flag off is
     // identical to that wrap, flag on adds set_config in the same tx.
     const rows = await this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, async (tx) => {
-      await tx`SET LOCAL statement_timeout = '8s'`;
+      await tx`SELECT set_config('statement_timeout', ${`${opts?.statementTimeoutMs ?? SEARCH_STMT_TIMEOUT_MS}ms`}, true)`;
       return await tx.unsafe(rawQuery, params as Parameters<typeof tx.unsafe>[1]);
     }, { alwaysTransaction: true, jitOff: true });
     return rows.map(rowToSearchResult);
@@ -1329,7 +1329,7 @@ export class PostgresEngine implements BrainEngine {
     return searchKeywordCJKImpl(
       async (read) =>
         await this.withScopedReadTransaction(ctx.opts?.sourceIds, ctx.opts?.sourceId, async (tx) => {
-          await tx`SET LOCAL statement_timeout = '8s'`;
+          await tx`SELECT set_config('statement_timeout', ${`${ctx.opts?.statementTimeoutMs ?? SEARCH_STMT_TIMEOUT_MS}ms`}, true)`;
           return await read(scopedRead(postgresExecutor(tx, {
             runUnsafe: (conn, sql, params, opts) => this.runUnsafe(conn, sql, params, opts),
             gauge: this.checkoutGauge,

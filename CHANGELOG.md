@@ -10,6 +10,39 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.179.0] - 2026-10-11
+
+**Postgres hybrid search's statement timeout is operator-tunable.** The keyword,
+title, and CJK keyword arms ran their scoped read transactions under a fixed
+8 s `statement_timeout`; on a large brain a cold strict-AND lexical scan can
+exceed it, the arm times out, and hybrid fails open to the other arms. The
+timeout now comes from `search.statement_timeout_ms` (integer, 1000–60000,
+default 8000) resolved from merged config at the request layer — file config
+wins over the `config` table, request payloads can never set it — so
+`gbrain config set search.statement_timeout_ms 20000` covers the cold case
+without a deploy (#6495). Callers that pass no `SearchOpts.statementTimeoutMs`
+keep the 8 s default, so behaviour is unchanged for existing brains.
+
+### Itemized changes
+
+- `src/core/search/search-stmt-timeout.ts` (new): key name, default, 1000–60000
+  bounds, resolver, and config-set refusal text in one module.
+- `src/core/config.ts`: `search.statement_timeout_ms` type field,
+  `KNOWN_CONFIG_KEYS` row, and DB-plane merge (file config wins).
+- `src/core/search/config-values.ts`: `SEARCH_VALUE_RULES` row so
+  `gbrain config set` refuses non-integer/out-of-range values with the range
+  and a working example.
+- `src/core/types.ts`: `SearchOpts.statementTimeoutMs` — resolved by hybrid,
+  consumed by the Postgres engine only.
+- `src/core/search/hybrid/request.ts`: resolves the merged-config value into
+  `searchOpts`; engines stay config-free.
+- `src/core/postgres-engine.ts`: the four lexical-arm scoped transactions
+  (keyword, titles, chunks, CJK) set `set_config('statement_timeout', …)` from
+  the option, falling back to the prior 8 s default.
+- `src/core/behavior-change-notice.ts`, `docs/guides/search-modes.md`,
+  `test/config-search-registry.test.ts`, `test/search-stmt-timeout-6495.test.ts`:
+  notice row, guide bullet, registry row, and resolver/refusal coverage.
+
 ## [0.60.172.0] - 2026-10-11
 
 **Two decide timing tests stop failing on slow runners.** Each one measured wall-clock time that included work outside the budget under test. Both budgets are unchanged.

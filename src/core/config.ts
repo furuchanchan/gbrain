@@ -265,6 +265,8 @@ export interface GBrainConfig {
     hnsw_iterative_scan?: string;
     /** #5989 CJK keyword arm deadline in ms (search/cjk-keyword-deadline.ts); file > DB. */
     cjk_keyword_deadline_ms?: number;
+    /** #6495 lexical search statement_timeout in ms (search/search-stmt-timeout.ts); file > DB. */
+    statement_timeout_ms?: number;
   };
 
   /**
@@ -839,6 +841,8 @@ async function mergeSearchScanKnobs(
   if (mergedSearch.hnsw_iterative_scan === undefined && dbHnswIterativeScan !== undefined) mergedSearch.hnsw_iterative_scan = dbHnswIterativeScan;
   const dbCjkDeadline = Number(await dbStr('search.cjk_keyword_deadline_ms'));
   if (mergedSearch.cjk_keyword_deadline_ms === undefined && Number.isFinite(dbCjkDeadline) && dbCjkDeadline > 0) mergedSearch.cjk_keyword_deadline_ms = dbCjkDeadline;
+  const dbStmtTimeout = Number(await dbStr('search.statement_timeout_ms'));
+  if (mergedSearch.statement_timeout_ms === undefined && Number.isFinite(dbStmtTimeout) && dbStmtTimeout > 0) mergedSearch.statement_timeout_ms = dbStmtTimeout;
 }
 /**
  * v0.27.1 — async config loader that overlays DB-plane config on top of the
@@ -1375,6 +1379,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.vector_legacy_guard',
   'search.hnsw_iterative_scan',
   'search.cjk_keyword_deadline_ms',
+  'search.statement_timeout_ms',
   'search.adaptive_return',
   'search.adaptive_return_entity_max',
   'search.adaptive_return_other_max',
