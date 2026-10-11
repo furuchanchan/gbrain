@@ -193,7 +193,8 @@ export function skillMetadata(name: string, files: StoredSkillFile[], params: Re
     markers.set(canonical, ['true', 'yes'].includes(value.toLowerCase()));
   }
   const requirements = stringList([...stringList(params.requirements, 'requirements'), ...stringList(fm.requires, 'requires'), ...stringList(fm.tools, 'tools').map(t => `tool:${t}`)], 'requirements');
-  return { description, triggers: stringList(params.triggers ?? fm.triggers, 'triggers'), requirements,
+  return { description, triggers: stringList(params.triggers ?? fm.triggers, 'triggers'),
+    example_queries: stringList(params.example_queries ?? fm.example_queries, 'example_queries') ?? [], requirements,
     tools_declared: Object.hasOwn(fm, 'tools') || requirements.some(requirement => requirement.startsWith('tool:')),
     private: params.private === true || markers.get('private') === true || markers.get('publish') === false || markers.get('mcp_publish') === false,
     audience: files.find(f => f.path === `skills/${name}/SKILL.md`)!.audience,

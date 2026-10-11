@@ -14,7 +14,8 @@
  * layer only. A future release will implement the tie-break layer.
  */
 
-import { resolve as resolvePath, isAbsolute } from 'path';
+import { resolve as resolvePath, isAbsolute, join } from 'path';
+import { readdirSync, existsSync, readFileSync } from 'fs';
 
 import {
   indexResolverTriggers,
@@ -31,6 +32,12 @@ import {
   findPrimaryResolverPath,
   loadSkillTriggerIndex,
 } from '../core/skill-trigger-index.ts';
+import { parseSkillFrontmatter } from '../core/skill-frontmatter.ts';
+import {
+  runQueryHitRate,
+  type QueryRoutingReport,
+  type SkillQueryCandidate,
+} from '../core/skill-query.ts';
 
 interface Flags {
   help: boolean;
@@ -48,6 +55,8 @@ export interface RoutingEvalEnvelope {
   malformedFixtures: { file: string; line: number; error: string }[];
   error: 'no_skills_dir' | 'no_resolver' | null;
   message: string | null;
+  /** #6471: hit rate for the ranked `list_skills` query path on the same fixtures. */
+  queryRouting?: QueryRoutingReport | null;
 }
 
 const HELP = `gbrain routing-eval [options]
@@ -107,6 +116,49 @@ function resolveSkillsDir(
     };
   }
   return { dir: detected.dir, source: detected.source, error: null, message: null };
+}
+
+/** Single-line `description:` (quoted or bare) from frontmatter raw YAML. */
+function frontmatterDescription(raw: string): string | undefined {
+  const m = raw.match(/^description:\s*(?:"([^"]*)"|'([^']*)'|(.+))$/m);
+  const v = (m?.[1] ?? m?.[2] ?? m?.[3])?.trim();
+  return v ? v : undefined;
+}
+
+/**
+ * #6471: query-path candidates — the same skills the unified trigger
+ * index sees, with name/description/example_queries from SKILL.md
+ * frontmatter and triggers unioned from frontmatter + resolver rows.
+ */
+function loadQueryCandidates(skillsDir: string): SkillQueryCandidate[] {
+  const resolverTriggers = new Map<string, string[]>();
+  for (const row of loadSkillTriggerIndex(skillsDir)) {
+    const dir = row.skillPath.match(/^skills\/([^/]+)\//)?.[1];
+    if (!dir) continue;
+    const list = resolverTriggers.get(dir) ?? [];
+    list.push(row.trigger);
+    resolverTriggers.set(dir, list);
+  }
+  const candidates: SkillQueryCandidate[] = [];
+  for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+    const mdPath = join(skillsDir, entry.name, 'SKILL.md');
+    if (!existsSync(mdPath)) continue;
+    const parsed = parseSkillFrontmatter(readFileSync(mdPath, 'utf8'));
+    candidates.push({
+      key: entry.name,
+      name: parsed?.name ?? entry.name,
+      description: parsed ? frontmatterDescription(parsed.raw) : undefined,
+      triggers: [
+        ...new Set([
+          ...(parsed?.triggers ?? []),
+          ...(resolverTriggers.get(entry.name) ?? []),
+        ]),
+      ],
+      exampleQueries: parsed?.example_queries,
+    });
+  }
+  return candidates;
 }
 
 export async function runRoutingEvalCli(args: string[]): Promise<void> {
@@ -183,6 +235,10 @@ export async function runRoutingEvalCli(args: string[]): Promise<void> {
   const lintIssues = lintRoutingFixtures(loaded.fixtures, index);
   const report = runRoutingEval(resolverContent, loaded.fixtures, { llm: flags.llm });
 
+  // #6471: hit rate for the ranked `list_skills` query path, alongside
+  // the trigger-only top-1 baseline in `report`.
+  const queryReport = runQueryHitRate(loaded.fixtures, loadQueryCandidates(skillsDir));
+
   const cleanFixtures = lintIssues.length === 0;
   const cleanResults =
     report.missed === 0 && report.ambiguous === 0 && report.falsePositives === 0;
@@ -202,6 +258,7 @@ export async function runRoutingEvalCli(args: string[]): Promise<void> {
     })),
     error: null,
     message: null,
+    queryRouting: queryReport,
   };
 
   if (flags.json) {
@@ -212,6 +269,11 @@ export async function runRoutingEvalCli(args: string[]): Promise<void> {
     console.log(
       `${header} — ${report.totalCases} case(s), ${pct}% top-1 accuracy`,
     );
+    if (queryReport.totalCases > 0) {
+      console.log(
+        `  query path: ${Math.round(queryReport.hitRate * 100)}% hit@${queryReport.k} over ${queryReport.candidates} skill(s)`,
+      );
+    }
     if (report.missed > 0) console.log(`  • ${report.missed} missed`);
     if (report.ambiguous > 0) console.log(`  • ${report.ambiguous} ambiguous`);
     if (report.falsePositives > 0)

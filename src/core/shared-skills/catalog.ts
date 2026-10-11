@@ -104,15 +104,25 @@ async function catalogRead<T>(ctx: OperationContext, operation: string, run: (ct
     throw new OperationError('catalog_unavailable', 'The authoritative catalog could not be read.', 'Retry without advancing a cursor or deleting installed files.');
   }
 }
-export async function listSharedSkills(ctx: OperationContext, params: { limit?: number; cursor?: string; source_id?: string } = {}): Promise<SharedSkillList> {
+export async function listSharedSkills(ctx: OperationContext, params: { limit?: number; cursor?: string; source_id?: string; query?: string } = {}): Promise<SharedSkillList> {
   return catalogRead(ctx, 'list_skills', async active => {
     const snapshot = await readSnapshot(active, { source_id: params.source_id });
     const limit = params.limit ?? 50;
     if (!Number.isInteger(limit) || limit < 1 || limit > SHARED_SKILL_LIMITS.pageSize) {
       throw opError('invalid_params', 'Catalog limit must be 1-100.', `Pass limit as a whole number from 1 to ${SHARED_SKILL_LIMITS.pageSize}, or omit it for 50.`);
     }
-    const skills = params.source_id ? snapshot.skills.filter(s => s.source_id === params.source_id) : snapshot.skills;
+    let skills = params.source_id ? snapshot.skills.filter(s => s.source_id === params.source_id) : snapshot.skills;
     const view = opaque(snapshot.brain.token_secret, { view: snapshot.view, source: params.source_id ?? null });
+    const query = params.query?.trim();
+    if (query) {
+      // #6471: query routing scores the ALREADY-authorized snapshot, so a
+      // remote caller can only rank skills it could already list. Ranked
+      // output is one bounded page (top `limit`); cursors do not apply.
+      const { rankSkillQuery } = await import('../skill-query.ts');
+      const ranked = rankSkillQuery(query, skills.map(s => ({ ...s, key: s.qualified_id, exampleQueries: s.example_queries })));
+      return { schema_version: 2, brain_id: snapshot.brain.brain_id, view_token: view,
+        skills: ranked.slice(0, limit).map(({ key: _key, exampleQueries: _eq, ...skill }) => skill) };
+    }
     let offset = 0;
     if (params.cursor) {
       const cursor = decodeCursor(snapshot.brain.token_secret, params.cursor);

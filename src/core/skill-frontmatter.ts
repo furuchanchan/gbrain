@@ -49,6 +49,12 @@ export interface ParsedFrontmatter {
   /** Routing triggers list. */
   triggers?: string[];
   /**
+   * #6471: optional natural-language task phrasings a skill declares for
+   * query routing (`example_queries:`). Written to the file for review;
+   * consumed by the list_skills `query` scorer as extra ranking corpus.
+   */
+  example_queries?: string[];
+  /**
    * Machine-checkable preconditions this skill needs before it can run;
    * each is a `kind:arg` token — see skillpack/preconditions.ts.
    */
@@ -110,6 +116,7 @@ export function parseSkillFrontmatter(content: string): ParsedFrontmatter | null
   out.writes_to = parseArrayField(raw, 'writes_to');
   out.tools = parseArrayField(raw, 'tools');
   out.triggers = parseArrayField(raw, 'triggers');
+  out.example_queries = parseArrayField(raw, 'example_queries');
   out.requires = parseArrayField(raw, 'requires');
 
   // --- brain_first (strict canonical) ---

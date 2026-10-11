@@ -33,6 +33,7 @@ const list_skills: Operation = {
     limit: { type: 'number', description: 'Version 2 page size (1-100).' },
     cursor: { type: 'string', description: 'Version 2 cursor.' },
     source_id: { type: 'string', description: 'Version 2: one source.' },
+    query: { type: 'string', description: 'Rank skills by task description over name, description, triggers and example_queries; returns top `limit` with score and the matched line.' },
     section: {
       type: 'string',
       description: 'Only this routing section.',
@@ -49,7 +50,8 @@ const list_skills: Operation = {
     const override = await sc.readMcpSkillsDir(ctx);
     const { dir, source } = sc.resolveSkillsDir(ctx, override);
     const section = typeof p.section === 'string' ? p.section : undefined;
-    return sc.buildSkillCatalog(ctx, dir, source, { section, gateDisabled: await sc.readSkillToolGates(ctx) });
+    const query = typeof p.query === 'string' ? p.query : undefined;
+    return sc.buildSkillCatalog(ctx, dir, source, { section, query, gateDisabled: await sc.readSkillToolGates(ctx) });
   },
   scope: 'read',
   cliHints: { name: 'skills', positional: [] },
@@ -144,6 +146,7 @@ const put_skill: Operation = {
   cliHints: { name: 'put-skill', positional: [] },
   params: { ...sharedSkillMutationParams, description: { type: 'string', description: 'Compact routing description.' },
     triggers: { type: 'array', items: { type: 'string' }, description: 'Routing phrases.' },
+    example_queries: { type: 'array', items: { type: 'string' }, description: 'Paraphrased task phrasings for list_skills query ranking.' },
     requirements: { type: 'array', items: { type: 'string' }, description: 'Approved runtime and tool requirement tokens.' },
     private: { type: 'boolean', description: 'Exclude this skill from remote publication.' },
     files: { type: 'array', items: { type: 'object' }, required: true, description: 'Complete closure: path, content, encoding (utf8/base64), file_class, audience, media_type, depends_on.' } },

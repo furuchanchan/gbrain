@@ -42,6 +42,8 @@ export interface SharedSkillPutInput {
   name: string;
   description?: string;
   triggers?: string[];
+  /** #6471: optional paraphrased task queries that rank under list_skills `query`. */
+  example_queries?: string[];
   requirements?: string[];
   files: SharedSkillFileInput[];
   private?: boolean;
@@ -49,6 +51,7 @@ export interface SharedSkillPutInput {
 export interface SkillMetadata {
   description: string;
   triggers: string[];
+  example_queries?: string[];
   requirements: string[];
   private: boolean;
   audience: string[];

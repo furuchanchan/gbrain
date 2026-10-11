@@ -49,6 +49,7 @@ import {
 import { loadOrDeriveManifest, type ManifestEntry } from './skill-manifest.ts';
 import { loadSkillTriggerIndex, FRONTMATTER_SECTION } from './skill-trigger-index.ts';
 import { parseSkillFrontmatter } from './skill-frontmatter.ts';
+import { rankSkillQuery } from './skill-query.ts';
 import { operationScopesAllowed } from './scope.ts';
 import { currentVerifiedLocalWriter } from './persistence/identity.ts';
 import { disabledOpsForPublishGates } from '../mcp/publish-gates.ts';
@@ -90,6 +91,11 @@ export interface SkillCatalogEntry {
   description: string;
   section: string;
   triggers: string[];
+  /** #6471: paraphrased task queries declared for `list_skills` query routing. */
+  example_queries?: string[];
+  /** Present only on query-ranked results (score > 0). */
+  score?: number;
+  matched?: { kind: 'trigger' | 'description' | 'example_queries' | 'name'; text: string };
   tools: string[];
   /** declared tools ∩ (exposed by this server AND permitted to this caller). */
   usable_tools: string[];
@@ -481,7 +487,7 @@ export function buildSkillCatalog(
   ctx: OperationContext,
   skillsDir: string,
   source: ResolvedSkillsDirSource,
-  opts: { section?: string; gateDisabled?: ReadonlySet<string> } = {},
+  opts: { section?: string; gateDisabled?: ReadonlySet<string>; query?: string } = {},
 ): ListSkillsResult {
   const { skills: manifest } = loadOrDeriveManifest(skillsDir);
   const triggerMap = buildTriggerMap(skillsDir);
@@ -525,9 +531,29 @@ export function buildSkillCatalog(
       unavailable_tools,
       writes_pages: parsed?.writes_pages ?? false,
       mutating: parsed?.mutating ?? false,
+      ...(parsed?.example_queries?.length ? { example_queries: parsed.example_queries } : {}),
     });
   }
 
+  const query = opts.query?.trim();
+  if (query) {
+    // #6471: query ranks the caller-visible catalog; scoring the already
+    // filtered entries keeps remote callers inside their existing view.
+    const ranked = rankSkillQuery(query, skills.map(s => ({ ...s, key: s.name })));
+    const rekeyed = ranked.map(({ key: _key, ...s }) => s);
+    return {
+      schema_version: 1,
+      skills_dir_source: source,
+      count: rekeyed.length,
+      skills: rekeyed,
+      instructions: {
+        summary: SKILL_CATALOG_INSTRUCTIONS.summary,
+        how_to_use: [...SKILL_CATALOG_INSTRUCTIONS.how_to_use],
+        available_brain_tools: availableBrainTools(ctx, opts.gateDisabled),
+        fetch_op: 'get_skill',
+      },
+    };
+  }
   skills.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
