@@ -14,6 +14,7 @@
  */
 
 import { loadCompletedMigrations, type CompletedMigrationEntry } from './preferences.ts';
+import { loadConfigFileOnly, isConfigTruthy, type GBrainConfig } from './config.ts';
 
 /**
  * Version strings of every registered host migration, in registry order.
@@ -119,6 +120,24 @@ export function indexCompletedEntries(
   return byVersion;
 }
 
+/**
+ * #6466: file-plane opt-outs that decline a host migration. With the key set
+ * to a falsy value the runner skips the version entirely — no inventory, no
+ * config writes — and every read surface reports `declined` instead of
+ * `pending`/`partial`/`wedged`, no matter what the ledger holds.
+ */
+export function declinedMigrationVersions(cfg: GBrainConfig | null = loadConfigFileOnly()): ReadonlySet<string> {
+  const declined = new Set<string>();
+  const sharedSkills = cfg?.shared_skills?.migration?.enabled;
+  // Boolean false or a string falsy ("false"/"0"/"no"/"off") declines; absent
+  // or truthy means the migration runs. isConfigTruthy only accepts strings,
+  // so a JSON boolean false needs the explicit check.
+  const off = sharedSkills === false
+    || (typeof sharedSkills === 'string' && !isConfigTruthy(sharedSkills));
+  if (off) declined.add('0.53.0');
+  return declined;
+}
+
 export interface MigrationLedgerSummary {
   /** Registered migrations ≤ installed version with no ledger completion (upgrade work). */
   pending: string[];
@@ -138,6 +157,11 @@ export interface MigrationLedgerSummary {
    * a wedged future migration appears only in this count.
    */
   skipped_future: number;
+  /**
+   * Versions the operator declined via config opt-out (#6466). They never
+   * appear in pending/partial/wedged regardless of ledger state.
+   */
+  declined: string[];
 }
 
 /**
@@ -151,10 +175,15 @@ export function migrationLedgerSummary(installedVersion: string): MigrationLedge
   const entries = loadCompletedMigrations();
   const byVersion = indexCompletedEntries(entries);
   const freshVersion = freshInstallVersion(entries);
-  const summary: MigrationLedgerSummary = { pending: [], pending_fresh_install: [], partial: [], wedged: [], skipped_future: 0 };
+  const declined = declinedMigrationVersions();
+  const summary: MigrationLedgerSummary = { pending: [], pending_fresh_install: [], partial: [], wedged: [], skipped_future: 0, declined: [] };
   for (const version of MIGRATION_VERSIONS) {
     if (compareVersions(version, installedVersion) > 0) {
       summary.skipped_future += 1;
+      continue;
+    }
+    if (declined.has(version)) {
+      summary.declined.push(version);
       continue;
     }
     const status = statusForVersion(version, byVersion);

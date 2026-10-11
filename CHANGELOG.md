@@ -10,6 +10,21 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.173.0] - 2026-10-12
+
+**Opt out of the shared-skills host migration with one config key.**
+
+`gbrain config set shared_skills.migration.enabled false` declines host migration v0.53.0 (shared skills): apply-migrations — including the postinstall and post-upgrade paths — skips it entirely (no inventory, no config writes), `--list` / `--dry-run` / `--json`, `doctor` and `get_health` report it as `declined` instead of `pending`/`partial`/`wedged`, and an explicit `apply-migrations --migration 0.53.0` refuses with a message naming the setting. Re-enable with `gbrain config unset shared_skills.migration.enabled`. (#6466)
+
+### Itemized changes
+
+- `shared_skills.migration.enabled` registered as a file-plane dotted key: `config set`/`unset`/`get` round-trips it through `~/.gbrain/config.json` engine-free, with nested-leaf deletion in `unsetFilePlaneKey` and the `GBrainConfig.shared_skills` slot in `src/core/config.ts`.
+- `declinedMigrationVersions` in `src/core/migration-ledger.ts` resolves declined versions from the file plane; `migrationLedgerSummary` gains a `declined` bucket, so `get_health` reports it automatically.
+- `buildPlan` buckets declined versions before every ledger status — an applied `reconcile` migration stops re-checking and a wedged one stops reporting `wedged`. `listRows`/`printDryRun`/`listJson` surface the `declined` status.
+- An explicit `--migration <declined>` refuses before the orchestration lock or any DB probe, naming `shared_skills.migration.enabled` and its `config unset` fix.
+- Doctor's `minions_migration` filters declined versions out of the stuck/wedged/pending lanes and reports an `ok` row naming the declined versions.
+- Module-size ceilings raised consciously: `src/commands/config.ts` (new TSV row, 1525) and `src/core/config.ts` (1940 -> 1943) for the file-plane key lane and config slot.
+
 ## [0.60.164.0] - 2026-10-11
 
 **`query` now answers with the facts you corrected, and gbrain can keep a question answered for you.**

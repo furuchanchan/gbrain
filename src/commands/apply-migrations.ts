@@ -31,6 +31,7 @@ import {
   freshInstallVersion,
   isFreshInstallStamp,
   isPendingFreshInstall,
+  declinedMigrationVersions,
   MAX_CONSECUTIVE_PARTIALS,
 } from '../core/migration-ledger.ts';
 import { shellQuote, type Effect } from '../core/agent-output.ts';
@@ -223,6 +224,8 @@ interface Plan {
   pending_fresh_install: Migration[];
   skippedFuture: Migration[];
   wedged: Migration[];
+  /** Operator declined via config opt-out (#6466) — never run, reported as `declined`. */
+  declined: Migration[];
 }
 
 /**
@@ -240,10 +243,16 @@ interface Plan {
  * Codex H9: we never compare against `current VERSION >` — that rule would
  * skip v0.11.0 when running v0.11.1. Compare against completed.jsonl.
  */
-function buildPlan(idx: CompletedIndex, installed: string, filterVersion?: string): Plan {
-  const plan: Plan = { applied: [], partial: [], pending: [], pending_fresh_install: [], skippedFuture: [], wedged: [] };
+function buildPlan(idx: CompletedIndex, installed: string, filterVersion?: string, declined: ReadonlySet<string> = declinedMigrationVersions()): Plan {
+  const plan: Plan = { applied: [], partial: [], pending: [], pending_fresh_install: [], skippedFuture: [], wedged: [], declined: [] };
   for (const m of migrations) {
     if (filterVersion && m.version !== filterVersion) continue;
+    if (declined.has(m.version)) {
+      // #6466: an explicit opt-out wins over every ledger status — an applied
+      // reconcile migration stops re-checking, a wedged one stops reporting wedged.
+      plan.declined.push(m);
+      continue;
+    }
     if (compareVersions(m.version, installed) > 0) {
       plan.skippedFuture.push(m);
       continue;
@@ -287,6 +296,7 @@ function listRows(plan: Plan): Array<{ status: string; m: Migration }> {
     ...plan.wedged.map(m => ({ status: 'wedged', m })),
     ...plan.pending.map(m => ({ status: 'pending', m })),
     ...plan.pending_fresh_install.map(m => ({ status: 'pending_fresh_install', m })),
+    ...plan.declined.map(m => ({ status: 'declined', m })),
     ...plan.skippedFuture.map(m => ({ status: 'future', m })),
   ];
 }
@@ -358,6 +368,11 @@ function printDryRun(plan: Plan, installed: string, dbProbe: DbProbeOutcome): vo
   if (plan.pending_fresh_install.length) {
     console.log('Would APPLY (pending_fresh_install — setup a brain created by gbrain init has not run yet; expected, not a failed upgrade):');
     for (const m of plan.pending_fresh_install) console.log(`  → v${m.version} — ${m.featurePitch.headline}`);
+    console.log('');
+  }
+  if (plan.declined.length) {
+    console.log('Declined by config opt-out (will not run):');
+    for (const m of plan.declined) console.log(`  ⊘ v${m.version} — ${m.featurePitch.headline}`);
     console.log('');
   }
   if (plan.skippedFuture.length) {
@@ -432,6 +447,12 @@ interface RunReport {
   failure?: OperationError;
 }
 
+function declinedMigrationError(version: string): OperationError {
+  return usageError(`Migration v${version} is declined by config: shared_skills.migration.enabled=false.`,
+    'Re-enable it with `gbrain config set shared_skills.migration.enabled true` (or `gbrain config unset shared_skills.migration.enabled`), then re-run `gbrain apply-migrations`.',
+    { fix: { argv: ['gbrain', 'config', 'unset', 'shared_skills.migration.enabled'], consent: [], actor: 'agent', requires_exclusive: false, why: 'Clears the opt-out so the migration can run.' } });
+}
+
 function unknownMigrationError(version: string): OperationError {
   return usageError(`No migration registered with version "${version}".`,
     'Run `gbrain apply-migrations --list` to see registered versions.',
@@ -493,6 +514,16 @@ export async function applyMigrations(args: string[]): Promise<{ exitCode: numbe
     else if (cli.list) console.log('No brain configured. Run `gbrain init` to set one up.');
     else if (cli.dryRun) console.log('No brain configured (run `gbrain init` first). Nothing to migrate.');
     return { exitCode: undefined };
+  }
+
+  // #6466: an explicit --migration for a declined version refuses before the
+  // lock or any DB probe, naming the opt-out the operator set.
+  if (cli.specificMigration && declinedMigrationVersions().has(cli.specificMigration)) {
+    console.error(`Migration v${cli.specificMigration} is declined by config (shared_skills.migration.enabled=false). ` +
+      'Re-enable it with `gbrain config unset shared_skills.migration.enabled` (or set it true), then re-run `gbrain apply-migrations`.');
+    report.doc.status = 'declined';
+    report.failure = declinedMigrationError(cli.specificMigration);
+    return { exitCode: finishReport(cli, report, 2), failure: report.failure };
   }
 
   if (cli.dryRun && (cli.forceRetry || cli.forceOrchestrator || cli.forceSchema || cli.forceAll)) {
@@ -667,7 +698,7 @@ async function runLockedMigrations(
     // Don't exit — applied/partial/pending are still worth reporting and running.
   }
 
-  if (cli.specificMigration && plan.applied.length + plan.partial.length + plan.pending.length + plan.pending_fresh_install.length + plan.skippedFuture.length === 0) {
+  if (cli.specificMigration && plan.applied.length + plan.partial.length + plan.pending.length + plan.pending_fresh_install.length + plan.declined.length + plan.skippedFuture.length === 0) {
     console.error(`No migration registered with version "${cli.specificMigration}". Run \`gbrain apply-migrations --list\` to see registered versions.`);
     fail('invalid', unknownMigrationError(cli.specificMigration));
     return 2;

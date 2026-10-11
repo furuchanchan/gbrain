@@ -67,6 +67,9 @@ const FILE_PLANE_DOTTED_KEYS: ReadonlySet<string> = new Set([
   'persistence.write_wait_ms',
   // Engine graduation opt-out: the pre-connect migrate router reads it engine-free.
   'migrate.graduation',
+  // #6466: v0.53.0 host-migration decline. The apply-migrations runner,
+  // --list/doctor/get_health all read it engine-free.
+  'shared_skills.migration.enabled',
 ]);
 
 /** #5489: every self_upgrade.* reader (cli.ts startup check, autopilot,
@@ -108,11 +111,24 @@ async function unsetFilePlaneKey(key: string): Promise<boolean> {
   const { loadConfigFileOnly, saveConfig } = await import('../core/config.ts');
   const cfg = loadConfigFileOnly();
   const dot = key.indexOf('.');
-  const top = key.slice(0, dot) as 'push' | 'hooks' | 'backup' | 'mcp' | 'self_upgrade' | 'persistence' | 'migrate';
+  const top = key.slice(0, dot) as 'push' | 'hooks' | 'backup' | 'mcp' | 'self_upgrade' | 'persistence' | 'migrate' | 'shared_skills';
   const leaf = key.slice(dot + 1);
   const branch = cfg?.[top] as Record<string, unknown> | undefined;
-  if (!cfg || !branch || !(leaf in branch)) return false;
-  delete branch[leaf];
+  if (!cfg || !branch) return false;
+  if (leaf in branch) {
+    delete branch[leaf];
+    saveConfig(cfg);
+    return true;
+  }
+  // Nested leaf (e.g. shared_skills.migration.enabled → shared_skills.migration.enabled).
+  const segs = leaf.split('.');
+  let node: Record<string, unknown> | undefined = branch;
+  for (const seg of segs.slice(0, -1)) {
+    node = node?.[seg] as Record<string, unknown> | undefined;
+  }
+  const last = segs[segs.length - 1]!;
+  if (!node || !(last in node)) return false;
+  delete node[last];
   saveConfig(cfg);
   return true;
 }
@@ -551,6 +567,12 @@ async function setFilePlaneKey(key: string, value: string, tail: string[]): Prom
     saveConfig(cfg);
     console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
     if (!on) console.log('PGLite -> Postgres moves now use the legacy copier, which refuses brains with write history. Turn graduation back on: gbrain config unset migrate.graduation');
+  } else if (key === 'shared_skills.migration.enabled') {
+    const on = isConfigTruthy(value);
+    cfg.shared_skills = { ...(cfg.shared_skills ?? {}), migration: { ...(cfg.shared_skills?.migration ?? {}), enabled: on } };
+    saveConfig(cfg);
+    console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
+    if (!on) console.log('Host migration v0.53.0 (shared skills) is now declined: apply-migrations reports it `declined` and never runs it. Re-enable: gbrain config unset shared_skills.migration.enabled');
   } else if (key === 'backup.check_interval_days') {
     const n = Number.parseInt(value, 10);
     if (!Number.isFinite(n) || n < 1) {

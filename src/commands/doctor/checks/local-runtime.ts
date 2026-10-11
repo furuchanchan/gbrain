@@ -8,7 +8,7 @@
  */
 
 import { loadCompletedMigrations } from '../../../core/preferences.ts';
-import { indexCompletedEntries, isFreshInstallStamp, migrationLedgerSummary, trailingPartialCount } from '../../../core/migration-ledger.ts';
+import { indexCompletedEntries, isFreshInstallStamp, migrationLedgerSummary, declinedMigrationVersions, MIGRATION_VERSIONS, trailingPartialCount } from '../../../core/migration-ledger.ts';
 import { VERSION } from '../../../version.ts';
 import { pendingFreshInstallCheck } from './pending-fresh-install.ts';
 import { compareVersions } from '../../migrations/index.ts';
@@ -146,8 +146,12 @@ async function runMinionsMigration(ctx: DoctorContext): Promise<Check[]> {
     // version pending again, as statusForVersion and get_health read it: it
     // is reported below as not run yet, never as still wedged.
     const history = indexCompletedEntries(completed);
+    // #6466: a declined version (config opt-out) is reported as `declined`,
+    // never as stuck/wedged/pending — ledger rows it left behind are moot.
+    const declined = declinedMigrationVersions();
     const stuck = Array.from(byVersion.entries())
       .filter(([v, s]) => {
+        if (declined.has(v)) return false;
         if (!s.partial || s.complete) return false;
         if (history.get(v)?.at(-1)?.status === 'retry') return false;
         // Forward-progress override: if any version >= v has completed, the
@@ -177,7 +181,8 @@ async function runMinionsMigration(ctx: DoctorContext): Promise<Check[]> {
     // run are the next apply-migrations' ordinary work and stay quiet here.
     const newestRun = completedVersions.reduce<string | null>((a, v) => (a === null || compareVersions(v, a) > 0 ? v : a), null);
     const pending = completed.length === 0 ? [] : migrationLedgerSummary(VERSION).pending.filter(v =>
-      (newestRun !== null && compareVersions(v, newestRun) < 0) || history.get(v)?.at(-1)?.status === 'retry');
+      !declined.has(v) && ((newestRun !== null && compareVersions(v, newestRun) < 0) || history.get(v)?.at(-1)?.status === 'retry'));
+    const declinedList = [...declined].filter(v => MIGRATION_VERSIONS.includes(v));
 
     if (wedged.length > 0) {
       // The wedged set is a STRICT subset of the stuck set, so a wedged
@@ -202,6 +207,13 @@ async function runMinionsMigration(ctx: DoctorContext): Promise<Check[]> {
         status: 'warn',
         message: `${pending.length} host migration(s) not run yet: ${pending.join(', ')}. Run: gbrain apply-migrations --yes`,
         details: { pending },
+      });
+    } else if (declinedList.length > 0) {
+      checks.push({
+        name: 'minions_migration',
+        status: 'ok',
+        message: `${declinedList.length} host migration(s) declined by config: ${declinedList.join(', ')} (shared_skills.migration.enabled=false).`,
+        details: { declined: declinedList },
       });
     } else {
       const setup = pendingFreshInstallCheck();
