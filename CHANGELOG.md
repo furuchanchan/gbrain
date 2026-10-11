@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.174.0] - 2026-10-12
+
+**A database-only brain can enter managed mode without a checkout per source.**
+
+On a brain with `sync.write_through=false`, `gbrain sources writer activate` refused with `writer_registration_required` for every rooted source that had no worktree binding — so a database-only brain could not enter managed mode without inventing a checkout. Unbound rooted sources now activate as database-only (no canonical owner required, `binding: 'none'` in `writer status` onboarding rows), while the fail-closed activation checks still apply to every source that does have a root checkout in use and to all sources when write-through is on. (#6449)
+
+### Itemized changes
+
+- `validatedBindings` in `src/core/persistence/activation.ts` reads `sync.write_through` once and skips unbound rooted sources when it is off — the same `database_only` classification `writerOnboardingPreflight` already reported.
+- `writerOnboardingPreflight` rows in `src/core/persistence/onboarding.ts` gain a `binding` field (`'none'` when the source has no worktree binding, `'bound'` otherwise) so `writer status` reports the unbound state explicitly.
+
 ## [0.60.165.0] - 2026-10-11
 
 **Managed sync stops instead of hanging, a database publish that never finishes is cancelled and retried, and managed brains write meeting timelines and extracted entities through the coordinator.**

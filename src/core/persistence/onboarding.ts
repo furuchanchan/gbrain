@@ -47,7 +47,10 @@ export async function writerOnboardingPreflight(engine: BrainEngine, sourceId?: 
     const root = binding?.local_path ?? (connector ? null : configured);
     const paths = root ? containerPathPreflight({ canonical_root: root, reservation_parent: dirname(root), persistence_home: persistenceHome(),
       coordination_directory: binding?.coordination_path ? dirname(binding.coordination_path) : join(persistenceHome(), 'locks') }) : undefined;
-    sources.push({ source_id: row.id, state, write_through: writeThrough, ...(physicalError ? { physical_error: physicalError } : {}), ...(paths ? { storage: paths } : {}) });
+    // #6449: `binding: 'none'` makes an unbound source's database-only or
+    // claim-required state self-describing in `writer status` — the same
+    // surface activation reads before requiring a canonical owner.
+    sources.push({ source_id: row.id, state, binding: binding ? 'bound' : 'none', write_through: writeThrough, ...(physicalError ? { physical_error: physicalError } : {}), ...(paths ? { storage: paths } : {}) });
   }
   return { sources, legacy_locks: await inspectLegacyWriterLocks(engine), unsupported_maintenance: [...UNSUPPORTED_MANAGED_BULK_WRITERS],
     procedure: 'For deliberate onboarding, stop and upgrade older writers on every host, review all sources and durable paths, explicitly claim each filesystem source using its fresh admin_state, inspect status again, then explicitly activate with --confirm-quiesced and a fresh admin_state. A claim alone fences legacy sync; finish activation before ordinary writes or sync. This inspection never claims, activates, repairs or switches to database-only storage.' };

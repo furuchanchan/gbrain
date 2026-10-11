@@ -69,10 +69,16 @@ function sourcePathMissing(source: SourceRoot, claimedRoot: string | null): Oper
 }
 async function validatedBindings(engine: BrainEngine, sources: SourceRoot[], hostId: string | null, lock = false): Promise<WorktreeBinding[]> {
   const bindings: WorktreeBinding[] = [];
+  // #6449: on a database-only brain (sync.write_through off) a rooted source
+  // with no worktree binding activates as database-only — onboarding reports
+  // it `database_only` / `binding: none` and no canonical owner is required.
+  // With write-through on the same source still needs a claim, so the
+  // writer_registration_required refusal stays fail-closed.
+  const writeThrough = !/^(false|0|off|no)$/i.test(await engine.getConfig('sync.write_through') ?? 'true');
   for (const source of sources) {
     let binding = await getWorktreeBinding(engine, source.id, hostId);
-    if ((!source.root || source.connector) && !binding) continue;
-    if (!binding && !source.connector && !existsSync(resolve(source.root!))) throw sourcePathMissing(source, null);
+    if (!binding && (source.connector || !source.root || !writeThrough)) continue;
+    if (!binding && !existsSync(resolve(source.root!))) throw sourcePathMissing(source, null);
     if (binding && lock) {
       await engine.executeRaw('SELECT id FROM persistence_worktrees WHERE id=$1::uuid FOR SHARE', [binding.worktree_id]);
       binding = await getWorktreeBinding(engine, source.id, hostId);
