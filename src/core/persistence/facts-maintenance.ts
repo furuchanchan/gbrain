@@ -35,6 +35,8 @@ import type { TaintInput, WriteTrust } from '../trust/tier.ts';
 
 export interface ManagedFactsResult {
   inserted: number; duplicate: number; superseded: number; fact_ids: number[]; entity_slugs: string[]; write_requests: WriteReceipt[];
+  /** Candidates skipped because the claim was explicitly withdrawn in this source+visibility. */
+  skipped_withdrawn?: number;
 }
 export interface ManagedFactOrigin { slug: string; pageId: number; revision: string; }
 export type FrozenExtractedFact = Omit<NewFact, 'embedding' | 'valid_from' | 'valid_until' | 'expired_at'> & {
@@ -283,6 +285,7 @@ async function collectManagedFacts(engine: BrainEngine, session: ManagedFactsSes
       result.superseded += Number(out.superseded ?? 0);
       result.fact_ids.push(...(out.fact_ids as number[] ?? []));
       if (out.inserted && out.fenced) result.entity_slugs.push(row.slug);
+      if (out.skipped_withdrawn) result.skipped_withdrawn = (result.skipped_withdrawn ?? 0) + Number(out.skipped_withdrawn);
     }
   }
   return result;

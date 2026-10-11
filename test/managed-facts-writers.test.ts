@@ -31,6 +31,7 @@ import { submitPageMutation } from '../src/core/persistence/page-mutations.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
 import { configureGateway, resetGateway, __setChatTransportForTests, __setEmbedTransportForTests, type ChatResult } from '../src/core/ai/gateway.ts';
 import { runExtractFacts } from '../src/core/cycle/extract-facts.ts';
+import { runFactsPipeline } from '../src/core/facts/backstop.ts';
 import { runExtractConversationFactsCore, runExtractConversationFacts } from '../src/commands/extract-conversation-facts.ts';
 import { runPhaseConversationFactsBackfill } from '../src/core/cycle/conversation-facts-backfill.ts';
 import { writeFactsToFence } from '../src/core/facts/fence-write.ts';
@@ -550,5 +551,25 @@ test('managed conversation_facts_backfill phase extracts instead of refusing', a
     expect(phase.status).toBe('ok');
     expect((phase.details.per_source as Record<string, { facts_inserted: number }>)[sourceId].facts_inserted).toBe(1);
     expect((await facts(engine, sourceId, 'conversations/synthetic-chat')).map(f => f.fact)).toEqual(['Alice Example joined Acme Corp.', 'EXTRACTION_COMPLETE']);
+  });
+}, 120_000);
+
+// #6506: a withdrawn claim in a managed entity group must not poison the group —
+// it is skipped and reported, its siblings still publish.
+test('managed facts publication skips a withdrawn candidate but publishes its siblings', async () => {
+  await managed(async ({ put }) => { await put('people/alice-example', PERSON('Alice Example')); }, async ({ engine, sourceId, root }) => {
+    await engine.executeRaw(`INSERT INTO fact_withdrawals(source_id,visibility,fact_hash) VALUES($1,'world',gbrain_fact_fingerprint($2))`,
+      [sourceId, 'Alice Example founded Acme.']);
+    chatReply = JSON.stringify({ facts: [
+      { fact: 'Alice Example founded Acme.', kind: 'fact', entity: 'people/alice-example', confidence: 1, notability: 'high' },
+      { fact: 'Alice Example lives in Lisbon.', kind: 'fact', entity: 'people/alice-example', confidence: 1, notability: 'high' },
+    ] });
+    const result = await runFactsPipeline('synthetic turn', { engine, sourceId, sessionId: 's-6506', source: 'mcp:extract_facts', mode: 'inline', remote: false, visibility: 'world' });
+    expect(result.inserted).toBe(1);
+    expect(result.skipped_withdrawn).toBe(1);
+    expect((await facts(engine, sourceId, 'people/alice-example')).map(f => f.fact)).toEqual(['Alice Example lives in Lisbon.']);
+    const file = readFileSync(join(root, 'people/alice-example.md'), 'utf8');
+    expect(file).toContain('Alice Example lives in Lisbon.');
+    expect(file).not.toContain('Alice Example founded Acme.');
   });
 }, 120_000);

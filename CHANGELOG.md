@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.184.0] - 2026-10-12
+
+**A withdrawn claim no longer poisons its managed facts entity group.** When one extracted candidate in a managed entity group had been explicitly forgotten, the durable preparation guard refused the whole group — an unrelated valid fact extracted in the same turn was never published. The withdrawn claim now skips only itself (matching the unmanaged path), its sibling candidates publish normally, and the skip is reported as `skipped_withdrawn` on the request outcome and the managed facts result. Purged claims still refuse the group with `purged_content`.
+
 ## [0.60.175.0] - 2026-10-11
 
 **CI test shards are balanced again, and the nightly run stops failing its shard-timing check.** CI splits each test lane across several machines using the recorded run time of every test file. A test file with no recorded time is packed blind, and 11.1% of E2E files had none, past the 10% bound the nightly enforces. This release re-measures every lane from green master runs. No product behaviour changes.

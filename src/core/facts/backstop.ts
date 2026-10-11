@@ -164,6 +164,8 @@ export type FactsBackstopResult =
       superseded: number;
       fact_ids: number[];
       write_requests?: WriteReceipt[];
+      /** Candidates skipped because the claim was explicitly withdrawn in this source+visibility. */
+      skipped_withdrawn?: number;
       skipped?: 'extraction_disabled' | 'extraction_unavailable' | `eligibility_failed:${string}`;
       /** Set when the LLM extraction step failed non-transport-fatally (see runPipelineWithBody). */
       skipped_reason?: import('./extract.ts').ExtractFailureReason;
@@ -534,6 +536,8 @@ export async function runFactsPipeline(
   write_gate?: GateTally;
   /** Entity groups held because the page's facts fence does not parse cleanly (nothing written). */
   fence_refused?: number;
+  /** Candidates skipped because the claim was explicitly withdrawn in this source+visibility. */
+  skipped_withdrawn?: number;
 }> {
   return runPipelineWithBody({
     turnText,

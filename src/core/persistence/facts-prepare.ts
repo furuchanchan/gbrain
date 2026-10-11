@@ -8,6 +8,7 @@ import type { RegistryCode } from '../error-registry.ts';
 import { parseFactsFence, upsertFactRow, formatFenceDate, renderFactsTable, replaceOrInsertFactsFence } from '../facts-fence.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
 import { assertFactNotWithdrawn, decideSingleFact, type FactCandidate } from '../facts/single-prepare.ts';
+import { assertFactNotPurged, isFactWithdrawn } from '../facts/withdrawal.ts';
 import { extractFactsFromFenceText } from '../facts/extract-from-fence.ts';
 import { authorizeWrite } from './authority.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
@@ -152,8 +153,16 @@ export async function prepareManagedFactsMutation(engine: BrainEngine, row: Writ
   const taint = await managedFactsTrust(engine, p);
   const gateCfg = taint ? await derivedGateConfig(engine) : null;
   const blocked: GatedRowDecision[] = [];
+  // #6506: a purged claim still refuses the whole group, but a withdrawn
+  // claim skips only itself — the unmanaged path already continues past
+  // it, and an unrelated candidate in the same group must still publish.
+  let withdrawnSkipped = 0;
   for (const fact of facts) {
-    await assertFactNotWithdrawn(engine, row.source_id, fact);
+    await assertFactNotPurged(engine, row.source_id, fact);
+    if (await isFactWithdrawn(engine, row.source_id, fact.visibility, fact.fact, fact.entity_slug)) {
+      withdrawnSkipped++;
+      continue;
+    }
     const key = JSON.stringify([fact.fact, fact.visibility, fact.entity_slug]);
     const earlier = (seen.get(key) ?? []).find(i => attributionCompatible(entries[i].fact.attributed_to, fact.attributed_to));
     if (earlier !== undefined) { entries.push({ fact, duplicateId: null, duplicateOf: earlier }); continue; }
@@ -237,7 +246,7 @@ export async function prepareManagedFactsMutation(engine: BrainEngine, row: Writ
       }
       const write_gate = emptyGateTally();
       for (const gate of blocked) await applyGateDecision(tx, gate, { table: 'facts', sourceId: row.source_id }, async () => null, write_gate);
-      return { status: 'completed', inserted, duplicate: entries.length - inserted, superseded, fact_ids: ids, ...(blocked.length ? { write_gate } : {}),
+      return { status: 'completed', inserted, duplicate: entries.length - inserted, superseded, fact_ids: ids, ...(blocked.length ? { write_gate } : {}), ...(withdrawnSkipped ? { skipped_withdrawn: withdrawnSkipped } : {}),
         fenced: page !== undefined, kind: p.kind, batch_key: p.batchKey, input_digest: p.inputDigest,
         ...(page && target?.fixes.length ? { fences_normalized: pageFencesNormalized({ sourceId: row.source_id, slug: row.slug, fixes: target.fixes,
           writer: row.principal_kind, path: snapshot?.page.source_path ?? null, remote: row.authority.remote }) } : {}) };
