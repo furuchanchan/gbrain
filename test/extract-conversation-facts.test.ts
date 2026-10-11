@@ -11,7 +11,7 @@
  *   - Per-test state reset via TRUNCATE inside beforeEach (canonical pattern)
  */
 
-import { describe, expect, test, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, expect, test, beforeAll, afterAll, beforeEach, spyOn } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2133,5 +2133,42 @@ describe('#4136 folded speaker headings — decline gate is non-terminal', () =>
     expect(result.pages_skipped_unrecognized_speaker).toBe(0);
     expect(result.pages_processed).toBe(1);
     expect(result.segments_processed).toBeGreaterThanOrEqual(1);
+  });
+
+  test('a batch that would name a page twice never leaves the walk — enumeration is keyset + dedup, not OFFSET (#6500)', async () => {
+    // 12 eligible pages in an isolated source — more than PAGE_LIST_BATCH
+    // (10), so the walk needs two queries. Identical updated_at recreates
+    // the bulk-import tie cluster the bug needed.
+    await engine.executeRaw(`INSERT INTO sources (id, name) VALUES ('b6500', 'b6500')`);
+    for (let i = 0; i < 12; i++) {
+      await engine.putPage(`conversations/bulk-${String(i).padStart(2, '0')}`, {
+        type: 'conversation', title: `Bulk ${i}`, compiled_truth: SAMPLE_BODY, timeline: '', frontmatter: {},
+      }, { sourceId: 'b6500' });
+    }
+    await engine.executeRaw(`UPDATE pages SET updated_at = '2026-01-01T00:00:00Z' WHERE slug LIKE 'conversations/bulk-%'`);
+
+    // Inject the failure mode deterministically: the second enumeration
+    // query returns the first batch's first row again — under OFFSET +
+    // updated_desc this is exactly what a mid-run updated_at bump does.
+    const original = engine.listPages.bind(engine);
+    let calls = 0;
+    let firstFirst: unknown;
+    const spy = spyOn(engine, 'listPages').mockImplementation(async (filters?: Parameters<typeof original>[0]) => {
+      const batch = await original(filters);
+      calls++;
+      if (calls === 2 && batch.length > 0 && firstFirst) return [firstFirst, ...batch] as typeof batch;
+      if (calls === 1) firstFirst = batch[0];
+      return batch;
+    });
+    try {
+      const result = await runExtractConversationFactsCore(engine, { sourceId: 'b6500', sleepMs: 0 });
+      // Every eligible page is considered exactly once: the duplicate the
+      // second query returned must not reach the claim/enqueue path — under
+      // OFFSET paging it did, enqueuing the page into a batch twice and
+      // poisoning it invalid_params.
+      expect(result.pages_considered).toBe(12);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

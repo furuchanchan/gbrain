@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.183.0] - 2026-10-12
+
+- `gbrain extract-conversation-facts` can no longer enqueue the same page twice during its multi-type walk (#6500). The walk used OFFSET paging over `updated_desc`, which is not a total order: a tie cluster larger than one batch (bulk-imported pages sharing one timestamp) plus the run's own `updated_at` bumps could return a page in two different batches. The duplicate entered a submission batch a second time, `validateIntent` refused the whole batch `invalid_params`, and every page in it stayed blocked with no external way to clear them. Enumeration now uses `sort: 'updated_asc'` with `updatedAfterKeyset` — a documented total order — plus an in-run `seen` set that drops a page a second query serves again.
+
 ## [0.60.172.0] - 2026-10-11
 
 **Two decide timing tests stop failing on slow runners.** Each one measured wall-clock time that included work outside the budget under test. Both budgets are unchanged.

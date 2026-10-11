@@ -102,6 +102,7 @@ import { assertFactsEmbeddingDimMatchesConfig } from '../core/embedding-dim-chec
 import { writeReceipt, shortRunId } from '../core/extract/receipt-writer.ts';
 import { upsertExtractRollup, classifyRunStop } from '../core/extract/rollup-writer.ts';
 import { ALLOWED_TYPES, ALLOWED_TYPE_ALIASES, isConversationFactsEligiblePage, pageTypesForAllowed, requireParseableConversationFlag, type AllowedType } from '../core/facts/conversation-types.ts';
+import { PAGE_LIST_BATCH, nextClaimableBatch } from './extract-conversation-facts/enumerate.ts';
 import { TERMINAL_AUDIT_SOURCE, NON_EXTRACTABLE_AUDIT_SOURCE, stampExtractorVersion } from '../core/facts/audit-sources.ts';
 import { resolveDefaultVisibility, type FactVisibility } from '../core/facts/visibility.ts';
 import {
@@ -198,7 +199,7 @@ export const DEFAULT_MAX_COST_USD = 5.0;
  * worst case = BATCH × MAX_PAGE_BODY_BYTES = 250MB at default 10
  * (Eng-v2 C8 — bounded vs PR's unbounded listPages limit:500 = 12.5GB).
  */
-export const PAGE_LIST_BATCH = 10;
+export { PAGE_LIST_BATCH } from './extract-conversation-facts/enumerate.ts';
 
 /** Op name for the checkpoint primitive. */
 export const CHECKPOINT_OP = 'extract-conversation-facts';
@@ -1533,22 +1534,19 @@ export async function runExtractConversationFactsCore(
       // BudgetExhausted abort (D13) automatically.
       let processedPagesCount = 0;
       pageLoop: for (const type of concreteTypes) {
-        let offset = 0;
+        // #6500: keyset + dedup enumeration lives in enumerate.ts
+        let keyset: { updatedAt: string; slug: string } | undefined;
+        const seen = new Set<string>();
         // eslint-disable-next-line no-constant-condition
         while (true) {
           if (signal?.aborted) throw new Error('aborted');
           if (opts.limit && processedPagesCount >= opts.limit) break pageLoop;
 
-          const batch = await engine.listPages({
-            type,
-            sourceId,
-            limit: PAGE_LIST_BATCH,
-            offset,
-          });
-          if (batch.length === 0) break;
-
-          let claimable = batch.filter(page => isConversationFactsEligiblePage(page, concreteTypes, strictEligibility));
-          result.pages_skipped += batch.length - claimable.length;
+          const sel = await nextClaimableBatch(engine, { type, sourceId, keyset, seen, concreteTypes, strictEligibility });
+          if (sel.batchLen === 0) break;
+          keyset = sel.nextKeyset;
+          result.pages_skipped += sel.skipped;
+          let claimable = sel.claimable;
           // Checkpoints are an intra-page cursor; fresh durable outcomes are
           // the page-level selection authority and survive checkpoint GC.
           if (!opts.force && claimable.length > 0) {
@@ -1595,8 +1593,7 @@ export async function runExtractConversationFactsCore(
           for (const failure of poolResult.failures) recordPageFailure(result, sourceId, failure.label, failure.error);
 
           processedPagesCount += claimable.length;
-          offset += batch.length;
-          if (batch.length < PAGE_LIST_BATCH) break;
+          if (sel.batchLen < PAGE_LIST_BATCH) break;
 
           // Persist checkpoint between batches so a crash mid-walk
           // doesn't lose all progress.
