@@ -10,6 +10,31 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.180.0] - 2026-10-11
+
+**Safety refusals stop reporting as clean finishes.** Two paths folded a
+provider refusal into `end_turn`/`end`, so a refused turn looked identical to
+a model that chose to stop — the honesty bug class #2778 fixed for
+`max_tokens`. Haiku 5.5 makes refusals more likely (adaptive thinking plus
+safety classifiers can return `stop_reason: "refusal"`).
+
+### Itemized changes
+
+- `src/core/minions/handlers/subagent.ts`: the direct Anthropic loop's
+  no-tool-call branch read `stop_reason` through the pinned SDK union, which
+  predates `refusal`; new `wireStopToSubagentReason` maps the wire value —
+  `refusal` now surfaces as `refusal` (already in `SubagentStopReason` and
+  produced by the gateway path), `max_tokens` keeps the #2778 truncation
+  signal, everything else stays `end_turn`.
+- `src/core/think/index.ts`: the gateway adapter's `mapStopReason` claimed
+  `refusal`/`content_filter` had "no Anthropic equivalent" and mapped them to
+  `end_turn`; Anthropic reports `refusal` now, so both map to `refusal` in the
+  synthesized message (`other` still maps to `end_turn`).
+- `test/subagent-handler.test.ts`, `test/think-gateway-adapter.test.ts`: a
+  scripted `refusal` turn on the direct loop asserts `stop_reason: 'refusal'`
+  (fails on base), and the adapter expectations are re-pinned to the new
+  mapping.
+
 ## [0.60.172.0] - 2026-10-11
 
 **Two decide timing tests stop failing on slow runners.** Each one measured wall-clock time that included work outside the budget under test. Both budgets are unchanged.

@@ -164,6 +164,22 @@ describe('subagent handler happy path', () => {
     expect(parseInt(msgs[0]!.count, 10)).toBe(2); // user seed + assistant
   });
 
+  // #6448: Anthropic returns stop_reason='refusal' (and Haiku 5.5 makes it
+  // more likely); folding it into 'end_turn' reports a safety refusal as a
+  // clean finish. The pinned SDK union predates 'refusal', hence `as any`.
+  test('a refusal stop surfaces as refusal, not a clean end_turn', async () => {
+    const client = new FakeMessagesClient([
+      { content: [{ type: 'text', text: 'I cannot help with that.' }] as any, stop_reason: 'refusal' as any },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [] });
+    const ctx = await makeCtx({ prompt: 'hi' });
+
+    const result = await handler(ctx);
+
+    expect(result.stop_reason).toBe('refusal');
+    expect(result.result).toBe('I cannot help with that.');
+  });
+
   test('single tool_use turn: tool executes, two-phase row goes complete', async () => {
     const tool = makeEchoTool();
     const client = new FakeMessagesClient([

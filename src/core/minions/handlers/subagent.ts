@@ -252,6 +252,13 @@ function replayTerminalStopReason(
   return tokensOut != null && tokensOut >= maxOutputTokens ? 'max_tokens' : 'end_turn';
 }
 
+// #6448: 'refusal' is its own stop — folding it into end_turn reports a
+// safety refusal as a clean finish. The pinned SDK union predates
+// 'refusal', so callers pass the wire value as a plain string.
+function wireStopToSubagentReason(wireStop: string | null): SubagentStopReason {
+  return wireStop === 'max_tokens' ? 'max_tokens' : wireStop === 'refusal' ? 'refusal' : 'end_turn';
+}
+
 export function makeSubagentHandler(deps: SubagentDeps) {
   const engine = deps.engine;
   // sdk.messages IS the MessagesClient-shaped object. The v0.16.0 bug was
@@ -979,7 +986,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
         // #2778: an output-cap hit is NOT end_turn — the text (and possibly a
         // dropped trailing tool_use block) is truncated. Surface it as its own
         // stop_reason instead of silently reporting a clean end_turn.
-        stopReason = assistantMsg.stop_reason === 'max_tokens' ? 'max_tokens' : 'end_turn';
+        stopReason = wireStopToSubagentReason(assistantMsg.stop_reason);
         // Concatenate text blocks as the final answer.
         finalText = blocks
           .filter(b => b.type === 'text' && typeof b.text === 'string')

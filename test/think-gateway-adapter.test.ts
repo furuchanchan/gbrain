@@ -46,9 +46,11 @@ describe('think gateway adapter — response shape conversion', () => {
     expect(__thinkAdapter.mapStopReason('end')).toBe('end_turn');
     expect(__thinkAdapter.mapStopReason('length')).toBe('max_tokens');
     expect(__thinkAdapter.mapStopReason('tool_calls')).toBe('tool_use');
-    // 'refusal', 'content_filter', 'other' → end_turn (no Anthropic equivalent).
-    expect(__thinkAdapter.mapStopReason('refusal')).toBe('end_turn');
-    expect(__thinkAdapter.mapStopReason('content_filter')).toBe('end_turn');
+    // #6448: 'refusal' is a real Anthropic stop_reason — folding it into
+    // end_turn reports a safety refusal as a clean finish; 'other' has no
+    // Anthropic equivalent.
+    expect(__thinkAdapter.mapStopReason('refusal')).toBe('refusal');
+    expect(__thinkAdapter.mapStopReason('content_filter')).toBe('refusal');
     expect(__thinkAdapter.mapStopReason('other')).toBe('end_turn');
   });
 });

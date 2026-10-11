@@ -1288,7 +1288,7 @@ function chatResultToMessage(result: ChatResult, modelStr: string): {
   model: string;
   content: Array<{ type: 'text'; text: string }>;
   usage: { input_tokens: number; output_tokens: number };
-  stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence';
+  stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence' | 'refusal';
 } {
   return {
     id: '',
@@ -1304,12 +1304,17 @@ function chatResultToMessage(result: ChatResult, modelStr: string): {
   };
 }
 
-function mapStopReason(s: ChatResult['stopReason']): 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence' {
+function mapStopReason(s: ChatResult['stopReason']): 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence' | 'refusal' {
   switch (s) {
     case 'end': return 'end_turn';
     case 'length': return 'max_tokens';
     case 'tool_calls': return 'tool_use';
-    // 'refusal', 'content_filter', 'other' → end_turn (no Anthropic equivalent)
+    // #6448: 'refusal' IS an Anthropic stop_reason now — folding it (and the
+    // provider-neutral 'content_filter') into end_turn reports a safety
+    // refusal as a clean finish.
+    case 'refusal': return 'refusal';
+    case 'content_filter': return 'refusal';
+    // 'other' → end_turn (no Anthropic equivalent)
     default: return 'end_turn';
   }
 }
