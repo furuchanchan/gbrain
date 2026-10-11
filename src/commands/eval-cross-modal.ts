@@ -32,6 +32,10 @@ import {
   estimateCost,
   runEval,
 } from '../core/cross-modal-eval/runner.ts';
+import {
+  evalFamilyChatModel,
+  resolveEvalSlots,
+} from '../core/cross-modal-eval/slot-resolution.ts';
 import type {
   ProgressEvent,
   RunEvalResult,
@@ -79,9 +83,9 @@ FLAGS:
                            dimensions (goal, depth, sourcing, specificity, useful).
   --cycles N               1-3. Default: 3 in TTY, 1 in non-TTY (T11). Each
                            cycle is 3 model calls; verdict aggregates over them.
-  --slot-a-model <id>      Override default 'openai:gpt-5.2'.
-  --slot-b-model <id>      Override default 'anthropic:claude-opus-4-7'.
-  --slot-c-model <id>      Override default 'deepseek:deepseek-v4-pro'.
+  --slot-a-model <id>      Override the resolved slot-A model (<provider>:<model>).
+  --slot-b-model <id>      Override the resolved slot-B model (<provider>:<model>).
+  --slot-c-model <id>      Override the resolved slot-C model (<provider>:<model>).
   --receipt-dir <path>     Default: gbrainPath('eval-receipts').
   --max-tokens N           Output token budget per call. Default: 4000.
   --json                   Emit final aggregate as JSON to stdout (progress to stderr).
@@ -94,12 +98,13 @@ EXIT CODES:
      is still written for forensics; the gate is not authoritative.
 
 CONFIGURATION:
-  Models resolve via the gbrain AI gateway. Configure with:
+  Slot defaults resolve at run time: the strongest configured, healthy
+  chat model from each of three distinct provider families (provider
+  recipes + configured keys). Explicit --slot-*-model flags always win.
+  Fewer than three ready families fails closed naming what is missing.
+  Configure providers with:
     gbrain providers test            # see what's configured
     gbrain config                    # set keys
-  Or set env vars: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY,
-  TOGETHER_API_KEY, etc. The gateway reads from \`~/.gbrain/config.json\` plus
-  process.env.
 
 EXAMPLES:
   gbrain eval cross-modal \\
@@ -287,6 +292,21 @@ function configureGatewayForCli(): boolean {
   return true;
 }
 
+/** #6486: family is judge-servable when the configured gateway serves its resolved chat model. */
+function evalSlotReady(provider: string): boolean {
+  const model = evalFamilyChatModel(provider);
+  return model !== null && isAvailable('chat', model);
+}
+
+function missingFamiliesMessage(ready: readonly string[], needed: number): string {
+  return (
+    `Error: cross-modal eval needs ${needed} distinct provider families; ` +
+    `${ready.length} ready here (${ready.join(', ') || 'none'}). ` +
+    'Configure another provider (`gbrain providers test` lists usable keys, `gbrain config` sets them) ' +
+    'or pass --slot-*-model overrides.\n'
+  );
+}
+
 /**
  * #4636: the default slots are three DISTINCT frontier providers, which a
  * single-provider install can never serve — the 3-slot panel misses its
@@ -396,12 +416,6 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
   const receiptDir = parsed.receiptDir ?? gbrainPath('eval-receipts');
   const maxTokens = parsed.maxTokens ?? 4000;
 
-  let slots: SlotConfig[] = [
-    { id: 'A', model: parsed.slotAModel ?? DEFAULT_SLOTS[0]!.model },
-    { id: 'B', model: parsed.slotBModel ?? DEFAULT_SLOTS[1]!.model },
-    { id: 'C', model: parsed.slotCModel ?? DEFAULT_SLOTS[2]!.model },
-  ];
-
   // Configure the AI gateway. Without this, every chat() call throws
   // "AI gateway is not configured" because the cli.ts no-DB branch skips
   // connectEngine (T3=A).
@@ -416,11 +430,20 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
     );
     return 1;
   }
-  // #4636: swap unusable frontier defaults for the configured chat model
-  // (before the cost estimate so the banner prices what actually runs).
-  slots = substituteUnavailableDefaultSlots(slots, {
-    A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel,
-  });
+
+  // #6486: resolve the judge slots at run time from the provider
+  // recipes + the keys the configured gateway can actually serve —
+  // explicit --slot-*-model flags always win. Static DEFAULT_SLOTS stay
+  // only as runner.ts's floor for callers that pass no slots at all.
+  const singleResolution = resolveEvalSlots(
+    { A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel },
+    { ready: evalSlotReady },
+  );
+  if (!singleResolution.ok) {
+    process.stderr.write(missingFamiliesMessage(singleResolution.ready, singleResolution.needed));
+    return 1;
+  }
+  const slots = singleResolution.slots;
 
   // Cost estimate (T11=B).
   const cost = estimateCost(slots, cycles, maxTokens);
@@ -738,6 +761,8 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
   const maxTokens = parsed.maxTokens ?? 4000;
   const maxUsd = parsed.maxUsd ?? 5.0;
 
+  // #6486: hermetic runEval injection keeps the static DEFAULT_SLOTS
+  // floor; the real path re-resolves inside the gateway guard below.
   let slots: SlotConfig[] = [
     { id: 'A', model: parsed.slotAModel ?? DEFAULT_SLOTS[0]!.model },
     { id: 'B', model: parsed.slotBModel ?? DEFAULT_SLOTS[1]!.model },
@@ -793,10 +818,17 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
       );
       return 1;
     }
-    // #4636: swap unusable frontier defaults for the configured chat model.
-    slots = substituteUnavailableDefaultSlots(slots, {
-      A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel,
-    });
+    // #6486: same run-time slot resolution as the single-run path,
+    // inside the gateway guard so injected-runEval tests stay hermetic.
+    const batchResolution = resolveEvalSlots(
+      { A: parsed.slotAModel, B: parsed.slotBModel, C: parsed.slotCModel },
+      { ready: evalSlotReady },
+    );
+    if (!batchResolution.ok) {
+      process.stderr.write(missingFamiliesMessage(batchResolution.ready, batchResolution.needed));
+      return 1;
+    }
+    slots = batchResolution.slots;
   }
 
   // Pre-flight cost estimate. Refuse if over --max-usd without --yes.

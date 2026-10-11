@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.177.0] - 2026-10-11
+
+**`gbrain eval cross-modal` resolves judge slots at run time.** Instead of three hard-coded default models, the eval now picks the strongest configured, healthy chat model from three distinct provider families. Explicit `--slot-*-model` flags still win. With fewer than three ready families the run fails closed naming what is missing; the skillify skill no longer carries provider env-key setup.
+
 ## [0.60.169.0] - 2026-10-11
 
 **`recall` can rank saved facts by a question.** Pass `question` and recall returns the facts most relevant to it, each with a `relevance` score, instead of the newest ones. Facts below the match threshold are left out, so an empty list means nothing saved matches.

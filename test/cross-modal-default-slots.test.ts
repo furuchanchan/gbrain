@@ -171,7 +171,7 @@ describe('cross-modal batch on a caller-configured gateway (#5872)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('useConfiguredGateway: unusable defaults take the brain chat model, and the gateway keeps it', async () => {
+  test('useConfiguredGateway: fewer than three ready families fails closed before any judge runs (#6486)', async () => {
     const judged: SlotConfig[][] = [];
     const exit = await runEvalCrossModal(['--batch', batchPath, '--output', summaryPath, '--yes'], {
       useConfiguredGateway: true,
@@ -184,11 +184,10 @@ describe('cross-modal batch on a caller-configured gateway (#5872)', () => {
         };
       },
     });
-    const panel = [BRAIN_CHAT_MODEL, 'anthropic:claude-opus-4-7', BRAIN_CHAT_MODEL];
-    expect(exit).toBe(0);
-    expect(judged.map(slots => slots.map(s => s.model))).toEqual([panel]);
-    const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
-    expect(summary.slots.map((s: SlotConfig) => s.model)).toEqual(panel);
+    // Only ANTHROPIC_API_KEY is set — one ready family, so #6486 fails
+    // closed instead of substituting the brain chat model per slot.
+    expect(exit).toBe(1);
+    expect(judged).toEqual([]);
     expect(getChatModel()).toBe(BRAIN_CHAT_MODEL);
   });
 
@@ -207,7 +206,11 @@ describe('cross-modal batch on a caller-configured gateway (#5872)', () => {
     __setChatTransportForTests(async () => { throw new Error('stub judge unavailable'); });
     await runEvalCrossModal(['--batch', batchPath, '--output', summaryPath, '--yes']);
     const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
-    expect(summary.slots.map((s: SlotConfig) => s.model)).toEqual(DEFAULT_SLOTS.map(s => s.model));
+    // #6486: the transport stub makes every family servable, so the
+    // resolved panel is the top of the family preference order — three
+    // distinct providers — not the static DEFAULT_SLOTS.
+    const providers = summary.slots.map((s: SlotConfig) => s.model.split(':')[0]);
+    expect(providers).toEqual(['openai', 'anthropic', 'google']);
     expect(getChatModel()).not.toBe(BRAIN_CHAT_MODEL);
   });
 

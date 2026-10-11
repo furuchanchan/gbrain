@@ -294,19 +294,17 @@ under `~/.gbrain/.gbrain/eval-receipts/<slug>-<sha8>.json` (the sha-8 binds
 the receipt to the current SKILL.md content — re-running after edits writes a
 new receipt, so every iteration leaves its own baseline).
 
-**Default models** (override per slot via `--slot-a-model`, `--slot-b-model`,
-`--slot-c-model`):
-
-| Slot | Default | Provider |
-|------|---------|----------|
-| A | `openai:gpt-5.2` | OpenAI |
-| B | `anthropic:claude-opus-4-7` | Anthropic |
-| C | `deepseek:deepseek-v4-pro` | DeepSeek |
+**Judge slots** resolve at run time: the command picks the strongest
+configured, healthy chat model from each of three distinct provider
+families (provider recipes + the credentials present on this machine).
+Override per slot via `--slot-a-model`, `--slot-b-model`, `--slot-c-model`.
+With fewer than three ready families the eval fails closed and names
+what is missing — it never judges with unconfigured defaults.
 
 **These MUST be frontier models from DIFFERENT providers.** Using a single
 provider's family or budget models defeats the purpose — different families
-have less correlated blind spots. Model names drift; pin the live aliases at
-run time. The *frontier-only, different-providers* rule is the durable part.
+have less correlated blind spots. The *frontier-only, different-providers*
+rule is the durable part.
 
 **Pass criteria (BOTH must be true):**
 
@@ -354,16 +352,12 @@ CYCLE 3 (final):
 
 ### Provider configuration
 
-Models resolve through the gbrain AI gateway. Configure once with:
+The harness owns model dispatch and credentials. Configure providers once:
 
 ```bash
 gbrain providers test    # see what's configured
 gbrain config            # set keys
 ```
-
-Or set env vars: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GOOGLE_GENERATIVE_AI_API_KEY`, `TOGETHER_API_KEY`, etc. The gateway reads
-from `~/.gbrain/config.json` plus `process.env`.
 
 ### Cost expectations
 
@@ -527,9 +521,9 @@ Phase 2.5: Declare eval_contract — goal: reviewer-ready PR summary;
   dimensions: file_coverage, test_plan, specificity;
   hard-fail: any fabricated claim about the diff
 Phase 3: Cross-modal eval cycle 1 (dimensions from the contract) →
-  gpt-5.2: file_coverage=6, test_plan=4, specificity=5 → "misses file-level diffs"
-  claude-opus-4-7: file_coverage=7, test_plan=5, specificity=5 → "no test plan in summary"
-  deepseek-v4-pro: file_coverage=6, test_plan=5, specificity=5 → "template feels generic"
+  <slot A model>: file_coverage=6, test_plan=4, specificity=5 → "misses file-level diffs"
+  <slot B model>: file_coverage=7, test_plan=5, specificity=5 → "no test plan in summary"
+  <slot C model>: file_coverage=6, test_plan=5, specificity=5 → "template feels generic"
   Aggregate: file_coverage=6.3 FAIL, test_plan=4.7 FAIL
   Top improvements: add file-level changes, include test plan, use PR context
   → Apply fixes → Cycle 2: file_coverage=8, test_plan=7.5, specificity=7 → PASS
