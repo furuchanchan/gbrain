@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { harnessWiringCheck } from '../src/commands/doctor/checks/harness-wiring.ts';
+import { existsSync } from 'node:fs';
 import { bootstrapDoctorChecks } from '../src/commands/doctor.ts';
 import { enabledPluginLanes } from '../src/core/bootstrap/plugin-lanes.ts';
 import { withEnv } from './helpers/with-env.ts';
@@ -90,6 +91,53 @@ describe('harness_wiring with an enabled plugin lane (#6082)', () => {
       expect(check.status).toBe('warn');
       expect(check.message).toMatch(/^Codex is installed but has no gbrain MCP registration/);
       expect(enabledPluginLanes()).toEqual([]);
+    });
+  });
+});
+
+describe('harness_wiring with an HTTP registration (#6453)', () => {
+  // brainLock() only sees a PGLite lock, so on Postgres it is always null and
+  // the unconditional http_serve_missing warn fired even while the registered
+  // server was healthy. The check now probes <origin>/health first; only a
+  // refused or failed probe keeps the warn. In-process: the runGbrain golden
+  // child disables fetch by design, so the probe runs in this process.
+  function httpReg(b: Box, url: string): void {
+    writeFileSync(join(b.env.HOME!, '.claude.json'), JSON.stringify({
+      mcpServers: { gbrain: { type: 'http', url } },
+    }));
+  }
+
+  test('endpoint answers /health → ok wired_running, no serve suggestion', async () => {
+    const b = box();
+    mkdirSync(join(b.env.HOME!, '.claude'), { recursive: true });
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        if (new URL(req.url).pathname === '/health') return Response.json({ status: 'ok', version: '0.60.156.0', engine: 'postgres' });
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      httpReg(b, `http://127.0.0.1:${server.port}/mcp`);
+      await withEnv(b.env, async () => {
+        const check = await harnessWiringCheck({ smoke: true });
+        expect(check).toMatchObject({ status: 'ok', details: { reason: 'wired_running', smoke: 'health' } });
+        expect(check.message).toContain('answers /health');
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('endpoint refuses → warn http_serve_missing with the serve fix', async () => {
+    const b = box();
+    mkdirSync(join(b.env.HOME!, '.claude'), { recursive: true });
+    httpReg(b, 'http://127.0.0.1:1/mcp');
+    await withEnv(b.env, async () => {
+      const check = await harnessWiringCheck({ smoke: true });
+      expect(check).toMatchObject({ status: 'warn', details: { reason: 'http_serve_missing' } });
+      expect(check.fix?.argv).toEqual(['gbrain', 'serve', '--http']);
     });
   });
 });

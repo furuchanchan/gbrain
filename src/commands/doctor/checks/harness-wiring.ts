@@ -168,6 +168,20 @@ function rewireFix(r: HarnessRegistration): Action | undefined {
 
 interface SmokeOutcome { ok: boolean; reason: string; message: string; fix?: Action }
 
+/** GET `<registered origin>/health` (bounded): liveness only, no auth needed.
+ * Never throws — a refused/absent endpoint is { ok: false }. */
+async function probeHttpHealth(url: string, timeoutMs = 5_000): Promise<{ ok: boolean; body?: Record<string, unknown> }> {
+  try {
+    const origin = new URL(url).origin;
+    const res = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return { ok: false };
+    const body = await res.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    return { ok: true, body };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /** Spawn the registered stdio argv and run initialize + tools/list + recall. Never throws. */
 export async function smokeStdioRegistration(r: HarnessRegistration, timeoutMs = HARNESS_SMOKE_TIMEOUT_MS): Promise<SmokeOutcome> {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
@@ -223,7 +237,17 @@ async function smoke(r: HarnessRegistration): Promise<Check> {
     return { name: NAME, status: 'ok', message: `${describeRegistration(r)}: a live gbrain ${transport} (PID ${lock.pid}) holds this brain.`, details: { ...details, reason: 'wired_running' } };
   }
   if (r.kind === 'http') {
-    return { name: NAME, status: 'warn', message: `${describeRegistration(r)} is registered, but no \`gbrain serve --http\` is running on this machine, so new sessions get no memory tools.`,
+    // #6453: brainLock() only sees a PGLite lock, so on Postgres (and any brain
+    // without a lock file) it is always null — the unconditional warn below
+    // fired even while the registered server was healthy. Probe the endpoint
+    // first; only a refused/failed probe is http_serve_missing.
+    const probe = r.url ? await probeHttpHealth(r.url) : { ok: false };
+    if (probe.ok) {
+      const version = typeof probe.body?.version === 'string' ? ` (v${probe.body.version})` : '';
+      return { name: NAME, status: 'ok', message: `${describeRegistration(r)}: the registered endpoint answers /health${version}.`,
+        details: { ...details, reason: 'wired_running', smoke: 'health' } };
+    }
+    return { name: NAME, status: 'warn', message: `${describeRegistration(r)} is registered, but no \`gbrain serve --http\` answers on this machine, so new sessions get no memory tools.`,
       details: { ...details, reason: 'http_serve_missing' },
       fix: { argv: ['gbrain', 'serve', '--http'], consent: [], actor: 'user', requires_exclusive: true, verify: doctorVerify(NAME),
         why: 'The registration points at the shared HTTP server; it must be running (a long-lived process, so the user or a service manager starts it).',
