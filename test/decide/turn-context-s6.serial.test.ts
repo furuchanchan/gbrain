@@ -26,7 +26,7 @@ import { resetDecideSearchCache } from '../../src/core/search/decide-stage.ts';
 import { assembleTurnContext, type TurnContextResult } from '../../src/core/context/turn-context.ts';
 import { applyRecallNeeded, startRecallNeeded, RECALL_NEEDED_DEADLINE_MS, __setRecallDeadlinesForTests } from '../../src/core/context/recall-needed.ts';
 import {
-  ensureIpcSecret, requestTurnContext, resolveSocketPath, startResolveIpcServer, TURN_CONTEXT_SERVER_BUDGET_MS, type TurnContextResponse,
+  ensureIpcSecret, requestTurnContext, resolveSocketPath, startResolveIpcServer, type TurnContextResponse,
 } from '../../src/core/context/resolve-ipc.ts';
 import type { WindowTurn } from '../../src/core/context/entity-salience.ts';
 import { SLOT_SPECS } from '../../src/core/ai/decide/slots.ts';
@@ -340,12 +340,19 @@ describe('through the IPC server (the serve handler shape the hook talks to)', (
   }
 
   test('a provider slower than the server budget never nulls the reflex block', async () => {
-    transport({ p: 0.01, delayMs: 5000 });
+    const providerDelayMs = 5_000;
+    transport({ p: 0.01, delayMs: providerDelayMs });
     await setConfig(S6_ON);
     const { sock, secret } = await serve();
     const t0 = Date.now();
     const res = await requestTurnContext(sock, { secret, window: [{ role: 'user', text: SURNAME }], sessionId: 's6-ipc' }) as TurnContextResponse;
-    expect(Date.now() - t0).toBeLessThan(TURN_CONTEXT_SERVER_BUDGET_MS);
+    // The provider must not gate the response: the recall-needed deadline
+    // fires and the block returns long before the provider could. Bound
+    // against the provider's own latency — IPC connect + serialize +
+    // scheduler jitter on a loaded runner pushed a real-clock read of the
+    // 400ms server budget to 461ms while the handler itself finished at
+    // ~260ms (#6492); skipped==='timeout' below carries the deadline check.
+    expect(Date.now() - t0).toBeLessThan(providerDelayMs);
     expect(res.ok).toBe(true);
     expect(res.degradedReason).toBeUndefined();
     expect(res.block?.pointers.map((p) => p.slug)).toEqual(['people/mateo-glimmerton']);

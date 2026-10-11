@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.178.0] - 2026-10-11
+
+**Fix a master-red timing flake in the S6 IPC test.** `a provider slower than the server budget never nulls the reflex block` asserted a client-observed wall clock under the 400ms server budget; a loaded runner read 461ms while the handler itself finished at ~260ms. The assertion now bounds the response against the provider's own 5s latency — the provider must not gate the reply — while `skipped: 'timeout'` keeps the deadline check.
+
 ## [0.60.170.0] - 2026-10-11
 
 **Fixes the OpenClaw native startup lane that failed master three times; no product change.**
