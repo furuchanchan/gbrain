@@ -10,6 +10,13 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.171.0] - 2026-10-10
+
+**Coordinated writes stop refusing `source_changed` on pages whose stored frontmatter carries keys no file can hold.**
+
+- `src/core/persistence/page-prepare.ts` (`fileMatchesSnapshot`): the stored-side frontmatter is compared with `type`, `title`, `tags` and `slug` removed — `parseMarkdown` strips those keys from file frontmatter, so rows written by older import paths could never digest-match their canonical file and refused every write `source_changed / file_database_drift`. Same spirit as the #1035 type parity and the #5635 title-whitespace rule.
+- `test/file-matches-snapshot-6454.test.ts`: legacy `type`/`title` and `slug`/`tags` keys in stored frontmatter no longer count as drift; a real frontmatter difference still refuses.
+
 ## [0.60.160.0] - 2026-10-10
 
 **Keyword search finds words glued to Chinese, Japanese or Korean text, and you choose which source a self-registered agent writes to when you approve it.**

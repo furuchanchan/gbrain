@@ -139,13 +139,20 @@ export async function fileMatchesSnapshot(engine: BrainEngine, slug: string, byt
   // never wrote the file, so the file lacks a key the database carries. The mechanical stamp authors nothing
   // (grandfather.ts): a file without a `validate:` key keeps the stored stamp, and the next coordinated write publishes it.
   if (!Object.hasOwn(parsed.frontmatter, 'validate') && snapshot.page.frontmatter?.validate === false) parsed.frontmatter.validate = false;
+  // #6454: older imports stored `type`/`title`/`tags`/`slug` inside pages.frontmatter, but
+  // parseMarkdown strips those keys from file frontmatter, so the file side can never
+  // produce them and the digest can never match. Same spirit as the #1035 type parity:
+  // the stored frontmatter is compared with those keys removed, since no file can carry them.
+  const storedFrontmatter = snapshot.page.frontmatter
+    ? Object.fromEntries(Object.entries(snapshot.page.frontmatter).filter(([k]) => k !== 'type' && k !== 'title' && k !== 'tags' && k !== 'slug'))
+    : snapshot.page.frontmatter;
   // #1035 parity (#5521): a file without an explicit `type:` keeps the stored type on import.
   const type = parsed.typeExplicit ? parsed.type : snapshot.page.type;
   // Withdrawal overlays intentionally precede physical mirroring. The ledger
   // is applied by the import preparation and cannot be undone by this check.
   const actual = canonical({ ...parsed, type, ...await overlayCanonicalBodies(engine.executeRaw.bind(engine),
     parsed.compiled_truth, parsed.timeline ?? '', snapshot.withdrawals, { sourceId: snapshot.page.source_id, marker: snapshot.globalPurges }) }, parsed.tags);
-  return digest(actual) === digest(canonical(snapshot.page, snapshot.tags));
+  return digest(actual) === digest(canonical({ ...snapshot.page, frontmatter: storedFrontmatter }, snapshot.tags));
 }
 export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'worktree_id' | 'slug'>, snapshot: PageSnapshot | null,
   content: string | null, hostId?: string, options: { allowMissing?: boolean; deleting?: boolean; capture?: { path: string; hash: string }; activePack?: ParseOpts['activePack']; remote?: boolean } = {}): Promise<PreparedMutation['file']> {
