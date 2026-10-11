@@ -1590,9 +1590,12 @@ function showStatus(json: boolean, intervalSeconds: number) {
     lastLog: lastLine,
   });
   const processing = readAutopilotProcessingStatus();
+  // #6451: surface the file-plane fan-out pull opt-out so `gbrain autopilot
+  // status` shows why a tick is not scheduling pulls.
+  const gitPull = loadConfig()?.autopilot?.git_pull !== false;
 
   if (json) {
-    console.log(JSON.stringify({ ...report, ...processing, job: jobStatus.report }));
+    console.log(JSON.stringify({ ...report, ...processing, git_pull: gitPull, job: jobStatus.report }));
   } else {
     switch (report.state) {
       case 'not_installed':
@@ -1630,6 +1633,7 @@ function showStatus(json: boolean, intervalSeconds: number) {
       console.log(`Stage: ${processing.processing_stage}${processing.retry_at ? `; next retry ${processing.retry_at}` : ''}`);
       if (processing.processing_state === 'configuration_blocked') console.log('Repair the worker and selected child installation, then explicitly restart autopilot.');
     }
+    if (!gitPull) console.log('Git pull: disabled (autopilot.git_pull=false) — fan-out ticks skip scheduling pulls.');
     for (const line of jobStatus.lines) console.log(line);
     if (lastLine) console.log(`Last log: ${lastLine}`);
   }

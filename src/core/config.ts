@@ -243,6 +243,14 @@ export interface GBrainConfig {
      * `gbrain config set autopilot.incremental_extract_include_frontmatter <bool>`.
      */
     incremental_extract_include_frontmatter?: boolean;
+    /**
+     * v0.60.x (#6451) — owner opt-out for autopilot fan-out pulls on unmanaged
+     * remote sources. Default true; `gbrain config set autopilot.git_pull
+     * false` stops the fan-out from scheduling a git pull even when
+     * automaticSyncPull would permit one. File plane so the engine-free
+     * `gbrain autopilot status` can surface it.
+     */
+    git_pull?: boolean;
   };
   eval?: {
     /** false disables capture entirely. Defaults to true. */

@@ -10,6 +10,15 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.170.0] - 2026-10-10
+
+**Autopilot gains an owner opt-out for fan-out pulls: `autopilot.git_pull=false` keeps every per-source cycle running but dispatches them with `pull: false`, and `gbrain autopilot status` surfaces the setting.**
+
+- `src/commands/autopilot-fanout.ts`: before scheduling a pull, the fan-out checks the file-plane `autopilot.git_pull` key (default `true`) in addition to the existing sync-disabled, connector, and `automaticSyncPull` gates, so `gbrain config set autopilot.git_pull false` stops unmanaged remote checkouts from being pulled by ticks.
+- `src/commands/config.ts`: `autopilot.git_pull` joins `FILE_PLANE_DOTTED_KEYS` with a dedicated `config set` writer — the engine-free `gbrain autopilot status` must be able to read it, so it can never live DB-plane.
+- `src/commands/autopilot.ts`: status prints `Git pull: disabled (autopilot.git_pull=false)` when the opt-out is set and `--json` reports `git_pull`.
+- `docs/guides/live-sync.md`: documents the opt-out and where it is surfaced.
+
 ## [0.60.159.0] - 2026-10-10
 
 **Captured memory stops leaking away: failed chats retry until they import, long messages stay whole, sessions file under their own source, and fence writers refuse instead of dropping rows.**

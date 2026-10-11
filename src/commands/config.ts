@@ -67,6 +67,9 @@ const FILE_PLANE_DOTTED_KEYS: ReadonlySet<string> = new Set([
   'persistence.write_wait_ms',
   // Engine graduation opt-out: the pre-connect migrate router reads it engine-free.
   'migrate.graduation',
+  // #6451: `gbrain autopilot status` is engine-free, so the fan-out pull
+  // opt-out it surfaces has to live in ~/.gbrain/config.json.
+  'autopilot.git_pull',
 ]);
 
 /** #5489: every self_upgrade.* reader (cli.ts startup check, autopilot,
@@ -567,6 +570,12 @@ async function setFilePlaneKey(key: string, value: string, tail: string[]): Prom
     cfg.mcp = { ...(cfg.mcp ?? {}), instructions: value };
     saveConfig(cfg);
     console.log(`Set ${key} (file plane: ~/.gbrain/config.json) — restart \`gbrain serve\` to apply`);
+  } else if (key === 'autopilot.git_pull') {
+    const on = isConfigTruthy(value);
+    cfg.autopilot = { ...(cfg.autopilot ?? {}), git_pull: on };
+    saveConfig(cfg);
+    console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
+    if (!on) console.log('Autopilot fan-out ticks keep running but schedule every source cycle with pull: false. `gbrain autopilot status` shows Git pull: disabled.');
   } else if (key.startsWith(SELF_UPGRADE_KEY_PREFIX)) {
     const leaf = key.slice(SELF_UPGRADE_KEY_PREFIX.length);
     if (!isSelfUpgradeConfigLeaf(leaf)) {

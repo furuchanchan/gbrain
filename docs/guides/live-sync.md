@@ -516,6 +516,13 @@ vars — incident-time escape hatches, not everyday knobs.
    reads only the filesystem — no database connection — so it keeps working
    during the exact outages it exists to diagnose.
 
+   To keep autopilot cycles running but stop them from pulling an unmanaged
+   remote checkout, set `gbrain config set autopilot.git_pull false` (default
+   `true`). Every per-source fan-out job then dispatches with `pull: false`
+   even when the sync policy would permit one — useful when you `git pull`
+   the repo yourself or another tool owns it. `gbrain autopilot status`
+   prints `Git pull: disabled` and `--json` reports `git_pull: false`.
+
 ## Several brains on one host
 
 Each brain gets its own autopilot job. The default brain (`~/.gbrain`, that

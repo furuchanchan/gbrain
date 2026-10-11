@@ -11,6 +11,9 @@
  * No engine; queue + engine are stubbed.
  */
 import { describe, test, expect } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   readLastFullCycleAt,
   isSourceStale,
@@ -415,6 +418,48 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     remote.config = '{"remote_url":"https://github.com/x/y"}' as unknown as SourceRow['config'];
     const { engine, queue, added, fanoutOpts } = makeStubs([remote]);
     await dispatchPerSource(engine, queue, fanoutOpts);
+    expect((added[0].data as Record<string, unknown>).pull).toBe(true);
+  });
+
+  test('#6451: autopilot.git_pull=false (file plane) stops the fan-out from scheduling pulls', async () => {
+    // Owner opt-out for unmanaged remote sources: the cycle still runs
+    // (phases intact) but no git pull is scheduled even though
+    // automaticSyncPull would permit one for a remote_url source. The key is
+    // file-plane so the engine-free `gbrain autopilot status` can surface it.
+    const remote = src('remote-6451', undefined, { remote_url: 'https://github.com/x/y' });
+    const { engine, queue, added, fanoutOpts } = makeStubs([remote]);
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-6451-'));
+    mkdirSync(join(home, '.gbrain'), { recursive: true });
+    writeFileSync(join(home, '.gbrain', 'config.json'), JSON.stringify({ autopilot: { git_pull: false } }));
+    const savedHome = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = home;
+    try {
+      await dispatchPerSource(engine, queue, fanoutOpts);
+    } finally {
+      if (savedHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = savedHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+    const data = added[0].data as Record<string, unknown>;
+    expect(data.pull).toBe(false);
+    expect(data.phases).toEqual(SOURCE_FRESHNESS_PHASES);
+  });
+
+  test('#6451: autopilot.git_pull defaults to true when the file-plane key is absent', async () => {
+    const remote = src('remote-6451-default', undefined, { remote_url: 'https://github.com/x/y' });
+    const { engine, queue, added, fanoutOpts } = makeStubs([remote]);
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-6451-d-'));
+    mkdirSync(join(home, '.gbrain'), { recursive: true });
+    writeFileSync(join(home, '.gbrain', 'config.json'), JSON.stringify({}));
+    const savedHome = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = home;
+    try {
+      await dispatchPerSource(engine, queue, fanoutOpts);
+    } finally {
+      if (savedHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = savedHome;
+      rmSync(home, { recursive: true, force: true });
+    }
     expect((added[0].data as Record<string, unknown>).pull).toBe(true);
   });
 

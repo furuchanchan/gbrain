@@ -47,6 +47,7 @@ import { automaticSyncPull } from '../core/persistence/automatic-sync-policy.ts'
 import { isSyncDisabledConfig } from '../core/sync-policy.ts';
 import { loadActivationPendingSourceIds, skipActivationPendingSync } from '../core/sync-policy.ts';
 import { AUTOPILOT_FULL_CYCLE_FLOOR_MINUTES } from './autopilot-remediation-policy.ts';
+import { loadConfigFileOnly } from '../core/config.ts';
 
 // #2194 fix #2: failure cooldown. A source whose autopilot-cycle keeps
 // failing/timing-out re-dispatches every tick today (only SUCCESS gates
@@ -581,7 +582,12 @@ export async function dispatchPerSource(
       );
       const syncDisabled = isSyncDisabledConfig(src.config) || pendingActivation;
       const connector = connectorIds.has(src.id);
-      const shouldPull = !syncDisabled && !connector && await automaticSyncPull(engine, src);
+      // #6451: explicit owner opt-out for unmanaged remote sources —
+      // `gbrain config set autopilot.git_pull false` stops the fan-out from
+      // scheduling a git pull even when automaticSyncPull would permit one.
+      // File plane: `gbrain autopilot status` is engine-free and surfaces it.
+      const gitPullEnabled = loadConfigFileOnly()?.autopilot?.git_pull !== false;
+      const shouldPull = gitPullEnabled && !syncDisabled && !connector && await automaticSyncPull(engine, src);
       const job = await queue.add(
         'autopilot-cycle',
         {
