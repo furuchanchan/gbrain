@@ -21,6 +21,7 @@ import { refusalLine } from '../../core/ai/decide/outcomes.ts';
 import { toWireQuestion } from '../../core/ai/decide/providers/typesafe.ts';
 import { SLOT_SPECS } from '../../core/ai/decide/slots.ts';
 import { getCalibration, insertCalibration, listCalibrations, setCalibrationRetired, storeQualification } from '../../core/ai/decide/store.ts';
+import { REFERENCE_CALIBRATIONS } from '../../core/ai/decide/reference-calibrations.ts';
 import { DECIDE_SLOTS, DecideError, thresholdValue, type DecideAnswer, type DecideSlot } from '../../core/ai/decide/types.ts';
 import { usageCostUsd } from '../../core/budget/reservation-cost.ts';
 import { evidenceCoPackedSlots, resetDecideSearchCache } from '../../core/search/decide-stage.ts';
@@ -225,7 +226,21 @@ async function cmdCalibrations(engine: BrainEngine, args: string[]): Promise<num
     }
     return 0;
   }
-  const id = Number(String(args[1] ?? '').replace(/^local:/, ''));
+  // #6497: `adopt` also accepts a `ref:<id>` — the status hint suggests that
+  // form, and selectCalibration already reads an adopted ref value; the ref
+  // row's own slot determines where it is stored. retire/restore stay
+  // local-only (references are built-in and can't be retired).
+  const target = String(args[1] ?? '');
+  if (target.startsWith('ref:')) {
+    if (action !== 'adopt') { console.error(`Usage: gbrain decide calibrations ${action} <id>`); return 1; }
+    const ref = REFERENCE_CALIBRATIONS.find((r) => `ref:${r.id}` === target);
+    if (!ref) { console.error(`reference calibration ${target} not found`); return 1; }
+    await engine.setConfig(`decide.slots.${ref.slot}.calibration`, target);
+    resetDecideSearchCache();
+    console.log(`${ref.slot} now uses ${target} (threshold ${ref.threshold.toFixed(3)} for ${ref.model_resolved}, call site ${ref.call_site}).`);
+    return 0;
+  }
+  const id = Number(target.replace(/^local:/, ''));
   if (!Number.isInteger(id) || id <= 0) { console.error(`Usage: gbrain decide calibrations ${action} <id>`); return 1; }
   const row = await getCalibration(engine, id);
   if (!row) { console.error(`calibration local:${id} not found`); return 1; }

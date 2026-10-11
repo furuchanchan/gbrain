@@ -10,6 +10,12 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.181.0] - 2026-10-11
+
+- `gbrain decide status` no longer prints a stale "newer reference available" hint for a slot when the newest reference belongs to a different call site (#6497). The hint is now scoped to the call site the slot's selected calibration came from, so a `conflict` line on the `sweep` call site ignores `review_withdraw` references it could never select.
+- `gbrain decide calibrations adopt` accepts `ref:<id>` for a built-in reference calibration — the form the status hint prints — and stores the ref verbatim in `decide.slots.<slot>.calibration`, where `selectCalibration` already resolves it. `retire`/`restore` still refuse `ref:` ids (references are built-in, not local rows).
+- `test/decide/status-newer-reference.test.ts` pins the hint to the calibration's call site and covers the `ref:` adopt/retire/restore contract.
+
 ## [0.60.172.0] - 2026-10-11
 
 **Two decide timing tests stop failing on slow runners.** Each one measured wall-clock time that included work outside the budget under test. Both budgets are unchanged.

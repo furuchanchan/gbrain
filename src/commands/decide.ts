@@ -196,7 +196,10 @@ export async function buildStatus(engine: BrainEngine, state: DecideState) {
     const p = policyFor(state, slot);
     const u = usage.find((x) => x.slot === slot);
     const inputs = policyInputs(state, slot);
-    const newestRef = REFERENCE_CALIBRATIONS.filter((r) => r.slot === slot && r.provider === p.provider).at(-1);
+    // #6497: scope the hint to the calibration's call site — a newer ref for a
+    // different call site (e.g. conflict/review_withdraw vs sweep) can neither
+    // be selected for this line nor honestly called "newer" for it.
+    const newestRef = REFERENCE_CALIBRATIONS.filter((r) => r.slot === slot && r.provider === p.provider && r.call_site === p.callSite).at(-1);
     return {
       slot, plain: SLOT_PLAIN_NAMES[slot], wired: SLOT_SPECS[slot].wired, mode: p.requested, effective: p.effective,
       readiness: readiness(p, inputs), inactive: p.inactive ?? null, provider: p.provider, model: p.model,
