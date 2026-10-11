@@ -82,6 +82,11 @@ import { clearConversationFacts, enqueueManagedPage, flushManagedBatch, managedC
 import { BudgetTracker, BudgetExhausted, loadPricingOverrides, type BudgetReason, type NoPricingGuidance } from '../core/budget/budget-tracker.ts';
 import { noPricingMessage } from '../core/budget/no-pricing.ts';
 import { conversationFactsCostCap } from '../core/facts/conversation-budget.ts';
+import {
+  renderSegmentsForExtraction,
+  type ConversationMessage,
+  type ConversationSegment,
+} from '../core/facts/conversation-segment-render.ts';
 import { listSources } from '../core/sources-ops.ts';
 import {
   loadOpCheckpoint,
@@ -168,13 +173,13 @@ function isSpeakerShapedHeadingLabel(label: string): boolean {
 /** Delay between extractor calls so we don't burst the chat provider. */
 export const DEFAULT_INTER_CALL_SLEEP_MS = 200;
 
-/**
- * Cap on character length of the rendered segment passed to the extractor.
- * Tuned down from PR's 7500 → 6500 (Eng-v2 T5) to leave headroom for the
- * topical/temporal header (~500 chars typical, up to ~1500 with a long
- * participant list) under extract.ts's MAX_TURN_TEXT_CHARS = 8000.
- */
-export const SEGMENT_TEXT_CHAR_LIMIT = 6500;
+export {
+  SEGMENT_TEXT_CHAR_LIMIT,
+  renderSegmentForExtraction,
+  renderSegmentsForExtraction,
+  type ConversationMessage,
+  type ConversationSegment,
+} from '../core/facts/conversation-segment-render.ts';
 
 /**
  * Hard cap on per-page body bytes (compiled_truth + timeline). Pages
@@ -220,20 +225,6 @@ export const PER_SEGMENT_SOURCE_PREFIX = 'cli:extract-conversation-facts';
 // ---------------------------------------------------------------------------
 // Public types.
 // ---------------------------------------------------------------------------
-
-export interface ConversationMessage {
-  speaker: string;
-  /** ISO 8601 timestamp parsed from the rendered message line. */
-  timestamp: string;
-  text: string;
-}
-
-export interface ConversationSegment {
-  messages: ConversationMessage[];
-  startIso: string;
-  endIso: string;
-  participants: string[];
-}
 
 /**
  * Core function opts. Strict — `sourceId` is always required (Eng-v2 A1).
@@ -537,25 +528,7 @@ export function segmentObservationDate(page: Pick<Page, 'slug' | 'frontmatter' |
   return explicit ? observationDateFrom(startIso) : resolveObservationDate({ slug: page.slug, frontmatter: page.frontmatter });
 }
 
-export function renderSegmentForExtraction(
-  pageTitle: string,
-  segment: ConversationSegment,
-): string {
-  const header = [
-    `Page: ${pageTitle}`,
-    `Conversation between ${segment.participants.join(' and ')} from ${segment.startIso} to ${segment.endIso}`,
-    '---',
-  ].join('\n');
-  const body = segment.messages
-    .map((m) => `${m.speaker} (${m.timestamp}): ${m.text}`)
-    .join('\n');
-  const full = `${header}\n${body}`;
-  if (full.length <= SEGMENT_TEXT_CHAR_LIMIT) return full;
-  // Truncate from the end of the body, keeping the header intact so the
-  // extractor still sees the topical anchor.
-  const slack = SEGMENT_TEXT_CHAR_LIMIT - header.length - 16;
-  return `${header}\n${body.slice(0, Math.max(0, slack))}\n…(truncated)`;
-}
+
 
 // ---------------------------------------------------------------------------
 // Fingerprint — sourceId-only (Eng-v2 A3). Widening types config does NOT
@@ -947,6 +920,61 @@ export async function currentConversationVersionToken(engine: BrainEngine, page:
   return (await preparePageSnapshot(engine, page)).versionToken;
 }
 
+/**
+ * Runs extraction over the bounded inputs one segment renders to (#6508).
+ * BrainBench (decision 15) may inject a deterministic extractor; when it
+ * does, use it (returns facts directly — the hermetic gold path). The
+ * DEFAULT production path is master's fail-hard-with-reason contract: a
+ * per-segment extraction failure aborts the page rather than silently
+ * dropping facts.
+ */
+async function extractSegmentTexts(
+  state: ExtractCoreState,
+  page: ConversationPageSnapshot['page'],
+  seg: ConversationSegment,
+  texts: string[],
+): Promise<ExtractedFact[]> {
+  const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
+  const extracted: ExtractedFact[] = [];
+  for (const text of texts) {
+    if (state.extractor) {
+      extracted.push(...await state.extractor({
+        turnText: text,
+        sessionId,
+        source: PER_SEGMENT_SOURCE_PREFIX,
+        engine: state.engine,
+        abortSignal: state.signal,
+      }));
+    } else {
+      const extraction = await extractFactsFromTurnWithOutcome({
+        turnText: text,
+        sessionId,
+        source: PER_SEGMENT_SOURCE_PREFIX,
+        engine: state.engine,
+        abortSignal: state.signal,
+        observationDate: segmentObservationDate(page, seg.startIso),
+      });
+      if (!extraction.ok) {
+        // #3669 — rethrow BudgetExhausted UNWRAPPED. Wrapping it in a plain
+        // Error strips the BUDGET_EXHAUSTED tag, so the worker pool's D13
+        // must-abort check never fires and every remaining page burns a
+        // reserve_denied attempt instead of the run halting with a
+        // budget_exhausted receipt (core catch → halted receipt → return).
+        if (extraction.error instanceof BudgetExhausted) throw extraction.error;
+        const detail = extraction.error instanceof Error
+          ? `: ${extraction.error.message}`
+          : '';
+        throw Object.assign(new Error(
+          `segment ${seg.startIso}..${seg.endIso} extraction failed (${extraction.reason})${detail}`,
+        ), { extractionReason: extraction.reason });
+      }
+      extracted.push(...extraction.facts);
+    }
+    if (state.sleepMs > 0) await sleep(state.sleepMs);
+  }
+  return extracted;
+}
+
 async function processPage(
   state: ExtractCoreState,
   snapshot: ConversationPageSnapshot,
@@ -1120,48 +1148,11 @@ async function processPage(
     if (state.segmentLimit > 0 && segmentsThisPage >= state.segmentLimit) break;
     if (state.signal?.aborted) throw new Error('aborted');
 
-    const text = renderSegmentForExtraction(page.title || page.slug, seg);
+    // #6508 — a dense segment renders as several bounded inputs rather than
+    // one truncated text, so its tail still reaches the extractor.
+    const texts = renderSegmentsForExtraction(page.title || page.slug, seg);
     const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
-
-    // BrainBench (decision 15) may inject a deterministic extractor; when it
-    // does, use it (returns facts directly — the hermetic gold path). The
-    // DEFAULT production path is master's fail-hard-with-reason contract: a
-    // per-segment extraction failure aborts the page rather than silently
-    // dropping facts.
-    let extracted: ExtractedFact[];
-    if (state.extractor) {
-      extracted = await state.extractor({
-        turnText: text,
-        sessionId,
-        source: PER_SEGMENT_SOURCE_PREFIX,
-        engine: state.engine,
-        abortSignal: state.signal,
-      });
-    } else {
-      const extraction = await extractFactsFromTurnWithOutcome({
-        turnText: text,
-        sessionId,
-        source: PER_SEGMENT_SOURCE_PREFIX,
-        engine: state.engine,
-        abortSignal: state.signal,
-        observationDate: segmentObservationDate(page, seg.startIso),
-      });
-      if (!extraction.ok) {
-        // #3669 — rethrow BudgetExhausted UNWRAPPED. Wrapping it in a plain
-        // Error strips the BUDGET_EXHAUSTED tag, so the worker pool's D13
-        // must-abort check never fires and every remaining page burns a
-        // reserve_denied attempt instead of the run halting with a
-        // budget_exhausted receipt (core catch → halted receipt → return).
-        if (extraction.error instanceof BudgetExhausted) throw extraction.error;
-        const detail = extraction.error instanceof Error
-          ? `: ${extraction.error.message}`
-          : '';
-        throw Object.assign(new Error(
-          `segment ${seg.startIso}..${seg.endIso} extraction failed (${extraction.reason})${detail}`,
-        ), { extractionReason: extraction.reason });
-      }
-      extracted = extraction.facts;
-    }
+    const extracted = await extractSegmentTexts(state, page, seg, texts);
 
     state.result.segments_processed++;
     segmentsThisPage++;
@@ -1214,7 +1205,6 @@ async function processPage(
     state.result.resolution_errors += segmentResolution.resolution_errors;
 
     newestEnd = seg.endIso;
-    if (state.sleepMs > 0) await sleep(state.sleepMs);
   }
 
   // Eng-v2 C7 / E16: write terminal audit row after all segments commit

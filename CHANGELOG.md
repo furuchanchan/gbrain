@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.185.0] - 2026-10-11
+
+**Dense conversation segments no longer lose their tail before fact extraction.** `extract-conversation-facts` rendered each transcript segment as a single extractor input and silently clipped it at 6,500 characters, so any fact stated past the clip never reached extraction — no error, no marker. Now an oversize segment renders as several bounded inputs: messages stay in source order, each part still carries the page and participants header, and a message that alone exceeds the budget is continued across parts with its `Speaker (timestamp):` prefix plus a `…` marker, so attribution and quote grounding survive. Every eligible part of a transcript reaches an extraction input; provider inputs stay bounded.
+
+### What changes for your agent
+
+| Where | What changed |
+|---|---|
+| `gbrain extract-conversation-facts` | segments larger than `SEGMENT_TEXT_CHAR_LIMIT` extract in `Segment part k/N` inputs instead of truncating the tail |
+| `src/core/facts/conversation-segment-render.ts` (new) | segment render helpers moved here from the command file; `renderSegmentsForExtraction` splits oversize segments |
+
 ## [0.60.175.0] - 2026-10-11
 
 **CI test shards are balanced again, and the nightly run stops failing its shard-timing check.** CI splits each test lane across several machines using the recorded run time of every test file. A test file with no recorded time is packed blind, and 11.1% of E2E files had none, past the 10% bound the nightly enforces. This release re-measures every lane from green master runs. No product behaviour changes.

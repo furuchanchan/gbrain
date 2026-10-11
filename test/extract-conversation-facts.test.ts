@@ -28,6 +28,7 @@ import {
   parseConversationMessages,
   splitIntoSegments,
   renderSegmentForExtraction,
+  renderSegmentsForExtraction,
   runExtractConversationFactsCore,
   extractConversationFactsFingerprint,
   encodeCheckpointEntry,
@@ -256,7 +257,7 @@ describe('renderSegmentForExtraction', () => {
     expect(text).toContain('2024-03-15T09:05:00Z');
   });
 
-  test('truncates oversize segments but keeps the header intact', () => {
+  test('renders the full segment without truncation', () => {
     const big = Array.from({ length: 500 }, (_, i) => {
       const mm = String(i % 60).padStart(2, '0');
       const hh = String(9 + Math.floor(i / 60)).padStart(2, '0');
@@ -265,9 +266,45 @@ describe('renderSegmentForExtraction', () => {
     const msgs = parseConversationMessages(big);
     const seg = splitIntoSegments(msgs, { maxMessages: 500 })[0];
     const text = renderSegmentForExtraction('big-page', seg);
-    expect(text.length).toBeLessThanOrEqual(SEGMENT_TEXT_CHAR_LIMIT + 32);
     expect(text.startsWith('Page: big-page')).toBe(true);
     expect(text).toContain('Conversation between');
+    // #6508: the canonical render is lossless — the tail message is present.
+    const last = seg.messages.at(-1)!;
+    expect(text).toContain(`${last.speaker} (${last.timestamp}): ${last.text}`);
+  });
+});
+
+describe('renderSegmentsForExtraction', () => {
+  test('an oversize segment splits into bounded inputs covering every message tail (#6508)', () => {
+    const sentinel = 'TAIL_FACT_SENTINEL_7d8a';
+    const msgs = parseConversationMessages([
+      `**Alice Example** (2024-03-15 9:00 AM): ${'Context '.repeat(1100)}${sentinel}`,
+      '**Bob Demo** (2024-03-15 9:01 AM): I confirm that final commitment.',
+    ].join('\n'));
+    const seg = splitIntoSegments(msgs)[0];
+    const parts = renderSegmentsForExtraction('dense-page', seg);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const [i, part] of parts.entries()) {
+      expect(part.length).toBeLessThanOrEqual(SEGMENT_TEXT_CHAR_LIMIT);
+      expect(part).toContain('Page: dense-page');
+      expect(part).toContain(`Segment part ${i + 1} of ${parts.length}`);
+    }
+    // Every eligible part of the transcript reaches an extraction input, in order.
+    expect(parts.some(p => p.includes(sentinel))).toBe(true);
+    expect(parts.at(-1)).toContain('I confirm that final commitment.');
+    expect(parts.at(-1)!.indexOf(sentinel)).toBeLessThan(parts.at(-1)!.indexOf('I confirm'));
+    expect(parts.some(p => p.includes('Alice Example (2024-03-15T09:00:00Z): …'))).toBe(true);
+  });
+
+  test('single-message segment smaller than the cap renders as one unchanged input', () => {
+    const msgs = parseConversationMessages([
+      '**Alice Example** (2024-03-15 9:00 AM): hello there',
+      '**Bob Demo** (2024-03-15 9:05 AM): hi back',
+    ].join('\n'));
+    const seg = splitIntoSegments(msgs)[0];
+    const parts = renderSegmentsForExtraction('small-page', seg);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toBe(renderSegmentForExtraction('small-page', seg));
   });
 });
 
