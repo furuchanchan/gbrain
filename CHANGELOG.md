@@ -10,6 +10,15 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.175.0] - 2026-10-11
+
+**`extract --stale` on unmanaged brains no longer leaves a page stale forever when a writer rewrites it mid-run.** Fixes [#6474](https://github.com/garrytan/gbrain/issues/6474).
+
+### Itemized changes
+
+- The stale sweep read every page's `knowledge_revision` once, before the walk, and fenced each stale page's own endpoint against that early snapshot. A writer rewriting a stale page between the metadata read and the walk made the page's own fence stale: with post-#6272 deferral the page was skipped on every run (and on the affected versions it aborted the run), so a continuously-written backlog never drained.
+- `extractStaleFromDB` now builds the endpoint fences with `liveOriginLinkEndpoints` (new in `link-reconciliation.ts`): the origin's own fence uses its live snapshot revision — already re-checked by `assertPageRevision` at publication — and the origin is dropped from `expectedEndpoints`, the managed path's rule in `links-preparation.ts`. Only genuine target changes defer the page; the run completes either way.
+
 ## [0.60.166.0] - 2026-10-11
 
 **Fixes a flaky managed-sync governor test that turned master red after v0.60.165.0.**

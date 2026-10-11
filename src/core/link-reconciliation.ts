@@ -286,6 +286,26 @@ export function capturedLinkEndpoints(links: LinkBatchInput[], metadata: Readonl
 }
 
 /**
+ * #6474: same endpoint map as capturedLinkEndpoints, but the ORIGIN page's own
+ * fence uses its live snapshot revision (origin.expectedRevision), not the
+ * pre-walk metadata read — publication already re-checks the origin through
+ * assertPageRevision. The origin is dropped from the returned endpoints so a
+ * mid-run rewrite of the stale page itself is judged by that re-check instead
+ * of a stale fence (the managed path's rule; links-preparation.ts).
+ */
+export function liveOriginLinkEndpoints(
+  links: LinkBatchInput[],
+  metadata: ReadonlyMap<string, Pick<LinkPageMetadata, 'slug' | 'source_id' | 'knowledge_revision'>>,
+  origin: { slug: string; sourceId: string; expectedRevision: string },
+) {
+  const withLiveOrigin = new Map(metadata);
+  withLiveOrigin.set(`${origin.sourceId}\0${origin.slug}`,
+    { slug: origin.slug, source_id: origin.sourceId, knowledge_revision: origin.expectedRevision });
+  return capturedLinkEndpoints(links, withLiveOrigin)
+    .filter(endpoint => endpoint.slug !== origin.slug || endpoint.sourceId !== origin.sourceId);
+}
+
+/**
  * v0.42.7 (#1696): pure cross-source resolution for one extracted link
  * candidate. Validates both endpoints exist (else the batch JOIN drops the row),
  * then picks from_source_id / to_source_id: prefer the origin page's source,
