@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.182.0] - 2026-10-12
+
+- `gbrain backup check` no longer launches a remote-verification probe with an abbreviated timeout when the remaining shared budget is below the normal two-second request slot (#6499). Such a probe is deferred and reported `budget_exhausted` — spending no probe slot — instead of being killed mid-flight by the shared deadline and misreported as `unavailable` (a transport failure). A probe that is killed inside a full slot still reports `unavailable`, keeping budget exhaustion distinct from genuine remote failures.
+
 ## [0.60.172.0] - 2026-10-11
 
 **Two decide timing tests stop failing on slow runners.** Each one measured wall-clock time that included work outside the budget under test. Both budgets are unchanged.

@@ -116,7 +116,11 @@ export async function assessBackupRepository(
     }
     budget.deadline ??= Date.now() + BACKUP_REMOTE_BUDGET_MS;
     const remainingMs = budget.deadline - Date.now();
-    if (budget.remaining <= 0 || remainingMs <= 0) {
+    // A probe that can't take the full per-request slot is deferred rather than
+    // launched with an abbreviated timeout: a deadline-killed subprocess reads
+    // as 'unavailable', blaming the remote for what was really budget
+    // exhaustion (#6499). The deferred probe spends no slot.
+    if (budget.remaining <= 0 || remainingMs < BACKUP_REMOTE_TIMEOUT_MS) {
       asset.verification = { state: 'budget_exhausted', repository_fingerprint: fingerprint };
       return asset;
     }

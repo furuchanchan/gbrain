@@ -296,3 +296,37 @@ test('the remote probe reads the user git config through HOME, so an insteadOf r
     expect(result.state).toBe('ok');
   });
 }, 15_000);
+
+test('a probe slot shorter than the per-request timeout defers instead of launching an abbreviated probe (#6499)', async () => {
+  const { root } = await repository('short-slot');
+  const timeouts: number[] = [];
+  const probe = spyOn(childProcess, 'execFile').mockImplementation(((file: string, args: string[], options: { timeout: number }, callback: Function) => {
+    timeouts.push(options.timeout);
+    callback(null, '');
+    return {};
+  }) as unknown as typeof childProcess.execFile);
+  try {
+    const budget = { remaining: 1, deadline: Date.now() + BACKUP_REMOTE_TIMEOUT_MS - 500 };
+    const result = await assessBackupRepository(root, 'source_repo', 'source-id', now, budget);
+    expect(result.verification?.state).toBe('budget_exhausted');
+    expect(result.verification?.checked_at).toBeUndefined();
+    expect(timeouts).toHaveLength(0);
+    expect(budget.remaining).toBe(1);
+  } finally { probe.mockRestore(); }
+});
+
+test('a probe killed inside a full slot still reports unavailable — budget exhaustion stays distinct from transport failure (#6499)', async () => {
+  const { root } = await repository('full-slot');
+  const probe = spyOn(childProcess, 'execFile').mockImplementation(((file: string, args: string[], options: { timeout: number }, callback: Function) => {
+    const error = new Error('killed') as Error & { killed?: boolean; signal?: string };
+    error.killed = true;
+    error.signal = 'SIGTERM';
+    callback(error, '');
+    return {};
+  }) as unknown as typeof childProcess.execFile);
+  try {
+    const result = await assessBackupRepository(root, 'source_repo', 'source-id', now, { remaining: 1, deadline: Date.now() + BACKUP_REMOTE_BUDGET_MS });
+    expect(result.verification?.state).toBe('unavailable');
+    expect(result.verification?.checked_at).toBeDefined();
+  } finally { probe.mockRestore(); }
+});
