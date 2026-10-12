@@ -224,12 +224,27 @@ async function runTypesafe(req: DecideRequest, ctx: DecideContext, cfg: DecideCo
       }
     }, { concurrency: a.lane === 'hot' ? cfg.maxConcurrency : cfg.backgroundConcurrency, deadlineAt: a.deadlineAt, signal, lane: a.lane, now: a.now });
   } catch (err) {
-    throw asDecideError(err, signal, req.signal);
+    const de = asDecideError(err, signal, req.signal);
+    // #6519: a failing group may already hold settled-batch answers in the
+    // closure. Attach them for AUDIT ONLY — the group still throws; consumers
+    // record answer_value with a not-applied marker, never 'kept'. The llm
+    // lane (runLlm) keeps the stock all-or-nothing.
+    if (de instanceof DecideError && Object.keys(answers).length > 0) {
+      de.partial = { answers, model_resolved: models.size === 1 ? [...models][0]! : null, input_tokens: inputTokens };
+    }
+    throw de;
   } finally {
     done();
     recordOnTracker(tracker, { modelId: a.provider, reservation, inputTokens, outputTokens: 0, kind: budgetKind, label: 'gateway.decide' });
   }
-  if (models.size > 1) throw new DecideError('mixed_model', `decide: batches answered by ${models.size} different models`);
+  if (models.size > 1) {
+    // #6519: a mixed-model group fails whole; attach the audit-only partial
+    // here too (this throw sits OUTSIDE the batch catch) — no single model
+    // identity may be asserted for disagreeing batches.
+    const mixed = new DecideError('mixed_model', `decide: batches answered by ${models.size} different models`);
+    mixed.partial = { answers, model_resolved: null, input_tokens: inputTokens };
+    throw mixed;
+  }
   const modelResolved = [...models][0] ?? modelId;
   return {
     decision_id: randomUUID(), provider: a.provider, model_alias: modelId, model_resolved: modelResolved, answers, refused: {},

@@ -110,6 +110,19 @@ export interface DecideResult {
   uncalibrated?: boolean;
 }
 
+/**
+ * UDKB-251 v2 F1 (V-a, paid #12408): answers already returned by settled
+ * batches of a sys-lane group when a later batch fails the group. Audit-only:
+ * the group outcome stays 'error' and these answers are never applied —
+ * receipts record them with answer_value plus an explicit
+ * "partial-answer-returned-unapplied" marker, never 'kept'.
+ */
+export interface DecidePartial {
+  answers: Record<string, DecideAnswer>;
+  model_resolved: string | null;
+  input_tokens: number;
+}
+
 /** Why a logical decision produced no usable answers. Callers take the slot's fail direction. */
 export type DecideFailureReason =
   | 'timeout' | 'rate_limited' | 'provider_error' | 'malformed_response' | 'mixed_model'
@@ -119,6 +132,8 @@ export type DecideFailureReason =
 export class DecideError extends Error {
   reason: DecideFailureReason;
   status?: number;
+  /** UDKB-251 v2 F1 (V-a): settled-batch answers carried for audit when a sys-lane group fails. */
+  partial?: DecidePartial;
   constructor(reason: DecideFailureReason, message: string, status?: number) {
     super(message);
     this.name = 'DecideError';

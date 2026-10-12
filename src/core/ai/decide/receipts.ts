@@ -7,7 +7,7 @@
 import type { BrainEngine } from '../../engine.ts';
 import { hmacRef, receiptSalt, recordReceipts, type ReceiptRow } from './store.ts';
 import type { SlotPolicy } from './policy.ts';
-import { thresholdValue, type DecideLane, type DecideQuestion, type DecideResult, type DecideSlot, type EvidenceItem } from './types.ts';
+import { thresholdValue, type DecideLane, type DecidePartial, type DecideQuestion, type DecideResult, type DecideSlot, type EvidenceItem } from './types.ts';
 
 export interface ReceiptInput {
   slot: DecideSlot;
@@ -28,6 +28,13 @@ export interface ReceiptInput {
   /** Plain subject identity per question id (hashed before storage), e.g. `page:<source>:<slug>`. */
   subjects?: Record<string, string>;
   sourceId?: string | null;
+  /**
+   * UDKB-251 v2 F1 (V-a, paid #12408/#12410): audit-only settled-batch answers
+   * of a failed sys-lane group. Rows keep the group outcome ('error' via
+   * fallbackOutcome) and record the returned values as answer_value; unknown
+   * fields (cost/latency/batches/decision_id) stay null — never zero-filled.
+   */
+  partial?: DecidePartial;
   remote?: boolean;
   kUsed?: number;
   latencyMs?: number;
@@ -38,9 +45,10 @@ export async function buildReceiptRows(engine: BrainEngine, input: ReceiptInput)
   const salt = await receiptSalt(engine);
   const stateHash = hmacRef(salt, JSON.stringify(Object.entries(input.state).map(([k, v]) => [k, v.text])));
   const r = input.result;
-  const perQuestionTokens = r && input.questions.length > 0 ? Math.round(r.usage.input_tokens / input.questions.length) : null;
+  const tokenSource = r?.usage.input_tokens ?? input.partial?.input_tokens;
+  const perQuestionTokens = tokenSource !== undefined && input.questions.length > 0 ? Math.round(tokenSource / input.questions.length) : null;
   return input.questions.map((q) => {
-    const answer = r?.answers[q.id] ?? r?.fallback?.answers[q.id];
+    const answer = r?.answers[q.id] ?? r?.fallback?.answers[q.id] ?? input.partial?.answers[q.id];
     const subject = input.subjects?.[q.id];
     return {
       decision_id: r?.decision_id ?? `none:${stateHash}`,
@@ -49,7 +57,7 @@ export async function buildReceiptRows(engine: BrainEngine, input: ReceiptInput)
       mode: input.mode,
       provider: r?.fallback?.answers[q.id] ? r.fallback.provider : input.provider,
       model_alias: r?.model_alias ?? null,
-      model_resolved: r?.fallback?.answers[q.id] ? r.fallback.model_resolved : r?.model_resolved || null,
+      model_resolved: r?.fallback?.answers[q.id] ? r.fallback.model_resolved : r?.model_resolved ?? input.partial?.model_resolved ?? null,
       question_kind: q.kind,
       state_hash: stateHash,
       question_hash: hmacRef(salt, `${q.kind}|${q.instructions}|${JSON.stringify(Object.entries(q.inputs ?? {}).map(([k, v]) => [k, v.text]))}`),
