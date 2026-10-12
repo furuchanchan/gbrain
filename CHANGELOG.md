@@ -10,6 +10,9 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.189.0] - 2026-10-12
+- test(gateway): unconfigure the gateway for the genuinely-unconfigured adapter fixtures — `resetGateway()` reinstalls the native preload baseline, so the create-callback test reached the real SDK; use `__unconfigureGatewayForTests()`, restore the baseline via file-level `afterEach(resetGateway)`, and pin the explicit fork to `AIConfigError`. Fixes #6514.
+
 ## [0.60.176.0] - 2026-10-12
 
 **Remote forget refusals and entity cards respect visibility and withdrawal.** A remote `forget` never withdraws, or names, an active fact on a page the caller cannot read; when one would be reached, it is refused with a `claim_linked:` message that names no fact. A remote `remember` refuses a withdrawn claim the caller cannot see the same way it refuses an unreadable page. The entity card's `identity_excerpt` no longer shows a forgotten fact row. Local callers keep their detailed refusals.

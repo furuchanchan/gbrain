@@ -15,11 +15,14 @@
  * These tests pin the four spec points. Hermetic — no real LLM call.
  */
 
-import { describe, test, expect } from 'bun:test';
+import { afterEach, describe, test, expect } from 'bun:test';
 import { __thinkAdapter } from '../src/core/think/index.ts';
-import { resetGateway } from '../src/core/ai/gateway.ts';
+import { resetGateway, __unconfigureGatewayForTests } from '../src/core/ai/gateway.ts';
 import { AIConfigError } from '../src/core/ai/errors.ts';
 import { withEnv, emptyHome } from './helpers/with-env.ts';
+
+// Restore the native preload baseline before another file's beforeAll runs.
+afterEach(resetGateway);
 
 describe('think gateway adapter — response shape conversion', () => {
   test('chatResultToMessage maps ChatResult.text to Anthropic.Message content[0].text', () => {
@@ -134,7 +137,9 @@ describe('think gateway adapter — #1698 slash form + explicit-model fork', () 
     await withEnv({ ANTHROPIC_API_KEY: 'sk-test-fake' }, async () => {
       // Build valid clients (key present → probe ok) but leave the gateway UNCONFIGURED
       // so gateway.chat() throws AIConfigError (requireConfig) at create() time.
-      resetGateway();
+      // __unconfigureGatewayForTests — resetGateway() would reinstall the native
+      // preload's configured baseline, and create() would reach the real SDK (#6514).
+      __unconfigureGatewayForTests();
       const params: any = {
         model: 'anthropic:claude-sonnet-4-6',
         max_tokens: 16,
@@ -146,7 +151,7 @@ describe('think gateway adapter — #1698 slash form + explicit-model fork', () 
         'anthropic:claude-sonnet-4-6', { explicitModel: true },
       );
       expect(explicitClient).not.toBeNull();
-      await expect(explicitClient!.create(params)).rejects.toThrow();
+      await expect(explicitClient!.create(params)).rejects.toThrow(AIConfigError);
 
       const gracefulClient = await __thinkAdapter.tryBuildGatewayClient(
         'anthropic:claude-sonnet-4-6', { explicitModel: false },
