@@ -3023,3 +3023,19 @@ DO $rls$ BEGIN
   END IF;
 END $rls$;
 -- END GENERATED from src/core/questions/schema.ts (PINNED_QUESTIONS_SCHEMA_SQL)
+
+-- #6522 (v240): persisted per-chunk synopses for per_chunk_synopsis
+-- contextual retrieval. Keyed by (page_id, chunk_index) and matched on
+-- chunk_text_hash + prompt_version + synopsis_model — independent of the
+-- embedding model, so re-embedding under a new embedder reuses them.
+CREATE TABLE IF NOT EXISTS chunk_synopses (
+  page_id         INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  chunk_index     INTEGER NOT NULL,
+  chunk_text_hash TEXT    NOT NULL,
+  synopsis        TEXT    NOT NULL,
+  synopsis_model  TEXT    NOT NULL,
+  prompt_version  INTEGER NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (page_id, chunk_index)
+);

@@ -318,6 +318,10 @@ export const CLI_COMMANDS: readonly CliCommandRecord[] = [  // Pre-connect: disp
   // thin client: Wave 2 repair core: repairs publish coordinated writes on the brain host.
   { name: 'repair', phase: 'post-connect', thinClient: 'refuse', selfHelp: true, load: () => import('./commands/repair.ts') },
   { name: 'orphans', phase: 'post-connect', thinClient: 'refuse', selfHelp: true, load: () => import('./commands/orphans.ts') },
+  // selfHelp: #6522: synopsis ships its own usage block (read-only audit
+  // of persisted per-chunk synopses; a thin client would fabricate an
+  // empty scratch PGLite).
+  { name: 'synopsis', phase: 'post-connect', thinClient: 'refuse', selfHelp: true, load: () => import('./commands/synopsis.ts') },
   // selfHelp: maintain (#3015) prints its own usage block (modes + not-auto-applied list).
   { name: 'maintain', phase: 'post-connect', thinClient: 'none', selfHelp: true, load: () => import('./commands/maintain.ts') },
   { name: 'reindex', phase: 'post-connect', thinClient: 'none', selfHelp: true, load: () => import('./commands/reindex.ts') },

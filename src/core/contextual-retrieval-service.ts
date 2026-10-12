@@ -56,6 +56,7 @@ import {
   SYNOPSIS_DOC_MAX_CHARS,
   type GeneratePerChunkSynopsisResult,
 } from './page-summary.ts';
+import { lookupChunkSynopsis, saveChunkSynopsis } from './synopsis-store.ts';
 import type { SynopsisFailureKind } from './audit-synopsis.ts';
 import { runSlidingPool } from './worker-pool.ts';
 import type { BrainEngine } from './engine.ts';
@@ -612,6 +613,22 @@ async function buildWrappedChunkText(opts: {
     return c.chunk_text;
   }
 
+  // #6522: a persisted synopsis (page_id, chunk_index row matched on
+  // chunk_text_hash + prompt_version + synopsis_model) skips the model
+  // call under any embedding model — only a content, prompt or
+  // synopsis-model change regenerates.
+  const stored = await lookupChunkSynopsis(args.engine, {
+    pageId: page.id,
+    chunkIndex: c.chunk_index,
+    chunkText: c.chunk_text,
+    promptVersion: SYNOPSIS_PROMPT_VERSION,
+    synopsisModel,
+  });
+  if (stored !== null) {
+    const prefix = buildContextualPrefix(title, stored);
+    return wrapChunkForEmbedding(c.chunk_text, prefix, c.chunk_source);
+  }
+
   // Acquire rate-lease per chunk (D26 P0-3). Inline callers pass no
   // hooks; only the Minion handler wires through rate-leases.ts.
   let lease: unknown;
@@ -656,6 +673,14 @@ async function buildWrappedChunkText(opts: {
   }
 
   if (synopsisResult.kind === 'success') {
+    await saveChunkSynopsis(args.engine, {
+      pageId: page.id,
+      chunkIndex: c.chunk_index,
+      chunkText: c.chunk_text,
+      promptVersion: SYNOPSIS_PROMPT_VERSION,
+      synopsisModel,
+      synopsis: synopsisResult.synopsis,
+    });
     const prefix = buildContextualPrefix(title, synopsisResult.synopsis);
     return wrapChunkForEmbedding(c.chunk_text, prefix, c.chunk_source);
   }

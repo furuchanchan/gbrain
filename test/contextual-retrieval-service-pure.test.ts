@@ -544,6 +544,9 @@ function makeServiceEngine(chunks: ChunkInput[]) {
         });
         return [];
       }
+      // #6522: persisted synopsis store — fixture models an empty store
+      // (every lookup misses, saves accept).
+      if (sql.includes('chunk_synopses')) return [];
       if (!sql.includes('FROM sources')) throw new Error(`Unexpected fixture SQL: ${sql}`);
       return [{
         id: 'default',
