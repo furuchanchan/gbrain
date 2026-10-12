@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.192.0] - 2026-10-12
+
+### Fixed
+
+- Managed sync discovery no longer counts soft-deleted pages as origin
+  claimants: a page tombstoned to resolve a duplicate-origin pair kept
+  claiming the shared file, so every `gbrain sync` refused the source with
+  `page_identity_changed` forever. Tombstones still hold their slug (a file
+  returning to a tombstoned origin revives the row), and a tombstone's
+  recorded origin no longer participates in the case/spelling collision
+  check either (#6517).
+
 ## [0.60.177.0] - 2026-10-12
 
 **Fix wave 15: a managed brain can no longer be routed to the wrong writer or lose pages it imported, the pages that refused every write since an old import write again, and every wedge the wave reproduced has a named exit.** A missing or malformed persistence-mode row used to read as "unmanaged" in more than a hundred places, so an impossible empty read on CI sent a managed brain through the legacy writer; it now refuses with `storage_error` everywhere. A `--full` sync kept deleting pages imported from untracked working-tree files; it keeps them. A first or `--full` sync above the cursor bound finishes in slices instead of refusing. Some 80,000 pages whose stored frontmatter still carried the parser's reserved keys refused every write as `source_changed`; the comparison ignores those keys and a consented sweep cleans them. Conversation-facts extraction no longer lists a page twice and blocks the whole batch, `projections drain` no longer spins forever on one stale row, backups no longer fail on a stale socket, prefix-bound agents can `remember`, doctor stops echoing registration credentials, Haiku 5.5 long prompts are charged at the tier Anthropic bills, and Google contacts without an email get a page. Fifty-nine changes across seven areas; one additive migration (v239); no paid model call is added anywhere.

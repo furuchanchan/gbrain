@@ -256,6 +256,28 @@ function cutDiscoveryToSlice(discovered: SyncDiscovery, slicing: Pick<SyncSliceC
   discovered.slice = { phase: cut.phase, after: cut.after, head, target: discovered.target, done: cut.done };
   if (cut.done && discovered.target === head) delete discovered.stagedHead; else discovered.stagedHead = head;
 }
+const storable = <T extends { source_path: string | null }>(page: T) => page.source_path === null || !isWindowsColonTarget(page.source_path);
+type SyncPageIdentity = { id: number; slug: string; source_path: string | null; knowledge_revision: string; deleted_at: string | null };
+/** Freeze all logical identities in one database statement, before yielding between pages; a later interactive edit conflicts with this scan. */
+async function freezePageIdentities(engine: BrainEngine, sourceId: string, selectedPaths: string[]): Promise<{
+  identities: SyncPageIdentity[]; bySlug: Map<string, SyncPageIdentity>; byPath: Map<string, SyncPageIdentity[]>;
+}> {
+  const identities = await engine.executeRaw<SyncPageIdentity>(
+    'SELECT id,slug,source_path,knowledge_revision,deleted_at FROM pages WHERE source_id=$1', [sourceId]);
+  const bySlug = new Map(identities.map(p => [p.slug, p]));
+  const byPath = new Map<string, SyncPageIdentity[]>();
+  // A tombstoned page keeps its recorded source_path but no longer claims the
+  // origin: a soft-deleted duplicate must not keep the source at
+  // page_identity_changed. Tombstones stay in bySlug — the collision logic in
+  // the caller already accounts for them through `deleted`.
+  const storableIdentities = identities.filter(page => page.deleted_at === null && storable(page));
+  assertDistinctSyncOrigins([...selectedPaths, ...storableIdentities.flatMap(page => page.source_path ? [page.source_path] : [])]);
+  for (const page of storableIdentities) if (page.source_path) {
+    const origin = syncOriginPath(page.source_path);
+    byPath.set(origin, [...(byPath.get(origin) ?? []), page]);
+  }
+  return { identities, bySlug, byPath };
+}
 export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, context?: ManagedSyncContext,
   stage?: { target: string; head: string; slice?: Pick<SyncSliceCursor, 'phase' | 'after'> }): Promise<SyncDiscovery> {
   const { binding, root, gitRoot, sourceId, incarnation, source } = context ?? await resolveManagedSyncContext(engine, opts);
@@ -317,7 +339,6 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     record(path, refusalMessages[action](path));
     return true;
   };
-  const storable = <T extends { source_path: string | null }>(page: T) => page.source_path === null || !isWindowsColonTarget(page.source_path);
   const put = (path: string, action: SyncEntry['action'], working = false) => {
     if (process.platform === 'win32' && path.includes('\\')) throw opError('page_identity_changed', 'Git paths containing literal backslashes are not safe Windows sync targets.',
       `${path} in ${sourceId} has a literal backslash in its name, which Windows cannot store; nothing was synced. Rename it on a macOS or Linux checkout and commit, then run gbrain sync --no-pull --source ${sourceId}.`);
@@ -444,18 +465,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
   const discovered: SyncDiscovery = { discoveredAt, ...(released.length ? { releasedHolds: released } : {}), ...(retryTaken.length ? { retryTaken } : {}),
     ...(refused.size ? { fileRefusals: [...refused.values()] } : {}), binding: { ...binding, owner_epoch: String(binding.owner_epoch), topology_generation: String(binding.topology_generation) }, root, gitRoot, sourceId, incarnation, from: source.last_commit, target, entries: selected, slugMode, ...(company ? { companyPlan: company.plan } : {}), ...(stage ? { stagedHead: stage.head } : {}),
     ...(workingTreeKept ? { workingTreeKept } : {}) };
-  // Freeze all logical identities in one database statement, before yielding
-  // between pages. A later interactive edit must conflict with this scan.
-  const identities = await engine.executeRaw<{ id: number; slug: string; source_path: string | null; knowledge_revision: string }>(
-    'SELECT id,slug,source_path,knowledge_revision FROM pages WHERE source_id=$1', [sourceId]);
-  const bySlug = new Map(identities.map(p => [p.slug, p]));
-  const byPath = new Map<string, typeof identities>();
-  const storableIdentities = identities.filter(storable);
-  assertDistinctSyncOrigins([...selected.map(entry => entry.sourcePath), ...storableIdentities.flatMap(page => page.source_path ? [page.source_path] : [])]);
-  for (const page of storableIdentities) if (page.source_path) {
-    const origin = syncOriginPath(page.source_path);
-    byPath.set(origin, [...(byPath.get(origin) ?? []), page]);
-  }
+  const { identities, bySlug, byPath } = await freezePageIdentities(engine, sourceId, selected.map(entry => entry.sourcePath));
   // Imports whose origin has no page yet claim their slug; claims are settled after every entry has one.
   const claims = new Map<string, SyncEntry[]>();
   for (const entry of selected) {
@@ -504,7 +514,9 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     const holderOrigin = recorded !== null && prefix && recorded.startsWith(prefix) && sameSyncOrigin(recorded, recorded.slice(prefix.length), originScope, holder!.slug)
       ? recorded.slice(prefix.length) : recorded;
     const respelled = holderOrigin !== null && !holderOrigin.includes('\\') && deletions.has(holderOrigin);
-    const spellings = [...(holderOrigin === null || respelled ? [] : [holderOrigin]), ...candidates.map(entry => syncOriginPath(entry.sourcePath))].map(spelling);
+    // A tombstoned holder does not claim its recorded origin (handled as `kept` below);
+    // its spelling must not collide with a file returning to that path either.
+    const spellings = [...(holderOrigin === null || respelled || (holder && deleted.has(holder.id)) ? [] : [holderOrigin]), ...candidates.map(entry => syncOriginPath(entry.sourcePath))].map(spelling);
     if (new Set(spellings).size !== spellings.length) throw opError('page_identity_changed', 'Sync origins for one slug differ only by case or separator spelling.',
       `Files mapping to page ${slug} in ${sourceId} differ only by case or separator spelling (${candidates.slice(0, 3).map(entry => entry.sourcePath).join(', ')}); nothing was written. Keep one spelling, rename or remove the others and commit, then run gbrain sync --no-pull --source ${sourceId}.`);
     // A live page keeps its slug while its own file is still in the tree; the newcomer is the collision.
