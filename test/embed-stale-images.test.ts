@@ -17,7 +17,7 @@ import { embedStaleImages } from '../src/core/embed-stale-images.ts';
 import { runSources } from '../src/commands/sources.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import { withEnv } from './helpers/with-env.ts';
-import { runEmbed } from '../src/commands/embed.ts';
+import { runEmbed, runEmbedCore } from '../src/commands/embed.ts';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 
@@ -60,9 +60,11 @@ afterAll(async () => {
   if (engine) await engine.disconnect();
 }, 60_000);
 
-const hasVector = async (slug: string) => (await engine.executeRaw<{ has_vec: boolean }>(
+const hasVector = async (slug: string) => hasVectorIn('img', slug);
+
+const hasVectorIn = async (sourceId: string, slug: string) => (await engine.executeRaw<{ has_vec: boolean }>(
   `SELECT c.embedding_image IS NOT NULL AS has_vec FROM pages p JOIN content_chunks c ON c.page_id = p.id
-    WHERE p.source_id = 'img' AND p.slug = $1`, [slug]))[0]?.has_vec;
+    WHERE p.source_id = $1 AND p.slug = $2`, [sourceId, slug]))[0]?.has_vec;
 
 describe('embed --stale --images', () => {
   test('rebuilds a vectorless image from its file, then finds nothing to do', async () => {
@@ -112,5 +114,66 @@ describe('embed --stale --images', () => {
       });
     } finally { console.log = origLog; }
     expect(JSON.parse(lines.at(-1)!)).toMatchObject({ candidates: 1, rebuilt: 0 });
+  }, 60_000);
+});
+
+describe('#6529 sweep hardening', () => {
+  test('an image page whose source_path is NULL resolves its file via the slug', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'img-sweep-null-'));
+    mkdirSync(join(d, 'photos'));
+    writeFileSync(join(d, 'photos/legacy.png'), PNG);
+    await runSources(engine, ['add', 'img2', '--path', d, '--no-federated', '--force']);
+    await importImageFile(engine, join(d, 'photos/legacy.png'), 'photos/legacy.png', { noEmbed: true, sourceId: 'img2' });
+    await engine.executeRaw(`UPDATE pages SET source_path = NULL WHERE source_id = 'img2' AND slug = 'photos/legacy.png'`);
+
+    const swept = await embedStaleImages(engine, { sourceId: 'img2', dryRun: false });
+    expect(swept).toMatchObject({ candidates: 1, rebuilt: 1, missingFile: 0, failures: 0 });
+    expect(await hasVectorIn('img2', 'photos/legacy.png')).toBe(true);
+  }, 60_000);
+
+  test('a sweep where every candidate is missing is a failure naming the first path tried, not a quiet exit', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'img-sweep-gone-'));
+    mkdirSync(join(d, 'photos'));
+    writeFileSync(join(d, 'photos/vanished.png'), PNG);
+    await runSources(engine, ['add', 'img3', '--path', d, '--no-federated', '--force']);
+    await importImageFile(engine, join(d, 'photos/vanished.png'), 'photos/vanished.png', { noEmbed: true, sourceId: 'img3' });
+    rmSync(join(d, 'photos/vanished.png'));
+
+    const swept = await embedStaleImages(engine, { sourceId: 'img3', dryRun: false });
+    expect(swept).toMatchObject({ candidates: 1, rebuilt: 0, missingFile: 1 });
+    expect(swept.failures).toBe(1);
+    expect(swept.failure_samples[0]).toContain('missing source files');
+    expect(swept.failure_samples[0]).toContain('photos/vanished.png');
+  }, 60_000);
+
+  test('embed --stale runs the image sweep itself on a multimodal install', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'img-sweep-auto-'));
+    mkdirSync(join(d, 'photos'));
+    writeFileSync(join(d, 'photos/auto.png'), PNG);
+    await runSources(engine, ['add', 'img4', '--path', d, '--no-federated', '--force']);
+    await importImageFile(engine, join(d, 'photos/auto.png'), 'photos/auto.png', { noEmbed: true, sourceId: 'img4' });
+    expect(await hasVectorIn('img4', 'photos/auto.png')).toBe(false);
+
+    // The engine was initialized at the default 1536 dims; match the gateway
+    // so the run's dimension preflight passes (the other tests sweep
+    // directly). The multimodal lane is fixed at 1024 — embedding_image is
+    // vector(1024) — so the stub answers each request at its own width.
+    configureGateway({
+      embedding_model: 'voyage:voyage-multimodal-3',
+      embedding_multimodal_model: 'voyage:voyage-multimodal-3',
+      embedding_dimensions: 1536,
+      env: { VOYAGE_API_KEY: 'test-key' },
+    });
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const dims = Array.isArray(body.inputs) ? 1024 : 1536;
+      return new Response(JSON.stringify({
+        data: [{ embedding: new Array(dims).fill(0.1), index: 0 }], model: 'voyage-multimodal-3',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    await withEnv({ GBRAIN_EMBEDDING_MULTIMODAL: 'true' }, async () => {
+      await runEmbedCore(engine, { stale: true, sourceId: 'img4', quiet: true });
+    });
+    expect(await hasVectorIn('img4', 'photos/auto.png')).toBe(true);
   }, 60_000);
 });

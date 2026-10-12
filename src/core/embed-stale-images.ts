@@ -27,13 +27,15 @@ export interface StaleImageSweepResult extends EmbedCostStopFields {
   /** Candidates the importer left unchanged (complete by its own check, or refused). */
   skipped: number;
   missingFile: number;
+  /** The first few resolved paths the sweep tried and could not find. */
+  missing_file_samples: string[];
   failures: number;
   failure_samples: string[];
 }
 
 export async function embedStaleImages(
   engine: BrainEngine,
-  opts: { sourceId?: string; dryRun: boolean; costCap?: EmbedCostCap | null },
+  opts: { sourceId?: string; dryRun: boolean; costCap?: EmbedCostCap | null; deadline?: number },
 ): Promise<StaleImageSweepResult> {
   const ocrWanted = process.env.GBRAIN_EMBEDDING_IMAGE_OCR === 'true';
   const params: unknown[] = [ocrWanted];
@@ -46,7 +48,7 @@ export async function embedStaleImages(
           OR NOT EXISTS (SELECT 1 FROM content_chunks c WHERE c.page_id = p.id AND c.embedding_image IS NOT NULL)
           OR ($1 AND COALESCE(p.frontmatter->>'ocr_status', '') <> 'done' AND btrim(p.compiled_truth) = ''))
       ORDER BY p.id`, params);
-  const result: StaleImageSweepResult = { candidates: rows.length, rebuilt: 0, skipped: 0, missingFile: 0, failures: 0, failure_samples: [] };
+  const result: StaleImageSweepResult = { candidates: rows.length, rebuilt: 0, skipped: 0, missingFile: 0, missing_file_samples: [], failures: 0, failure_samples: [] };
   const fail = (row: { source_id: string; slug: string }, error: string) => {
     result.failures++;
     if (result.failure_samples.length < 5) result.failure_samples.push(`${row.source_id}:${row.slug}: ${error}`);
@@ -58,11 +60,20 @@ export async function embedStaleImages(
   for (const row of rows) {
     // Fix wave 13 P1.18: the approved cap stops the sweep before the next image; a refused image is not a failure.
     if (cap?.hit()) break;
+    if (opts.deadline !== undefined && Date.now() >= opts.deadline) break;
     const root = row.local_path ?? (row.source_id === 'default' ? repoPath : null);
-    const file = root && row.source_path ? locateSourceFile(root, row.source_path, gitRoots) : null;
-    if (!file) { result.missingFile++; continue; }
+    // Image pages imported before source_path was recorded carry their
+    // repo-relative path (with extension) as the slug — the file resolves
+    // from it the same way.
+    const rel = row.source_path ?? row.slug;
+    const file = root ? locateSourceFile(root, rel, gitRoots) : null;
+    if (!file) {
+      result.missingFile++;
+      if (result.missing_file_samples.length < 5 && root) result.missing_file_samples.push(`${row.source_id}:${row.slug}: ${join(root, rel)}`);
+      continue;
+    }
     try {
-      const run = () => importImageFile(engine, file, row.source_path!, { sourceId: row.source_id });
+      const run = () => importImageFile(engine, file, rel, { sourceId: row.source_id });
       const imported = cap ? await cap.metered(run) : await run();
       if (imported.status === 'imported') result.rebuilt++;
       else if (cap?.hit()) break;
@@ -72,6 +83,12 @@ export async function embedStaleImages(
       if (cap?.hit()) break;
       fail(row, e instanceof Error ? e.message : String(e));
     }
+  }
+  // Every candidate reported missing and nothing got rebuilt: that is a
+  // sweep that fixed nothing — a failure, not a quiet success.
+  if (!opts.dryRun && result.candidates > 0 && result.rebuilt === 0 && result.failures === 0 && result.missingFile === result.candidates) {
+    result.failures += result.missingFile;
+    result.failure_samples.push(`all ${result.candidates} image sweep candidate(s) reported missing source files${result.missing_file_samples[0] ? `; first path tried: ${result.missing_file_samples[0]}` : ''}`);
   }
   return result;
 }

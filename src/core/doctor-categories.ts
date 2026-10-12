@@ -133,6 +133,9 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'extraction_date_grounding',
   'hidden_by_search_policy',
   'image_assets',
+  // Image pages with no recorded source_path — resolved via slug by the
+  // image sweep; a re-import backfills the column.
+  'image_source_path',
   'integrity',
   'jsonb_integrity',
   // #4222 — near-empty entity pages that accreted huge edge counts (junk

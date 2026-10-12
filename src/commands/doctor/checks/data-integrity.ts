@@ -290,12 +290,31 @@ async function runCrossModal(ctx: DoctorContext): Promise<Check[]> {
       message: 'embedding_multimodal column not present yet; skipped',
     });
   }
+
+  // Image pages imported before source_path was recorded resolve their file
+  // through the slug; count them so the fallback's blast radius stays visible.
+  progress.heartbeat('image_source_path');
+  try {
+    const [row] = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*)::text AS count FROM pages WHERE page_kind = 'image' AND deleted_at IS NULL AND source_path IS NULL`,
+    );
+    const missing = parseInt(String(row?.count ?? '0'), 10);
+    checks.push(missing === 0
+      ? { name: 'image_source_path', status: 'ok', message: 'All live image pages record a source_path.' }
+      : {
+          name: 'image_source_path',
+          status: 'warn',
+          message: `${missing} live image page(s) have source_path IS NULL; \`gbrain embed --stale --images\` resolves them via the slug, and re-importing the file backfills the column.`,
+        });
+  } catch {
+    checks.push({ name: 'image_source_path', status: 'ok', message: 'source_path column not present yet; skipped' });
+  }
   return checks;
 }
 
 export const crossModalEntry: DoctorEntry = {
   name: 'cross_modal_modality_backfill',
-  emits: ['cross_modal_modality_backfill', 'unified_multimodal_coverage'],
+  emits: ['cross_modal_modality_backfill', 'unified_multimodal_coverage', 'image_source_path'],
   run: runCrossModal,
 };
 

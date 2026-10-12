@@ -119,6 +119,7 @@
       "  [OK] whoknows_health: whoknows eval fixture present (10 queries). Run `gbrain eval whoknows test/fixtures/whoknows-eval.jsonl` to grade.",
       "  [OK] cross_modal_modality_backfill: All image-asset chunks have modality=image",
       "  [OK] unified_multimodal_coverage: search.unified_multimodal is off; coverage check N/A",
+      "  [OK] image_source_path: All live image pages record a source_path.",
       "  [OK] markdown_body_completeness: No truncated bodies detected",
       "  [OK] oversized_pages: No pages exceed 500000 bytes (excluding embed_skip pages, which already took the accepted non-embeddable remediation)",
       "  [OK] scraper_junk_pages: No junk-pattern hits in 5 recent page(s) (use --content-audit for full scan)",

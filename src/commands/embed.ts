@@ -31,7 +31,7 @@ import { countRestampOnlyChunks, invalidateStaleSignatureEmbeddingsGuarded } fro
 import { loadConfig, type GBrainConfig } from '../core/config.ts';
 import { slog, serr } from '../core/console-prefix.ts';
 import { embedBudgetStopVerdict, noteEmbedBudgetStop } from '../core/embed-budget-stop.ts';
-import { embedCostCap, embedCostStopVerdict, noteEmbedCostStop } from '../core/embed-cost-cap.ts';
+import { embedCostCap, embedCostStopVerdict, noteEmbedCostStop, type EmbedCostCap } from '../core/embed-cost-cap.ts';
 import type { Authorization } from '../core/consent.ts';
 import { filterOutEmbedSkipped } from '../core/embed-skip.ts';
 import { runSlidingPool } from '../core/worker-pool.ts';
@@ -255,6 +255,8 @@ export interface EmbedOpts {
    */
   heldLocks?: DbLockHandle[];
   assertOwned?: (tx?: BrainEngine) => Promise<void>;
+  /** The approved spend cap of a foreground run; the stale drain's image sweep meters under it too. */
+  costCap?: EmbedCostCap | null;
   /**
    * #5885: a `stale` drain also embeds stale takes (missing, claim-drifted or
    * other-model vectors). Unset follows `takes.auto_embed` / GBRAIN_EMBED_TAKES
@@ -734,6 +736,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
           quiet: opts.quiet,
           includeNullSignature: opts.includeNullSignature,
           assertOwned: opts.assertOwned,
+          costCap: opts.costCap,
         }, drainSignal));
         if (opts.stale && !isAborted(drainSignal)) await embedTakesForStaleDrain(engine, {
           dryRun: !!opts.dryRun, signal: drainSignal, sourceId: opts.sourceId, assertOwned: opts.assertOwned, quiet: opts.quiet,
@@ -993,6 +996,7 @@ export async function runEmbed(engine: BrainEngine, args: string[], selectedConf
   };
 
   if (costCap) opts.signal = costCap.signal;
+  opts.costCap = costCap;
   try {
     const result = costCap ? await costCap.metered(() => runEmbedCore(engine, opts)) : await runEmbedCore(engine, opts);
     if (progressDone !== null) progress.finish();
@@ -1246,6 +1250,7 @@ async function embedAll(
     /** #3391: lift the NULL-signature grandfather clause (see EmbedOpts). */
     includeNullSignature?: boolean;
     assertOwned?: (tx?: BrainEngine) => Promise<void>;
+    costCap?: EmbedCostCap | null;
   },
   signal?: AbortSignal,
 ) {
@@ -1616,6 +1621,7 @@ async function embedAllStale(
     /** #3391: lift the NULL-signature grandfather clause (see EmbedOpts). */
     includeNullSignature?: boolean;
     assertOwned?: (tx?: BrainEngine) => Promise<void>;
+    costCap?: EmbedCostCap | null;
   },
   signature?: string,
   externalSignal?: AbortSignal,
@@ -1660,6 +1666,25 @@ async function embedAllStale(
     }
     readiness = await prepareEmbeddingProjections(engine, { ...readinessOptions, repair: true, assertOwned: staleOpts?.assertOwned });
     if (isAborted(externalSignal) || Date.now() >= (readinessOptions.deadline ?? Infinity)) return await noteBudgetStop();
+  }
+  // #6529: on a multimodal install the stale run also rebuilds the image
+  // candidates it finds — the same sweep `embed --stale --images` runs —
+  // metered under the run's approved cap instead of only hinting it. Image
+  // pages the sweep could not fix stay in the blocked-projection report.
+  if (!dryRun && process.env.GBRAIN_EMBEDDING_MULTIMODAL === 'true'
+    && !isAborted(externalSignal) && Date.now() < (readinessOptions.deadline ?? Infinity)) {
+    const { embedStaleImages } = await import('../core/embed-stale-images.ts'); // lazy: keeps import-file out of embed's graph
+    const sweep = await embedStaleImages(engine, { sourceId, dryRun: false, costCap: staleOpts?.costCap ?? null, deadline: readinessOptions.deadline });
+    if (sweep.candidates > 0) {
+      if (!staleOpts?.quiet) slog(`[embed] image sweep: ${sweep.rebuilt} rebuilt, ${sweep.skipped} unchanged, ${sweep.missingFile} missing source file, ${sweep.failures} failed (of ${sweep.candidates} candidate(s))`);
+      if (sweep.failures > 0) {
+        result.failures += sweep.failures;
+        result.failure_samples.push(...sweep.failure_samples.slice(0, 3));
+      }
+      // Recount: pages the sweep sealed with a fresh projection left the blocked set.
+      readiness = await prepareEmbeddingProjections(engine, readinessOptions);
+      if (isAborted(externalSignal) || Date.now() >= (readinessOptions.deadline ?? Infinity)) return await noteBudgetStop();
+    }
   }
   // #6223: pages still blocked after bounded recovery never stop the run; the guarded drain counts them.
   const blockedProjections = readiness.blocked && !dryRun ? await reportBlockedProjections(engine, readinessOptions, readiness.blocked, result.failure_samples) : new Set<string>();

@@ -10,6 +10,17 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.199.0] - 2026-10-12
+
+**`embed --stale` fixes its own image backlog.** On a multimodal install (`GBRAIN_EMBEDDING_MULTIMODAL=true`) a stale run now rebuilds the incomplete image pages it finds — the same sweep `embed --stale --images` performs — inside the run's approved spend cap and time budget, instead of only naming them as blocked projections; pages the sweep could not fix still appear in the blocked report and sweep failures count against the run. The sweep also resolves the source file through the page slug when `pages.source_path` is NULL (the shape image pages imported by `sync` before the column was recorded have), so previously unfixable `missingFile` counts now rebuild. A sweep where every candidate reported a missing file and nothing was rebuilt is a counted failure naming the first path tried, not a quiet exit 0, and `gbrain doctor` gains an `image_source_path` check counting live image pages with `source_path IS NULL`. No migration, no paid call.
+
+### Itemized changes
+
+- **`embed --stale` runs the image sweep itself on multimodal installs.** `embedAllStale` invokes `embedStaleImages` after bounded projection recovery (lazy import, same `--source` scope, the run's `EmbedCostCap` and time-budget deadline threaded through `EmbedOpts.costCap`), folds sweep failures into the run result, and recounts blocked projections so only still-blocked pages reach the report.
+- **`embed --stale --images` resolves the file via the slug when `source_path` is NULL** — the slug carries the repo-relative path with extension for those rows — and collects `missing_file_samples` (first five resolved paths that did not exist). `candidates > 0 && rebuilt === 0 && missingFile === candidates` now counts the missing files as failures with a sample naming the first path tried, so the CLI exits non-zero.
+- **Doctor counts image pages missing `source_path`.** New `image_source_path` check under the cross-modal entry warns when live `page_kind='image'` rows have `source_path IS NULL` and names the sweep and a re-import as the repair paths.
+- **Regression coverage.** `test/embed-stale-images.test.ts` gains three tests: NULL `source_path` rebuilds via the slug, an all-missing sweep is a failure naming the first path tried, and `runEmbedCore({ stale })` under `GBRAIN_EMBEDDING_MULTIMODAL` leaves `embedding_image` populated — all three fail on the unpatched base. Doctor goldens regenerated (Postgres fixtures patched identically by hand).
+
 ## [0.60.178.0] - 2026-10-12
 
 **Batch entity lookups respect quarantine.** `entity` with `names` now hides quarantined pages from remote callers the way a single-name `entity` lookup and `get_page` already do, whichever way the name resolves, and a quarantined identity sibling no longer appears beside a page for remote callers, in batch rows or in a single-name card. Trusted local callers see the same results as before. No migration, no paid call.

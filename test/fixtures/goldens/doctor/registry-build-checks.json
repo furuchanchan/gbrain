@@ -519,6 +519,10 @@
       },
       {
         "category": "brain",
+        "name": "image_source_path"
+      },
+      {
+        "category": "brain",
         "name": "markdown_body_completeness"
       },
       {

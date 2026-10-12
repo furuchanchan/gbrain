@@ -1183,6 +1183,12 @@
         },
         {
           "category": "brain",
+          "message": "All live image pages record a source_path.",
+          "name": "image_source_path",
+          "status": "ok"
+        },
+        {
+          "category": "brain",
           "message": "No truncated bodies detected",
           "name": "markdown_body_completeness",
           "status": "ok"
