@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.187.0] - 2026-10-12
+
+**A page purge can no longer time out forever on a large write journal.** The historical-request redaction lookup ran one statement that scanned every row of the source's journal evaluating case-folded substring predicates no index can serve. On a journal of a few hundred thousand rows it exceeded the publication transaction's 5 s statement budget; the timeout is classified transient, so the request recovered and requeued indefinitely while later writes to the source queued behind it. The lookup now collects the source's sequence values with one cheap narrow read and pages the substring predicates through bounded windows of unique-index point lookups, so every statement inspects a strictly bounded row set and completes — the same complete, sequence-ordered, limit-capped result with no statement able to run away.
+
 ## [0.60.176.0] - 2026-10-12
 
 **Remote forget refusals and entity cards respect visibility and withdrawal.** A remote `forget` never withdraws, or names, an active fact on a page the caller cannot read; when one would be reached, it is refused with a `claim_linked:` message that names no fact. A remote `remember` refuses a withdrawn claim the caller cannot see the same way it refuses an unreadable page. The entity card's `identity_excerpt` no longer shows a forgotten fact row. Local callers keep their detailed refusals.

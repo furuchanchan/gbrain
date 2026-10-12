@@ -25,18 +25,41 @@ import { isTerminal, principalKey, requestPrincipal, type WriteRequest } from '.
 
 export interface IntentRedactionTarget { id: string; principal_kind: string; principal_id: string }
 
+/** Rows inspected per lookup statement; each statement stays well inside the caller's statement budget. */
+export const REDACTION_SCAN_ROWS = 5_000;
+
 /**
  * Requests in `sourceId` whose stored intent, outcome or error text carries `claim`, bounded, compacted
  * ones included (compaction keeps the outcome). Owner-only; never returns the text.
+ *
+ * #6511: the substring predicates cannot use an index, so one unbounded scan
+ * walks every row of the source's journal evaluating `strpos(lower(col))` on
+ * four columns — on a large journal it exceeds the transaction's statement
+ * timeout, the failure is classified transient, and the request requeues
+ * forever, blocking the source's write queue. The scan is therefore paged
+ * through the source's own sequence values: one cheap narrow read collects
+ * them, then each statement probes `REDACTION_SCAN_ROWS` rows by unique-index
+ * point lookup — a strictly bounded row set — and applies the same predicates.
+ * Result order and the `limit` cap are preserved.
  */
-export async function findRequestsCarrying(engine: BrainEngine, sourceId: string, claim: string, limit = 10_000): Promise<IntentRedactionTarget[]> {
+export async function findRequestsCarrying(engine: BrainEngine, sourceId: string, claim: string, limit = 10_000,
+  opts: { scanRows?: number } = {}): Promise<IntentRedactionTarget[]> {
   const needle = claim.toLowerCase();
   // The claim as it appears inside a JSON string (quotes and backslashes escaped), lowercased.
   const jsonNeedle = JSON.stringify(claim).slice(1, -1).toLowerCase();
   const carries = (column: string) => `(${column} IS NOT NULL AND (strpos(lower(${column}::text),$2)>0 OR strpos(lower(${column}::text),$3)>0))`;
-  return engine.executeRaw<IntentRedactionTarget>(`SELECT id::text AS id,principal_kind,principal_id FROM persistence_requests
-    WHERE source_id=$1 AND (${carries('intent')} OR ${carries('outcome')} OR ${carries('error_detail')} OR ${carries('error_message')})
-    ORDER BY sequence LIMIT $4`, [sourceId, needle, jsonNeedle, limit]);
+  const sequences = await engine.executeRaw<{ sequence: string }>(
+    `SELECT sequence::text AS sequence FROM persistence_requests WHERE source_id=$1 ORDER BY sequence`, [sourceId]);
+  const scanRows = opts.scanRows ?? REDACTION_SCAN_ROWS;
+  const out: IntentRedactionTarget[] = [];
+  for (let i = 0; i < sequences.length && out.length < limit; i += scanRows) {
+    const rows = await engine.executeRaw<IntentRedactionTarget>(`SELECT id::text AS id,principal_kind,principal_id FROM persistence_requests
+      WHERE source_id=$1 AND sequence=ANY($5::bigint[]) AND (${carries('intent')} OR ${carries('outcome')} OR ${carries('error_detail')} OR ${carries('error_message')})
+      ORDER BY sequence LIMIT $4`,
+      [sourceId, needle, jsonNeedle, limit - out.length, sequences.slice(i, i + scanRows).map(r => r.sequence)]);
+    out.push(...rows);
+  }
+  return out;
 }
 
 /** Replace every JSON string that carries one of `needles` (case-insensitive) with "[purged]"; structure and other values stay. */
