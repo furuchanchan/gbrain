@@ -66,7 +66,7 @@ const HELP_WITHOUT_BRAIN = [
  */
 const STILL_NEEDS_A_BRAIN: string[] = [];
 
-async function runHelp(command: string): Promise<{ code: number; out: string }> {
+async function runHelp(...args: string[]): Promise<{ code: number; out: string }> {
   const home = mkdtempSync(join(tmpdir(), 'gbrain-nobrain-'));
   // An empty GBRAIN_HOME is not enough: loadConfig also honours
   // GBRAIN_DATABASE_URL and DATABASE_URL (config.ts:550-551), so a developer
@@ -78,7 +78,7 @@ async function runHelp(command: string): Promise<{ code: number; out: string }> 
   // --no-env-file: bun auto-loads .env from cwd, and GBRAIN_DATABASE_URL is
   // honored unconditionally, so a developer's local .env would put back
   // exactly what the deletes above removed.
-  const proc = Bun.spawn(['bun', '--no-env-file', 'run', 'src/cli.ts', command, '--help'], {
+  const proc = Bun.spawn(['bun', '--no-env-file', 'run', 'src/cli.ts', ...args], {
     cwd: REPO,
     env,
     stdout: 'pipe',
@@ -130,7 +130,7 @@ describe('--help without a configured brain', () => {
 
   // D5: retrieval-upgrade is an alias whose help is the `migrate embeddings` usage.
   test('retrieval-upgrade --help answers with the migrate embeddings usage', async () => {
-    const { code, out } = await runHelp('retrieval-upgrade');
+    const { code, out } = await runHelp('retrieval-upgrade', '--help');
     expect(code).toBe(0);
     expect(out).not.toContain('No brain configured');
     expect(out).toContain('Usage: gbrain migrate embeddings --to <provider:model>');
@@ -138,7 +138,7 @@ describe('--help without a configured brain', () => {
 
   for (const command of HELP_WITHOUT_BRAIN) {
     test(`${command} --help answers`, async () => {
-      const { code, out } = await runHelp(command);
+      const { code, out } = await runHelp(command, '--help');
       expect(code).toBe(0);
       expect(out).not.toContain('No brain configured');
       // Real help, not a one-line stub or an empty exit.
@@ -147,11 +147,24 @@ describe('--help without a configured brain', () => {
     }, 30_000);
   }
 
+  // #6521: `core <subcommand> --help` dispatched the subcommand with a null
+  // engine and crashed (internal_error on `exec.executeRaw` / `getConfig` /
+  // `readPageSnapshot`); runCore must answer help before any subcommand —
+  // including the write subcommands — touches the engine.
+  test('core <subcommand> --help answers with the core usage', async () => {
+    for (const sub of ['list', 'status', 'init', 'add']) {
+      const { code, out } = await runHelp('core', sub, '--help');
+      expect(code).toBe(0);
+      expect(out).toContain('Usage: gbrain core');
+      expect(out).not.toContain('internal_error');
+    }
+  }, 60_000);
+
   test('the known-unfixed set is exactly what it claims', async () => {
     // Concurrently: seven sequential CLI spawns is most of this file's wall
     // clock, and each one is independent (its own temp GBRAIN_HOME).
     const results = await Promise.all(
-      STILL_NEEDS_A_BRAIN.map(async command => ({ command, ...(await runHelp(command)) })),
+      STILL_NEEDS_A_BRAIN.map(async command => ({ command, ...(await runHelp(command, '--help')) })),
     );
     const unexpectedlyWorking = results
       .filter(r => !r.out.includes('No brain configured'))

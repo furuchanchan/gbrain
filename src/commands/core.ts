@@ -125,6 +125,9 @@ function lineDiff(before: string, after: string): string {
 }
 
 export async function runCore(engine: BrainEngine, args: string[]): Promise<void> {
+  // `core` is dispatched with a null engine on the self-help path; answer
+  // before any subcommand — including the write subcommands — touches it.
+  if (args.includes('--help') || args.includes('-h')) { console.log(USAGE); return; }
   const sub = args[0];
   const json = args.includes('--json');
   const sourceId = flag(args, '--source') ?? 'default';
