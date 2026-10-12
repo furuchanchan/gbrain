@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.186.0] - 2026-10-12
+
+**The write-gate perf check stops flagging healthy runs on busy machines.** The 300 KB gate benchmark bounds the gate against a co-measured reference workload. Its median-ratio check could decouple on intermittently loaded machines: the gate's samples are about twice as wide as the reference's, so a transient CPU stall lands in far more gate samples — on CI run 38116492526 the gate's p50 rose to 3.9-4.7 ms while the reference's p50 held at 1.4-1.5 ms (the stalls were visible only in its p95), and the median ratio tripped the bound without any gate regression. The check now compares the two workloads on their clean samples (the p10 ratio, same bound): a real gate slowdown shifts every quantile, while transient load leaves the fastest decile alone. The p95 ratio and the quiet-round absolute 5 ms check are unchanged, assessment logic moved to `test/helpers/write-gate-perf.ts` with unit coverage replaying the recorded CI sample shapes, and a failed check now always prints every round's raw samples.
+
 ## [0.60.175.0] - 2026-10-11
 
 **CI test shards are balanced again, and the nightly run stops failing its shard-timing check.** CI splits each test lane across several machines using the recorded run time of every test file. A test file with no recorded time is packed blind, and 11.1% of E2E files had none, past the 10% bound the nightly enforces. This release re-measures every lane from green master runs. No product behaviour changes.
