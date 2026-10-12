@@ -653,6 +653,12 @@ const capture: Operation = {
     local_file: { type: 'string', description: 'Local CLI only.', required: false },
     slug: { type: 'string', required: false, description: 'Default inbox/<date>-<hash>.' },
     type: { type: 'string', required: false, description: 'Schema-pack page type (default note).' },
+    // Same provenance write-through as put_page: the trusted local capture CLI
+    // stamps its own labels; remote callers' values are overridden with server
+    // stamps on admission, so the schema just declares them on the wire.
+    source_kind: { type: 'string', description: 'Server-stamped remotely.', required: false },
+    source_uri: { type: 'string', description: 'Server-stamped remotely.', required: false },
+    ingested_via: { type: 'string', description: 'Server-stamped remotely.', required: false },
   },
   scope: 'write',
   mutating: true,

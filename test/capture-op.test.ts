@@ -178,4 +178,37 @@ describe('capture op', () => {
     const page = await engine.getPage(body.slug);
     expect(page).toBeNull();
   });
+
+  // #6524: the capture CLI attaches these to every call; a mutating op
+  // rejects undeclared params, so the schema must carry them.
+  test('accepts the provenance params the capture CLI always sends', async () => {
+    const res = await dispatchToolCall(engine, 'capture', {
+      content: 'Local capture carrying the CLI provenance stamps.',
+      request_id: randomUUID(),
+      source_kind: 'capture-cli',
+      source_uri: 'cli-positional',
+      ingested_via: 'capture-cli',
+    }, { remote: false, sourceId: 'default' });
+    expect(res.isError ?? false).toBe(false);
+    const body = parsed(res);
+    const page = await engine.getPage(body.slug);
+    expect(page?.source_kind).toBe('capture-cli');
+    expect(page?.source_uri).toBe('cli-positional');
+    expect(page?.ingested_via).toBe('capture-cli');
+  });
+
+  test('remote provenance params are accepted on the wire but server-stamped', async () => {
+    const res = await dispatchToolCall(engine, 'capture', {
+      content: 'Remote capture attempting to forge its provenance.',
+      request_id: randomUUID(),
+      source_kind: 'capture-cli',
+      source_uri: 'forged-uri',
+      ingested_via: 'capture-cli',
+    }, { ...STDIO });
+    expect(res.isError ?? false).toBe(false);
+    const body = parsed(res);
+    const page = await engine.getPage(body.slug);
+    expect(page?.source_kind).toBe('mcp:capture');
+    expect(page?.ingested_via).toBe('mcp:capture');
+  });
 });
