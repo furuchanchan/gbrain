@@ -919,8 +919,11 @@
             "details": {
               "compacted_unreplayable": 0,
               "count": 0,
+              "count_semantics": "retained_unacknowledged_intents",
               "docs": "docs/guides/repair.md#failed-writes",
+              "preview_required": true,
               "repair": "failed-writes",
+              "replayable_count": null,
               "writes": []
             },
             "message": "Every caller write with a retained receipt committed or was superseded.",
@@ -3974,8 +3977,11 @@
             "details": {
               "compacted_unreplayable": 0,
               "count": 0,
+              "count_semantics": "retained_unacknowledged_intents",
               "docs": "docs/guides/repair.md#failed-writes",
+              "preview_required": true,
               "repair": "failed-writes",
+              "replayable_count": null,
               "writes": []
             },
             "message": "Every caller write with a retained receipt committed or was superseded.",

@@ -109,8 +109,10 @@ async function failedWrites(engine: BrainEngine, sourceIds: string[], id?: strin
 }
 
 /**
- * #6429: the caller writes this command would still replay, counted per source, operation and refusal reason for
- * doctor's `lost_caller_writes`, plus the refused receipts compaction already emptied (unreplayable). Distinct
+ * #6429: the caller writes whose refused receipts still hold an unacknowledged intent — a superset of what a
+ * replay would take, since `disposition` additionally keeps unpinned targets, pending duplicates and superseded
+ * writes — counted per source, operation and refusal reason for doctor's `lost_caller_writes`, plus the refused
+ * receipts compaction already emptied (unreplayable). Distinct
  * intents, so a caller's retry counts its write once; a refused replay attempt is the original write (its rows are
  * dropped and its attempts walked as `disposition` does); a write whose replay or retry committed or whose page was
  * later deleted (for put_page: written again) is not lost. Owner-produced writes are not counted: their producer

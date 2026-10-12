@@ -799,8 +799,11 @@ write keeps a receipt with its full intent until receipt compaction
 (`persistence.receipt_retention_days`, 30 days by default). `gbrain repair
 failed-writes` submits those writes again. It is explicit-only and
 preview-bound, and needs v0.60.38.0 or later (`gbrain doctor --json` reports
-schema version 197 or later). Doctor's `lost_caller_writes` counts the writes
-it would replay, per source, and names this preview.
+schema version 197 or later). Doctor's `lost_caller_writes` counts the
+retained unacknowledged refused intents per source — a superset of what a
+replay would take, since the preview also keeps unpinned targets, pending
+duplicates and superseded writes — and names this preview, which is how the
+replay candidates are known.
 
 **Say to your agent:** *"Preview which refused writes gbrain can replay, show
 me the list, then apply after I agree."* The agent runs `gbrain repair
@@ -830,7 +833,11 @@ candidate one class:
 | `file_database_drift` | Its last replay hit `source_changed` and the file still differs from the database. | Kept until the file matches again (a reconcile that writes only the file counts) or the page changes; reconcile it first. |
 | `producer_owned` | gbrain produced it (sync or file import, reconcile, relink, maintenance page, job). | Kept. The preview prints the command that produces it again from current content (sync: `gbrain sync --source <id> --no-pull --retry-failed`). |
 
-The apply replays exactly the previewed set. Each write is classified again
+The apply replays exactly the previewed set. A nonempty preview saves an
+approval checkpoint (an `op_checkpoints` row under `repair-approval`, keyed
+by the preview hash, holding the replay set with each target's revision) —
+the preview leaves page content unchanged but does write that checkpoint.
+Each write is classified again
 and its original caller's authority is checked again first: a write that
 changed class since the preview reports `changed_since_preview`, and one whose
 caller lost its grant or whose source was re-created reports
