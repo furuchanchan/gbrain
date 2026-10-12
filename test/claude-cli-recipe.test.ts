@@ -895,6 +895,71 @@ describe('claude-cli LanguageModel — output cap (#6424)', () => {
   });
 });
 
+describe('claude-cli LanguageModel — capped response surfaces as length (#6523)', () => {
+  const CAP_MESSAGE =
+    "API Error: Claude's response exceeded the 2048 output token maximum. " +
+    'To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.';
+
+  test('is_error cap envelope on a clean exit resolves with finishReason length', async () => {
+    await withStubEnv(async () => {
+      stageResponse(baseEnvelope(CAP_MESSAGE, { is_error: true, stop_reason: null }));
+      const { ClaudeCliLanguageModel } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+      const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+      const out = await model.doGenerate({
+        prompt: [userMessage('hi')],
+        maxOutputTokens: 2048,
+      } as LanguageModelV2CallOptions);
+      expect(out.finishReason).toBe('length');
+      // The envelope's result field carried the API-error text, not a
+      // truncated completion — it must not reach the caller as content.
+      expect(out.content.every(c => c.type !== 'text' || !c.text.includes('exceeded'))).toBe(true);
+      expect(out.usage.outputTokens).toBe(34);
+    });
+  });
+
+  test('is_error cap envelope on a non-zero exit resolves with finishReason length', async () => {
+    await withStubEnv(async () => {
+      stageResponse(baseEnvelope(CAP_MESSAGE, { is_error: true, stop_reason: null }));
+      const failStub = [
+        '#!/bin/sh',
+        'cat > /dev/null',
+        `cat "${stubResponsePath}"`,
+        'exit 1',
+      ].join('\n');
+      writeFileSync(stubBin, failStub);
+      chmodSync(stubBin, 0o755);
+      try {
+        const { ClaudeCliLanguageModel } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+        const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+        const out = await model.doGenerate({
+          prompt: [userMessage('hi')],
+          maxOutputTokens: 2048,
+        } as LanguageModelV2CallOptions);
+        expect(out.finishReason).toBe('length');
+      } finally {
+        const fastStub = [
+          '#!/bin/sh',
+          'cat > /dev/null',
+          `cat "${stubResponsePath}"`,
+        ].join('\n');
+        writeFileSync(stubBin, fastStub);
+        chmodSync(stubBin, 0o755);
+      }
+    });
+  });
+
+  test('a real is_error envelope still rejects', async () => {
+    await withStubEnv(async () => {
+      stageResponse(baseEnvelope('API Error: rate limited', { is_error: true, stop_reason: null }));
+      const { ClaudeCliLanguageModel, ClaudeCliProcessError } = await import('../src/core/ai/providers/claude-cli-language-model.ts');
+      const model = new ClaudeCliLanguageModel('claude-sonnet-4-6');
+      await expect(
+        model.doGenerate({ prompt: [userMessage('hi')] } as LanguageModelV2CallOptions),
+      ).rejects.toThrow(ClaudeCliProcessError);
+    });
+  });
+});
+
 describe('claude-cli LanguageModel — abort + error envelopes', () => {
   test('SIGTERMs the child on AbortSignal', async () => {
     await withStubEnv(async () => {

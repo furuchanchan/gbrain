@@ -196,6 +196,29 @@ function envelopeError(envelope: ClaudeJsonResult, exitCode: number | undefined)
 }
 
 /**
+ * Claude Code reports a response that exceeded CLAUDE_CODE_MAX_OUTPUT_TOKENS
+ * as an is_error envelope whose `result` is the API-error text ("Claude's
+ * response exceeded the N output token maximum…"), not a truncated result
+ * with `stop_reason: "max_tokens"`. Recognize that shape so it resolves as a
+ * capped response — callers that escalate on finishReason 'length' (e.g.
+ * loops_extract 2048 → 8192) never get to run on a hard error.
+ */
+function isOutputCapEnvelope(envelope: ClaudeJsonResult): boolean {
+  return envelope.is_error === true
+    && (envelope.stop_reason === 'max_tokens'
+      || /exceeded the \d+ output token maximum/i.test(envelope.result ?? ''));
+}
+
+/**
+ * Normalize a cap envelope into a success result: empty `result` (the field
+ * carries the error text, not the truncated completion) with stop_reason
+ * 'max_tokens' so claudeCliFinishReason reports 'length'. Usage survives.
+ */
+function capResult(envelope: ClaudeJsonResult): ClaudeJsonResult {
+  return { ...envelope, is_error: false, result: '', stop_reason: 'max_tokens' };
+}
+
+/**
  * Build the system-prompt addendum that teaches the model the
  * `<use_tools>...</use_tools>` emission format. Returns the empty string
  * when no tools are registered for this turn so the model gets a normal
@@ -441,6 +464,10 @@ function runClaude(
         // (as does any stdout without a parseable envelope).
         const attempt = parseResultEnvelope(stdout);
         if (attempt.ok && attempt.envelope.type === 'result' && attempt.envelope.is_error === true) {
+          if (isOutputCapEnvelope(attempt.envelope)) {
+            resolve(capResult(attempt.envelope));
+            return;
+          }
           reject(envelopeError(attempt.envelope, code ?? undefined));
           return;
         }
@@ -469,6 +496,10 @@ function runClaude(
       }
       const envelope = attempt.envelope;
       if (envelope.is_error) {
+        if (isOutputCapEnvelope(envelope)) {
+          resolve(capResult(envelope));
+          return;
+        }
         reject(envelopeError(envelope, 0));
         return;
       }
