@@ -83,9 +83,13 @@ interface CursorHeader { runId: string; index: number; total: number; target: st
   progress?: { startedAt: number; startIndex: number; lastAt: number; lastIndex: number };
   processingOptions?: { noEmbed?: boolean; noExtract?: boolean; noSchemaPack?: boolean }; syncOptions?: Parameters<typeof managedSyncResumeArgs>[0]['syncOptions'] }
 
-async function cursorHeader(engine: BrainEngine, sourceId: string): Promise<CursorHeader | null> {
+async function cursorHeader(engine: BrainEngine, sourceId: string, incarnation: string): Promise<CursorHeader | null> {
+  // #6518: a cursor recorded under a previous incarnation (the source was
+  // re-pointed to a new checkout) can never be selected by a current sync —
+  // reporting it as resumable is a stale ghost like the ledger mirror was.
   const rows = await engine.executeRaw<{ header: CursorHeader }>(
-    `SELECT completed_keys->0 AS header FROM op_checkpoints WHERE op='managed-sync' AND completed_keys->0->>'sourceId'=$1 ORDER BY updated_at DESC LIMIT 1`, [sourceId]);
+    `SELECT completed_keys->0 AS header FROM op_checkpoints WHERE op='managed-sync' AND completed_keys->0->>'sourceId'=$1
+       AND completed_keys->0->>'incarnation'=$2 ORDER BY updated_at DESC LIMIT 1`, [sourceId, incarnation]);
   return rows[0]?.header ?? null;
 }
 
@@ -119,7 +123,7 @@ function holdStatus(record: GitHoldRecord, auto?: FenceAutoRepair): SyncStatusHo
 export async function readSyncStatus(engine: BrainEngine, sourceId: string): Promise<SyncStatus> {
   const [source] = await engine.executeRaw<{ incarnation: string }>('SELECT incarnation::text AS incarnation FROM sources WHERE id=$1 AND archived IS NOT TRUE', [sourceId]);
   if (!source) throw Object.assign(new Error(`Source ${sourceId} does not exist.`), { code: 'not_found' });
-  const header = await cursorHeader(engine, sourceId);
+  const header = await cursorHeader(engine, sourceId, source.incarnation);
   const [committed] = await engine.executeRaw<{ n: number | string }>(`SELECT count(*) AS n FROM persistence_requests WHERE source_id=$1 AND state='committed'
     AND intent->>'kind' IN ('managed_sync_import','managed_sync_delete') AND completed_at > now() - interval '10 minutes'`, [sourceId]);
   const records = ((await readGitSourceHolds(engine, { sourceIds: [sourceId] }))[0]?.holds ?? []).filter(hold => hold.incarnation === source.incarnation);
@@ -228,7 +232,7 @@ export async function unblockSync(engine: BrainEngine, sourceId: string, opts: U
   const [source] = await engine.executeRaw<{ incarnation: string }>('SELECT incarnation::text AS incarnation FROM sources WHERE id=$1 AND archived IS NOT TRUE', [sourceId]);
   if (!source) throw Object.assign(new Error(`Source ${sourceId} does not exist.`), { code: 'not_found' });
   const holds = ((await readGitSourceHolds(engine, { sourceIds: [sourceId] }))[0]?.holds ?? []).filter(hold => hold.incarnation === source.incarnation);
-  const header = await cursorHeader(engine, sourceId);
+  const header = await cursorHeader(engine, sourceId, source.incarnation);
   const resume = managedSyncResumeArgs({ sourceId, processingOptions: header?.processingOptions, syncOptions: header?.syncOptions });
   const context = holds.some(hold => hold.code === 'worktree_dirty') ? await resolveManagedSyncContext(engine, { sourceId, noPull: true }).catch(() => null) : null;
   const auto = await fenceAutoRepairFor(engine, holds);

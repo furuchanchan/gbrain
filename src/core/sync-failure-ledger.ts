@@ -675,6 +675,21 @@ export function clearManagedSyncFailure(key: string): void {
 }
 
 /**
+ * #6518: drop mirror rows whose `managed_cursor_key` names no durable
+ * managed-sync-failure row — the durable row can be retired by an engine-side
+ * path that never touches the local mirror (orphan repair, direct clear), and
+ * without a prune `doctor --fast` keeps counting the ghost.
+ */
+export function pruneManagedMirror(liveKeys: ReadonlySet<string>): number {
+  return withLedgerLock(() => {
+    const entries = loadSyncFailures();
+    const kept = entries.filter(row => !row.managed_cursor_key || liveKeys.has(row.managed_cursor_key));
+    if (kept.length !== entries.length) _writeAll(kept);
+    return entries.length - kept.length;
+  });
+}
+
+/**
  * Re-insert previously-cleared rows VERBATIM (attempts, first_seen, ts,
  * commit, state all preserved) — the undo half of a clear that a
  * post-clear verification found premature (#3583: the orphan-sentinel

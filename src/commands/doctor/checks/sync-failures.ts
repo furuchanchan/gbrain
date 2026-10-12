@@ -1,6 +1,6 @@
 import type { BrainEngine } from '../../../core/engine.ts';
 import type { Check } from '../../doctor.ts';
-import { loadSyncFailures, unacknowledgedSyncFailures, decideSyncFailureSeverity, type SyncFailure } from '../../../core/sync-failure-ledger.ts';
+import { loadSyncFailures, unacknowledgedSyncFailures, decideSyncFailureSeverity, pruneManagedMirror, type SyncFailure } from '../../../core/sync-failure-ledger.ts';
 import { formatManagedSyncFailure, managedSyncRetryCommand, readManagedSyncFailures } from '../../../core/persistence/sync-failures.ts';
 import { resolveHoursEnv } from '../../../core/env-number.ts';
 import { makeRemediationStep } from '../../../core/remediation-step.ts';
@@ -11,6 +11,15 @@ export async function checkSyncFailures(engine: BrainEngine | null, opts: { sour
   // #5452: sync refuses an archived source, so its failures cannot be cleared and are not a live health signal.
   const archived = new Set(engine ? (await engine.executeRaw<{ id: string }>('SELECT id FROM sources WHERE archived = true')).map(row => row.id) : []);
   const allManaged = engine ? await readManagedSyncFailures(engine, opts.sourceIds) : [];
+  // #6518: engine-side paths can retire a durable failure without touching the
+  // local mirror; prune mirror rows with no live managed-sync-failure row so
+  // the next no-engine read stops counting ghosts.
+  if (engine) {
+    try {
+      const live = await engine.executeRaw<{ fingerprint: string }>(`SELECT fingerprint FROM op_checkpoints WHERE op='managed-sync-failure'`);
+      pruneManagedMirror(new Set(live.map(row => row.fingerprint)));
+    } catch { /* the mirror is a compatibility mirror — pruning is best-effort */ }
+  }
   let allLegacy: SyncFailure[] = [];
   try { allLegacy = loadSyncFailures().filter(row => (!engine || !row.managed_cursor_key) && (!opts.sourceIds || opts.sourceIds.includes(row.source_id))); } catch { }
   const managed = allManaged.filter(row => !archived.has(row.source_id));
