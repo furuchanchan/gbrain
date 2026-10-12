@@ -50,7 +50,11 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { PGlite, type Extension } from '@electric-sql/pglite';
+// The runtime import stays dynamic inside build() (#6512): an eager
+// `import { PGlite }` resolves @electric-sql/pglite at module load, so a
+// missing/hoisted-broken install fails to import this file at all and the
+// actionable resolvePgliteAssetPaths() diagnostic never surfaces.
+import type { Extension } from '@electric-sql/pglite';
 
 /** The five on-disk asset paths PGLite's runtime needs, however they were found. */
 export interface PgliteAssetPaths {
@@ -176,8 +180,7 @@ export interface EmbeddedPgliteOptions {
  * (vector-index.ts PGLITE_HNSW_GRAPH_BUDGET_BYTES); the guard still
  * checkpoints at 256 MB between statements.
  */
-export const PGLITE_START_PARAMS = [
-  ...PGlite.defaultStartParams,
+export const PGLITE_START_PARAM_OVERRIDES = [
   '-c', 'max_parallel_maintenance_workers=0',
   '-c', 'max_wal_size=8GB',
 ];
@@ -209,6 +212,10 @@ function materializeTarball(embeddedPath: string, baseName: string): URL {
 
 async function build(): Promise<EmbeddedPgliteOptions> {
   const { paths } = await resolvePgliteAssetPaths();
+  // engine-dynamic-import-ok: PGlite is imported only after the asset paths
+  // resolve, so a broken install reaches the tier-3 actionable error instead
+  // of a raw module-resolution failure (#6512).
+  const { PGlite } = await import('@electric-sql/pglite');
   const [pgliteWasmModule, initdbWasmModule] = await Promise.all([
     WebAssembly.compile(readFileSync(paths.pgliteWasm)),
     WebAssembly.compile(readFileSync(paths.initdbWasm)),
@@ -231,7 +238,8 @@ async function build(): Promise<EmbeddedPgliteOptions> {
     setup: async () => ({ bundlePath: pgTrgmBundle }),
   };
 
-  return { pgliteWasmModule, initdbWasmModule, fsBundle, extensions: { vector, pg_trgm }, startParams: PGLITE_START_PARAMS };
+  return { pgliteWasmModule, initdbWasmModule, fsBundle, extensions: { vector, pg_trgm },
+    startParams: [...PGlite.defaultStartParams, ...PGLITE_START_PARAM_OVERRIDES] };
 }
 
 /**
