@@ -50,13 +50,11 @@ async function runContentSanity(ctx: DoctorContext): Promise<Check[]> {
   const fullContentAudit = args.includes('--content-audit');
   progress.heartbeat('oversized_pages');
   try {
-    // Read effective bytes_block from the cached effectiveCfg loaded
-    // earlier in this doctor run if available; otherwise default.
-    // (We re-read here per-check to avoid threading config through
-    // every check — bytes_block is read once per doctor run via
-    // loadConfig which caches in module-level config layer.)
-    const { loadConfig: _loadCfg } = await import('../../../core/config.ts');
-    const _cfg = _loadCfg();
+    // Effective bytes_block = env > file > DB > default, same as the write
+    // gate (import-screen.ts): loadConfigWithEngine overlays the DB plane on
+    // the cached file/env config; a dead/missing DB plane falls back to it.
+    const { loadConfig, loadConfigWithEngine } = await import('../../../core/config.ts');
+    const _cfg = await loadConfigWithEngine(engine).catch(() => loadConfig());
     const bytesBlock = _cfg?.content_sanity?.bytes_block ?? 500_000;
     // #1871: engine.executeRaw, not the dead-on-PGLite postgres singleton.
     const rows = await engine.executeRaw<{ slug: string; source_id: string; bytes: number }>(
