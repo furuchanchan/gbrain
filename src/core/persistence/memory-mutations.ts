@@ -16,10 +16,10 @@ import { emitFenceNotice, initializeLocalPersistence, requestPrincipalForContext
 import { authorizeStoredRequest, submissionAuthority } from './authority.ts';
 import { admitWrite, admitWriteInTransaction, assertPageRequestIdentity, assertReplayIntent, completeWrite, getWriteRequest, intentDigest } from './journal.ts';
 import { assertPersistenceAccepting, registerMutationPreparer, waitForWrite, writeResponse } from './service.ts';
-import { claimWorktree } from './ownership.ts';
+import { claimWorktree, managedPersistenceEnabled } from './ownership.ts';
 import { declareDurablePersistence } from './protocol.ts';
 import { resolveFactWriteTarget } from './fact-write-target.ts';
-import { WRITER_INSPECTION_HINT } from './admin-intent.ts';
+import { readUnboundWritePolicy, unboundSourceError } from './unbound-source.ts';
 import { clientRequestIdOf, parseMutationPrecondition } from './preconditions.ts';
 import { withCoordinatedWrite } from './context.ts';
 import { requestAttribution } from './attribution.ts';
@@ -103,8 +103,17 @@ async function planRememberTarget(ctx: OperationContext, sourceId: string, sourc
   if (target?.kind === 'unbound') {
     // An inferred link never designates an owner or reports a missing one.
     if (inferred) throw new InferredTargetRejected('ENTITY_LINK_FAILED');
-    if (ctx.engine.kind !== 'pglite') throw new OperationError('owner_unavailable', 'This source has no designated canonical owner.', WRITER_INSPECTION_HINT);
-    binding = await claimWorktree(ctx.engine, sourceId, target.root, undefined, undefined, { automatic: true });
+    if (ctx.engine.kind !== 'pglite') {
+      // #6608: the unbound rule page mutations apply covers remember too — a
+      // file-backed entity page refuses with the #6277 classic guidance; a page
+      // with no recorded file fences database-only under persistence.unbound_write.
+      const fileBacked = Boolean(snapshot?.page.source_path);
+      if (fileBacked || await readUnboundWritePolicy(ctx.engine) !== 'database_only') {
+        throw unboundSourceError(sourceId, ctx.remote === false ? target.root : null,
+          fileBacked ? 'file_backed' : 'database_only_eligible', !await managedPersistenceEnabled(ctx.engine));
+      }
+      authority.databaseOnlyReason = 'unbound_source';
+    } else binding = await claimWorktree(ctx.engine, sourceId, target.root, undefined, undefined, { automatic: true });
   }
   // An inferred link is optional: a canonical file it could not publish (missing,
   // or carrying an uncoordinated edit) falls back to the unattributed save

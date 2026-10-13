@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.206.0] - 2026-10-13
+
+**`remember` onto a database-only entity page on an unbound classic source follows `persistence.unbound_write=database_only`, like every other page mutation (#6608).**
+
+### Itemized changes
+
+- On a classic-mode Postgres brain, `remember` with an `entity` whose page exists on a filesystem source with no canonical owner refused `owner_unavailable` with the generic writer-inspection hint — even for pages with no recorded canonical file under `persistence.unbound_write=database_only`, where `put_page` and `add_tag` already wrote database-only. `remember` now applies the same rule page mutations use: a file-backed entity page refuses with `unboundSourceError` (`file_backed`, classic guidance); a page with no recorded file fences the fact into the database page body under the opt-in (`database_only_reason: 'unbound_source'`); without the opt-in the refusal names the `persistence.unbound_write` choice.
+
 ## [0.60.205.0] - 2026-10-13
 
 **Every `search` and `query` response now says where its time went.**

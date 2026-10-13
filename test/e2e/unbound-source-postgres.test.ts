@@ -362,6 +362,33 @@ d('#5254 Postgres put_page to an unbound filesystem source', () => {
     expect((await engine.getPage(slug, { sourceId: 'default' }))?.compiled_truth).toContain('Database-only original.');
   });
 
+  test('#6608 remember onto a database-only entity page fences under persistence.unbound_write; a file-backed one refuses', async () => {
+    await engine.setConfig('persistence.unbound_write', 'database_only');
+    expect((await put('Bob page body.', 'notes/bob')).payload.state).toBe('committed');
+    const saved = await dispatch('remember', { fact: 'Bob prefers tea', entity: 'notes/bob', source_id: 'default',
+      provenance: 'e2e', content_origin: 'user_said', request_id: randomUUID() });
+    expect(saved.response.isError).not.toBe(true);
+    const [fact] = await engine.executeRaw<{ fact: string; entity_slug: string | null }>(
+      "SELECT fact, entity_slug FROM facts WHERE source_id='default' AND entity_slug='notes/bob'", []);
+    expect(fact?.fact).toContain('tea');
+    // A file-backed entity page refuses with the file_backed branch, not the opt-in.
+    await engine.putPage('notes/seed', { type: 'note', title: 'Seed', compiled_truth: 'Seed file.', timeline: '', frontmatter: {} }, { sourceId: 'default' });
+    await engine.executeRaw("UPDATE pages SET source_path='notes/seed.md' WHERE source_id='default' AND slug='notes/seed'");
+    const refused = await dispatch('remember', { fact: 'Alice prefers coffee', entity: 'notes/seed', source_id: 'default',
+      provenance: 'e2e', content_origin: 'user_said', request_id: randomUUID() });
+    expect(refused.response.isError).toBe(true);
+    expect(refused.payload.error).toBe('owner_unavailable');
+    expect(refused.payload.detail).toBe('unbound_source');
+    expect(refused.payload.suggestion).toContain('came from a canonical file');
+    expect(refused.payload.suggestion).not.toContain('gbrain config set persistence.unbound_write database_only');
+    // Without the opt-in the same page refuses with the database_only_eligible guidance.
+    await engine.executeRaw("DELETE FROM config WHERE key='persistence.unbound_write'");
+    const eligible = await dispatch('remember', { fact: 'Bob prefers tea', entity: 'notes/bob', source_id: 'default',
+      provenance: 'e2e', content_origin: 'user_said', request_id: randomUUID() });
+    expect(eligible.payload.detail).toBe('unbound_source');
+    expect(eligible.payload.suggestion).toContain('gbrain config set persistence.unbound_write database_only');
+  });
+
   test('#5393 with persistence.unbound_write unset, capture, add_tag and delete_page refuse as before', async () => {
     await engine.setConfig('persistence.unbound_write', 'database_only');
     expect((await put('Database-only note.')).payload.state).toBe('committed');
