@@ -46,6 +46,7 @@ import { parseStrictParamsMode } from './validate-params.ts';
 import { filterOpsForSurface, clampSurface, advertisedOps, resolveAdvertisedSurface, type McpSurface } from './surface.ts';
 import { disabledOpsForPublishGates } from './publish-gates.ts';
 import { loadConfig } from '../core/config.ts';
+import { loadServeBaseConfig } from '../core/serve-config.ts';
 import { buildDefaultLimiters, type RateLimiter } from './rate-limit.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
 import { degradedLastError, isEngineDegraded } from '../core/degraded-marker.ts';
@@ -220,6 +221,12 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
   // serve-http path re-reads dual-plane per request). Dispatch-side
   // enforcement still resolves per call. mcp.advertised_surface (file plane) narrows the tool list only.
   const fileConfig = loadConfig();
+  // #6589: the file-plane tool list above stays file-only (deliberate), but
+  // the operation context must carry the DB-plane merge so `gbrain config
+  // set` values (eval.capture, eval.scrub_pii, ...) reach ops over this
+  // transport too. Merged once at startup; a DB-plane change takes effect
+  // on serve restart.
+  const mergedConfig = await loadServeBaseConfig(engine, { engine: engine.kind });
   const strictParams = parseStrictParamsMode(fileConfig?.mcp?.strict_params) === 'reject';
   const tools = buildToolDefs(advertisedOps(surfacedOps, surface, await resolveAdvertisedSurface(null, fileConfig)), { strictParams });
 
@@ -464,12 +471,12 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
 
       if (method === 'resources/list' || method === 'resources/read') {
         const resources = createSkillResources(engine, async () => ({ remote: true, transport: 'http',
-          auth: auth.auth!, sourceId: auth.sourceId ?? 'default', allowedOps: surfaceAllowedOps, surface, config: fileConfig ?? undefined }));
+          auth: auth.auth!, sourceId: auth.sourceId ?? 'default', allowedOps: surfaceAllowedOps, surface, config: mergedConfig }));
         try {
           const result = method === 'resources/list'
             ? { resources: [{ uri: CAPABILITIES_URI, name: 'GBrain capabilities', mimeType: 'application/json' }, ...await resources.list()] }
             : params?.uri === CAPABILITIES_URI
-              ? { contents: [{ uri: CAPABILITIES_URI, mimeType: 'application/json', text: JSON.stringify(await resolveAuthCapabilities(auth.auth!, engine, fileConfig ?? { engine: engine.kind })) }] }
+              ? { contents: [{ uri: CAPABILITIES_URI, mimeType: 'application/json', text: JSON.stringify(await resolveAuthCapabilities(auth.auth!, engine, mergedConfig)) }] }
               : await resources.read(params?.uri);
           logRequest(auth.tokenName!, method, 'success', Date.now() - startedMs);
           return Response.json({ jsonrpc: '2.0', id, result }, { headers: corsHeaders(origin) });
@@ -550,6 +557,7 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
           // WP4 (D2): this transport has no per-client rows, so its surface
           // IS the ceiling request_tools bounds catalog + persist by.
           surfaceCeiling: surface,
+          config: mergedConfig,
           resultRows: resultRowsForRequest(req.headers.get(GBRAIN_CLIENT_HEADER), await resolveResultRowsMode(engine, fileConfig)), // C1; row shape only, never authority
         });
         // Same status taxonomy as the OAuth transport (denied_after_list /
