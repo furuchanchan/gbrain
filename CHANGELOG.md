@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.206.0] - 2026-10-13
+
+**Classic brains now fence unfenced facts on database-only pages.**
+
+### Itemized changes
+
+- `extract_facts` no longer parks a database-only entity page in `missing_files` forever. A page with no recorded `source_path` has no file of record on any host, so the classic fence path now plans and writes its Facts fence through the database body — the same way `remember` and managed persistence do — stamping `row_num` and mirroring the fence into the page row in one maintenance transaction. The permanent `FACTS_FENCE_FAILED` / `facts.fence` halt per cycle is gone, and the rows stop gating the source's phantom-redirect pass. A page with a recorded `source_path` whose canonical file is absent keeps the missing-file verdict, since its file may return.
+
 ## [0.60.205.0] - 2026-10-13
 
 **Every `search` and `query` response now says where its time went.**

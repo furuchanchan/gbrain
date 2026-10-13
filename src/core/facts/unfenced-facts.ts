@@ -195,6 +195,13 @@ export interface UnfencedFactsPlan {
   groups: Map<string, UnfencedFactRow[]>;
   /** Unmanaged: the canonical file per group key. */
   filePaths: Map<string, string>;
+  /**
+   * Unmanaged: group keys whose page is database-only (no recorded
+   * `source_path`, no file of record on this host). These fence through the
+   * database body instead of a canonical file — otherwise they would sit in
+   * `missing_files` forever waiting for a file that can never exist (#6610).
+   */
+  dbOnly: Set<string>;
   localPathById: Map<string, string | null>;
   outcome: UnfencedFactsOutcome;
 }
@@ -240,10 +247,22 @@ export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: 
     groups.set(key, [...groups.get(key) ?? [], row]);
   }
   const filePaths = new Map<string, string>();
+  const dbOnly = new Set<string>();
   for (const [key, group] of managed ? [] : [...groups]) {
     const [sourceId, entitySlug] = key.split('\0');
     const target = await resolvePageWriteTarget(engine, entitySlug, sourceId);
     if (!target.ok || !existsSync(target.filePath)) {
+      // A page with no recorded source_path is database-only by construction
+      // (#6610): no host holds its file, so it fences from the database body
+      // instead of sitting in missing_files as a permanent facts.fence halt.
+      // A page WITH a recorded path keeps the old verdict — its file may return.
+      if (target.ok) {
+        const [dbRow] = await engine.executeRaw<{ one: number }>(
+          'SELECT 1 AS one FROM pages WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL AND source_path IS NULL LIMIT 1',
+          [sourceId, entitySlug],
+        );
+        if (dbRow) { dbOnly.add(key); continue; }
+      }
       outcome.skipped_no_page += group.length;
       outcome.missing_files.push(`${entitySlug} (${target.ok ? `canonical file ${target.filePath} does not exist on this host` : `no canonical file: ${target.skipped}`})`);
       groups.delete(key);
@@ -251,7 +270,7 @@ export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: 
     }
     filePaths.set(key, target.filePath);
   }
-  return { managed, groups, filePaths, localPathById, outcome };
+  return { managed, groups, filePaths, dbOnly, localPathById, outcome };
 }
 
 /**
@@ -437,6 +456,49 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
 }
 
 /**
+ * One unmanaged database-only page (#6610): the body lives in `pages`, so the
+ * fence is planned over the DB snapshot and written back the same way a
+ * `remember` write lands on such a page — body refresh plus row stamps in one
+ * maintenance transaction, no file, no lock, no commit.
+ */
+async function fenceDbOnlyPage(engine: BrainEngine, sourceId: string, entitySlug: string,
+  group: UnfencedFactRow[], outcome: UnfencedFactsOutcome): Promise<void> {
+  try {
+    const snapshot = await engine.readPageSnapshot(entitySlug, { sourceId });
+    if (!snapshot) { outcome.skipped_no_page += group.length; return; }
+    const fence = await planFence(engine, sourceId, entitySlug, serializePageToMarkdown(snapshot.page, snapshot.tags), group);
+    if ('warnings' in fence) {
+      outcome.failed_pages.push(`${entitySlug} (${fence.warnings.join('; ')})`);
+      return;
+    }
+    recordUnadoptable(outcome, entitySlug, fence.rejected);
+    if (fence.assignments.length === 0) return;
+    const reparsed = parseMarkdown(fence.body, `${entitySlug}.md`);
+    await maintenanceTransaction(engine, async tx => {
+      const existing = await tx.getPage(entitySlug, { sourceId });
+      if (existing) {
+        await tx.refreshPageBody(entitySlug, sourceId, sanitizeText(reparsed.compiled_truth), sanitizeText(reparsed.timeline),
+          existing.content_hash || contentHash(existing));
+      }
+      // The parsed claim is what the fence projects; the row keeps its id,
+      // vectors and provenance (same stamp as the file path).
+      for (const a of fence.assignments) {
+        await tx.executeRaw(
+          `UPDATE facts SET row_num = $1, source_markdown_slug = $2, fact = $5
+            WHERE id = $3 AND source_id = $4 AND row_num IS NULL`,
+          [a.row_num, entitySlug, a.id, sourceId, a.fact],
+        );
+      }
+    });
+    outcome.fenced += fence.assignments.length;
+    outcome.pages_touched += 1;
+    outcome.fenced_slugs.push(entitySlug);
+  } catch (err) {
+    outcome.failed_pages.push(`${entitySlug} (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+
+/**
  * Read-only (#6278): the rows of a plan the fence step would leave unadopted
  * and why, by location only, for doctor `fence_integrity`. Each page's body
  * is read the way the write path reads it (the database snapshot on a managed
@@ -450,7 +512,7 @@ export async function auditUnadoptableFacts(engine: BrainEngine, plan: UnfencedF
     if (opts.deadline !== undefined && Date.now() > opts.deadline) return { records, complete: false };
     const [sourceId, entitySlug] = key.split('\0');
     let body: string;
-    if (plan.managed) {
+    if (plan.managed || plan.dbOnly.has(key)) {
       const snapshot = await engine.readPageSnapshot(entitySlug, { sourceId });
       if (!snapshot) continue;
       body = serializePageToMarkdown(snapshot.page, snapshot.tags);
@@ -477,6 +539,10 @@ export async function fenceUnfencedFacts(engine: BrainEngine, plan: UnfencedFact
   }
   for (const [key, group] of plan.groups) {
     const [sourceId, entitySlug] = key.split('\0');
+    if (plan.dbOnly.has(key)) {
+      await fenceDbOnlyPage(engine, sourceId, entitySlug, group, plan.outcome);
+      continue;
+    }
     await fenceFilePage(engine, sourceId, entitySlug, plan.filePaths.get(key)!, group, plan.outcome, opts.pageLockRoot);
   }
   return plan.outcome;
