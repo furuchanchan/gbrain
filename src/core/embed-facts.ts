@@ -35,7 +35,7 @@ export interface EmbedFactsResult {
   failure_samples: string[];
   cost_usd: number;
   cost_estimated: boolean;
-  stopped: 'preview' | 'complete' | 'limit' | 'aborted' | 'failed';
+  stopped: 'preview' | 'complete' | 'limit' | 'budget' | 'aborted' | 'failed';
 }
 
 interface PendingFact {
@@ -116,11 +116,19 @@ export async function embedStaleFacts(engine: BrainEngine, opts: EmbedFactsOpts,
     label: 'embed.facts', maxCostUsd: opts.maxCostUsd, maxRuntimeMs: budgetMs,
     pricingOverrides: await loadPricingOverrides(engine),
   });
-  const signal = AbortSignal.any([AbortSignal.timeout(budgetMs), ...(opts.signal ? [opts.signal] : [])]);
+  const budgetSignal = AbortSignal.timeout(budgetMs);
+  const signal = AbortSignal.any([budgetSignal, ...(opts.signal ? [opts.signal] : [])]);
+  // #6588: the internal wall-clock timer alone is a bounded resume point
+  // (stopped 'budget'), not a failure and not an operator abort.
+  const budgeted = () => budgetSignal.aborted && opts.signal?.aborted !== true;
   const maxTokens = resolveMaxChunkTokens();
   let afterId = '0';
   while (result.attempted < maxFacts) {
-    if (signal.aborted) { result.stopped = 'aborted'; result.failures++; break; }
+    if (signal.aborted) {
+      result.stopped = budgeted() ? 'budget' : 'aborted';
+      if (!budgeted()) result.failures++;
+      break;
+    }
     const batch = await engine.executeRaw<PendingFact>(
       `SELECT f.id::text, f.fact, f.xmin::text AS version FROM facts f
        WHERE ${eligible} AND f.id > $5::bigint AND f.id <= $6::bigint
@@ -190,6 +198,12 @@ export async function embedStaleFacts(engine: BrainEngine, opts: EmbedFactsOpts,
       }
       afterId = batch[batch.length - 1].id;
     } catch (error) {
+      if (budgeted()) {
+        // Bounded wall-clock stop: the unprocessed batch was never attempted
+        // by the provider, so it is resume debt, not a failure (#6588).
+        result.stopped = 'budget';
+        break;
+      }
       result.failures += batch.length;
       result.failure_samples.push(redactUrlsInText(redactConnectionInfo(
         redactFindings(error instanceof Error ? error.message : String(error), { highEntropy: true }).text,

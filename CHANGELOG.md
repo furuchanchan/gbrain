@@ -10,6 +10,15 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.206.0] - 2026-10-13
+
+**`gbrain migrate embeddings` now finishes the facts phase on slow providers.**
+
+### Itemized changes
+
+- `embedStaleFacts` reports a new `stopped: 'budget'` outcome for its own internal wall-clock stop (the `budgetMs` timer), distinct from an external abort (`'aborted'`) and a real failure (`'failed'`). A budget stop banks whatever was embedded, counts zero failures, and leaves `remaining` as resume debt — the same contract chunk embeds already had for `time_budget`.
+- `migrate embeddings` no longer passes the implicit 60-second wall-clock budget: it calls `embedStaleFacts` with a 60-minute window and loops per source until nothing is stale, so a bounded stop resumes instead of skipping every remaining source. Cost stays metered by the migration's own `--max-cost-usd` cap.
+
 ## [0.60.205.0] - 2026-10-13
 
 **Every `search` and `query` response now says where its time went.**

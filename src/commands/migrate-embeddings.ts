@@ -757,9 +757,17 @@ export async function executeMigrationFlow(
       const [active] = await engine.executeRaw('SELECT id FROM sources WHERE id=$1 AND NOT archived', [sourceId]);
       if (!active) continue;
       await assertOwned();
-      const facts = await embedStaleFacts(engine, { sourceId, yes: true, maxCostUsd: opts.maxCostUsd ?? marker.state?.budget?.max_cost_usd ?? 0, maxFacts: 10_000, signal: controller.signal, assertOwned });
-      embeddedFacts += facts.embedded;
-      if (facts.failures) break;
+      // #6588: loop per source until nothing is stale — each call is bounded
+      // (10k facts, 60 min wall clock, the migration's cost cap) and resumes
+      // where it stopped; a 'budget' stop is a resume point, not a failure.
+      let failed = false;
+      for (;;) {
+        const facts = await embedStaleFacts(engine, { sourceId, yes: true, maxCostUsd: opts.maxCostUsd ?? marker.state?.budget?.max_cost_usd ?? 0, maxFacts: 10_000, budgetMs: 3_600_000, signal: controller.signal, assertOwned });
+        embeddedFacts += facts.embedded;
+        if (facts.failures) { failed = true; break; }
+        if (facts.remaining === 0 || facts.stopped === 'aborted' || facts.attempted === 0) break;
+      }
+      if (failed) break;
     }
     await assertOwned();
     const reconciled = await engine.transaction(async tx => {
