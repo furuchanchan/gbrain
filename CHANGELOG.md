@@ -10,6 +10,10 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.205.0] - 2026-10-13
+
+**`gbrain upgrade` no longer dynamically imports the `sources writer movement` command graph after the source swap, closing an old/new module mix that could exit 1 after a successful install (#6604).** The final next-step line did `await import('./sources-writer-movement.ts')` — pulling the whole command graph (including `sync-holds.ts` → `sync.ts`) in the old parent process after the on-disk source had already been replaced. A new module can then demand named exports absent from a stale-cached old module loaded before the swap, which is how the reported 0.60.178→0.60.184 upgrade printed `Export named 'isMultimodalEnabled' not found` and exited 1 with `Binary: installed` and `Migrations: complete` already done. `MOVEMENT_SUPERVISOR_STEP` now lives in the zero-dependency `src/commands/movement-step.ts`, statically imported by upgrade.ts (loaded before the swap) and re-exported from `sources-writer-movement.ts` so its public surface is unchanged. Pinned by `test/upgrade-movement-step-6604.test.ts`. Note: other post-swap dynamic imports in the post-upgrade phase (config, migrations, engine-factory, upgrade notices) predate this fix and are unchanged — see the issue for the broader audit suggestion.
+
 ## [0.60.204.0] - 2026-10-13
 
 **`recall` takes `since: "6 weeks ago"` or `"last month"`, and ranks expired facts for a `question` when you pass `include_expired: true`. Both used to be refused.**
