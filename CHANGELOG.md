@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.206.0] - 2026-10-13
+
+**`sweep --assign-corpus` mappings survive the SessionEnd GC.**
+
+### Itemized changes
+
+- `gcCorpusArtifacts` now builds its live-session set from the union of every directory the hook's GC covers (the spool and the legacy top level), via a new optional `liveSessionDirs` parameter. A per-session record (`.seat.json` / `.source.json`) written by `--assign-corpus` to the spool is no longer reaped after the ten-minute orphan grace just because its session's `.txt` lives in the legacy top level — so held legacy files stay mapped long enough for the sweep to extract them. A record whose session has no `.txt` in either directory is still reaped past grace.
+
 ## [0.60.205.0] - 2026-10-13
 
 **Every `search` and `query` response now says where its time went.**

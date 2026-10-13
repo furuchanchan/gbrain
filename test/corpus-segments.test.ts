@@ -201,6 +201,30 @@ describe('gcCorpusArtifacts', () => {
     expect(names).not.toContain('s.ledger.json.tmp-12345');
     expect(names).toContain('s.txt.tmp-99999');
   });
+
+  test('keeps a per-session record whose .txt lives in a sibling dir; reaps it once no .txt exists anywhere (#6611)', () => {
+    // sweep --assign-corpus maps a legacy session: record in the spool, .txt
+    // in the legacy top level. liveSessions must be the union over both dirs,
+    // or the SessionEnd GC reaps the mapping after the 10 min grace.
+    const sibling = mkdtempSync(join(tmpdir(), 'gb-seg-sib-'));
+    try {
+      writeFileSync(join(sibling, 'legacy-sess.txt'), 'x');
+      const record = join(dir, 'legacy-sess.source.json');
+      writeFileSync(record, '{}');
+      const past = new Date(Date.now() - 11 * 60 * 1000);
+      utimesSync(record, past, past);
+
+      gcCorpusArtifacts(dir, 30 * 24 * 60 * 60 * 1000, [], [dir, sibling]);
+      expect(existsSync(record)).toBe(true);
+
+      // No .txt of that session anywhere: the record is reaped past grace.
+      rmSync(join(sibling, 'legacy-sess.txt'));
+      gcCorpusArtifacts(dir, 30 * 24 * 60 * 60 * 1000, [], [dir, sibling]);
+      expect(existsSync(record)).toBe(false);
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('parseSegmentFileName (sweep-lane link publish)', () => {

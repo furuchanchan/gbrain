@@ -684,11 +684,25 @@ export function gcCorpusArtifacts(
   dir: string,
   maxAgeMs: number,
   sidecarSuffixes: string[],
+  liveSessionDirs?: string[],
 ): void {
   try {
     const cutoff = Date.now() - maxAgeMs;
     const names = readdirSync(dir);
+    // #6611: a per-session record lives in the spool while its session's .txt
+    // may sit in the legacy top level — the session set is the union over the
+    // GC'd dirs, so a legacy hold isn't reaped ten minutes after it is mapped.
     const liveSessions = new Set(names.filter((n) => n.endsWith('.txt')).map(corpusFileSessionId));
+    for (const extra of liveSessionDirs ?? []) {
+      if (extra === dir) continue;
+      try {
+        for (const n of readdirSync(extra)) {
+          if (n.endsWith('.txt')) liveSessions.add(corpusFileSessionId(n));
+        }
+      } catch {
+        /* best effort — a missing sibling dir adds no live sessions */
+      }
+    }
     for (const name of names) {
       const p = join(dir, name);
       try {
