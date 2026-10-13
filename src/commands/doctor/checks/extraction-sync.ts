@@ -35,6 +35,7 @@ import { connectorAuthorities } from '../../../core/persistence/connector-author
 import { parseSourceConfig } from '../../../core/sources-load.ts';
 import { checkError } from '../check-fix.ts';
 import { haltReasonsWithUnknown, readRecordedHaltReasons7d, topHaltReason } from '../../../core/extract/rollup-writer.ts';
+import { isMissingPgColumn, isMissingPgRelation } from '../../../core/pg-missing-object.ts';
 
 /** Local aliases; the shared warn-once memo lives in core so it can't fork per module. */
 const _resolveEnvNumber = resolveEnvNumber;
@@ -1047,8 +1048,10 @@ export async function computeExtractHealthCheck(
     try {
       rows = await engine.executeRaw<RollupRow>(rollupQuery(true), []);
     } catch (err) {
-      const msg = (err as Error).message || String(err);
-      if (!/expected_limit_count/i.test(msg)) throw err;
+      // #6599: the retry is only for the pre-v141 condition — the
+      // expected_limit_count column itself being absent. A driver error
+      // that merely mentions the column propagates as WARN below.
+      if (!isMissingPgColumn(err, 'expected_limit_count')) throw err;
       rows = await engine.executeRaw<RollupRow>(rollupQuery(false), []);
     }
     // #5495: recorded halt reasons per kind over the same 7 days (migration v239).
@@ -1191,7 +1194,10 @@ export async function computeExtractHealthCheck(
     // bootstrap-coverage / migration framework brings the schema forward
     // and the next run resolves naturally. Stay quiet.
     const msg = (err as Error).message || String(err);
-    if (/extract_rollup_7d.*does not exist|no such table/i.test(msg)) {
+    // #6599: the OK shortcut is only for the extract_rollup_7d relation
+    // itself being absent. An error whose text happens to name the table
+    // (or say "no such table") under a different SQLSTATE reports WARN.
+    if (isMissingPgRelation(err, 'extract_rollup_7d')) {
       return {
         name,
         status: 'ok',

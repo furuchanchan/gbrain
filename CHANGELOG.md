@@ -10,6 +10,18 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.202.0] - 2026-10-13
+
+**`extract_health` no longer swallows real driver errors as "schema behind"** (#6599). The rollup old-schema compatibility paths matched broad message regexes, so a permission error naming `halt_reasons` read as "no recorded reasons" and any error whose text said "no such table" reported `extract_rollup_7d not yet present` with status OK. The classification now requires SQLSTATE plus the exact missing object — 42P01 for the `extract_rollup_7d` relation, 42703 for the `halt_reasons`/`expected_limit_count` column — via the shared `pg-missing-object` helper: driver `table_name`/`column_name` metadata decides when present (a numeric `Error.column` is a source position, not an identifier, and contradictory metadata is not overridden by incidental text), and only metadata-free errors fall back to the canonical `... does not exist` / `no such table` message forms. True pre-v106/pre-v141/pre-v239 brains still degrade exactly as before.
+
+### Itemized changes
+
+- **`src/core/pg-missing-object.ts` (new)** — `pgMissingObject`, `isMissingPgRelation`, `isMissingPgColumn`: strict missing-object classification for old-schema compatibility paths.
+- **`readRecordedHaltReasons7d`** propagates every error that is not the missing `halt_reasons` column or missing `extract_rollup_7d` relation, so doctor reports WARN instead of a silently empty reason map.
+- **`computeExtractHealthCheck`** retries the pre-v141 rollup query only when the missing column is `expected_limit_count` itself, and reports the `not yet present` OK only when the missing relation is `extract_rollup_7d` itself; other driver errors report WARN as before.
+- **`upsertExtractRollup`** emits its "schema is behind" migration hint only for the real missing `halt_reasons` column and its pre-v141 retry only for the real missing `expected_limit_count` column.
+- `test/pg-missing-object.test.ts` pins the strict classification offline with driver-shaped stub errors (14 checks; 6 fail without the fix).
+
 ## [0.60.201.0] - 2026-10-13
 
 **A long-running PGLite process picks up fresh planner statistics instead of keeping the plans it made before them.** PGLite has no autovacuum, so a freshly imported brain has no statistics until planner-stats' first-read refresh runs `ANALYZE`. But gbrain's PGLite statement cache keeps named prepared statements, and PostgreSQL keeps a prepared statement's plan across `ANALYZE`, so every statement prepared before the refresh kept its no-statistics plan for the life of the process (a `gbrain serve`, an agent session, a script). On a 55,838-page brain imported without statistics, `entity names` with 50 names stayed at 3.4 to 3.7 s for every call after the refresh. With this fix the calls after the first take 1.2 to 1.5 s, the same as a freshly started process.

@@ -28,6 +28,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
+import { isMissingPgColumn, isMissingPgRelation } from '../pg-missing-object.ts';
 
 /**
  * #5495: why a round halted, as a closed vocabulary stored per reason in
@@ -95,7 +96,11 @@ export async function readRecordedHaltReasons7d(engine: Pick<BrainEngine, 'execu
       recorded.set(row.kind, perKind);
     }
   } catch (err) {
-    if (!/halt_reasons/i.test((err as Error).message || String(err))) throw err;
+    // #6599: only the old-schema conditions — the halt_reasons column absent
+    // (pre-v239) or the rollup table itself absent (pre-v106) — mean "schema
+    // behind"; every other driver error propagates instead of reading as
+    // "no recorded reasons".
+    if (!isMissingPgColumn(err, 'halt_reasons') && !isMissingPgRelation(err, 'extract_rollup_7d')) throw err;
   }
   return recorded;
 }
@@ -226,8 +231,10 @@ export async function upsertExtractRollup(
     const msg = (err as Error).message || String(err);
     // #5495 (no fallback by design): a brain whose schema is behind v239 has no
     // halt_reasons column. The rollup is a best-effort cache, so the row is
-    // lost until the migration runs; say which fix restores it.
-    if (/halt_reasons/i.test(msg)) {
+    // lost until the migration runs; say which fix restores it. #6599: the
+    // missing COLUMN must be halt_reasons itself — a driver error that merely
+    // mentions the column in passing is a normal failure, not "schema behind".
+    if (isMissingPgColumn(err, 'halt_reasons')) {
       rollupErrorLogOnce(input.kind, day, `${msg} (the schema is behind: doctor reports migrations_pending; run gbrain apply-migrations --yes --no-autopilot-install)`);
       return { ok: false, error: msg };
     }
@@ -236,7 +243,7 @@ export async function upsertExtractRollup(
     // write (best-effort would swallow it), retry the pre-v141 statement —
     // the cap stop degrades to the old conflated halt accounting until the
     // migration runs.
-    if (/expected_limit_count/i.test(msg)) {
+    if (isMissingPgColumn(err, 'expected_limit_count')) {
       try {
         await engine.executeRaw(
           `INSERT INTO extract_rollup_7d (
