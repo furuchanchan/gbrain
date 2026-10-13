@@ -24,13 +24,13 @@ import { gitHoldFix, readGitHold } from './sync-holds.ts';
 import { hostOperatorFix, recordRoute } from './held-reads.ts';
 import { heldFileMessage } from './verb-errors.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
-import { recordedPathFromFileUri, scannerSlugRootMode, scannerSourcePath } from '../write-through.ts';
+import { recordedPathFromFileUri, resolvePageWriteTarget, scannerSlugRootMode, scannerSourcePath } from '../write-through.ts';
 import { engineMutationPrecondition, parseMutationPrecondition } from './preconditions.ts';
 import { assertPurgeParams } from './purge-params.ts';
 import { authorizeWrite, slugDisclosable } from './authority.ts';
 import { findLiveFileClaimants, type FileClaimant, type FileClaimTarget } from './file-claims.ts';
 import { digest, sha256 } from './digest.ts';
-import { getWorktreeBinding } from './ownership.ts';
+import { getWorktreeBinding, managedPersistenceEnabled } from './ownership.ts';
 import type { PreparedContentImport } from './prepared-import.ts';
 import type { PreparedMutation } from './coordinator.ts';
 import type { SqlEngine, WriteRequest } from './model.ts';
@@ -417,6 +417,16 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
   const edited = row.operation === 'edit_page' ? editLockedPage(row, snapshot) : undefined;
   let content = edited?.content ?? preparedIntent?.content ?? p.content as string;
   let versionTags: string[] | undefined = preparedIntent?.tags;
+  // #6609: on an unmanaged brain, restoring a page whose file sits under a db_only
+  // directory only lives until the next full sync — reconcile respects the generated
+  // .gitignore entry and re-deletes it. The restored row keeps no file of record
+  // (database-only — see fenceDbOnlyPage / #6610). A merely absent file stays bound:
+  // the restore's write-through recreates it, so the next sync sees it again.
+  const restoreDetach = row.operation === 'restore_page' && snapshot?.page.source_path != null
+    && !(await managedPersistenceEnabled(unbounded))
+    && await resolvePageWriteTarget(unbounded, row.slug, row.source_id, { includeDeleted: true })
+      .then(t => t.ok && isSourceDbOnlySlug(t.writeRoot, row.slug, 'refuse'))
+      .catch(() => false);
   // A replacement/restore publishes a live page. Only a recorded version may
   // explicitly restore a tombstone; legacy versions leave this state unchanged.
   let targetDeleted = false;
@@ -615,7 +625,10 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
       ]) as [unknown, { mode: string | null } | undefined, unknown, unknown];
       if (pinMode && pinned?.mode !== pinMode) throw pageRefusal('revision_conflict', 'The source slug-root mode changed during preparation.', row,
         `Another write pinned source ${row.source_id}'s slug-root mode while ${row.slug} was being prepared, so this publication rolled back. Once the request is final, submit the write again; it is prepared under the pinned mode.`);
-      if (row.operation === 'restore_page') await tx.restorePage(row.slug, source);
+      if (row.operation === 'restore_page') {
+        await tx.restorePage(row.slug, source);
+        if (restoreDetach) await tx.executeRaw(`UPDATE pages SET source_path=NULL WHERE source_id=$1 AND slug=$2`, [row.source_id, row.slug]);
+      }
       if (versionTags) {
         for (const tag of snapshot!.tags) if (!versionTags.includes(tag)) await tx.removeTag(row.slug, tag, source);
         for (const tag of versionTags) await tx.addTag(row.slug, tag, source);
@@ -652,6 +665,7 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
       ...(row.operation === 'capture' ? { channel: 'capture', content_hash: p.capture_hash } : {}),
       ...(edited ? editDiff(row.slug, edited.before, edited.after) : {}), ...fencesNormalized, ...fenceRepairOutcome,
       ...(lowered ? { trust_lowered: lowered } : {}), ...(gate ? { gate } : {}),
+      ...(restoreDetach ? { detached: 'db_only' } : {}),
       // DX-1: a guarded supersession reports contested (the first proposal; every one when the write contested several rows).
       ...(contested.length ? { contested: { proposal_ref: contested[0], ...(contested.length > 1 ? { proposal_refs: contested } : {}) } } : {}) };
   } };

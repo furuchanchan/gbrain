@@ -45,6 +45,7 @@ When storage configuration is present, `gbrain sync` automatically manages `.git
 
 - Adds missing `db_only` directory patterns to `.gitignore`.
 - A file under a `db_only` directory that git already tracked before the declaration stays tracked and shows as modified once the database updates it; untrack it with `git rm --cached <path>`.
+  Untracking a file makes the next full sync soft-delete the page it feeds — restore it with `gbrain restore <slug>` afterward, which keeps the row database-only while the file is gone.
 - Idempotent — re-running adds no duplicate entries.
 - Stable comment header so the managed block is grep-able.
 - Skipped on `--dry-run` (don't mutate disk in preview mode).

@@ -10,6 +10,15 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.206.0] - 2026-10-13
+
+**`restore_page` keeps a page database-only when its file sits under a `db_only` directory, instead of looping restore → sync-delete (#6609).**
+
+### Itemized changes
+
+- On an unmanaged brain, a restore whose slug falls under a `storage.db_only` directory declared in the source's `gbrain.yml` now commits the live row with `source_path` cleared and reports `detached: 'db_only'` in the receipt. Previously the restore re-bound the file of record, so the next full sync — whose reconcile respects the generated `.gitignore` entry — soft-deleted the page again, giving operators no supported way to keep a file-backed page database-only. A restore whose file is merely absent still re-creates it through the normal write-through path and stays bound.
+- `docs/storage-tiering.md` warns that untracking a live page's file (`git rm --cached`) makes the next full sync soft-delete the page, and that restore now keeps the row database-only while the file is invisible to sync.
+
 ## [0.60.205.0] - 2026-10-13
 
 **Every `search` and `query` response now says where its time went.**
